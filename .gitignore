@@ -1,0 +1,9 @@
+build/
+*.o
+*.elf
+*.bin
+/tmp/
+.vscode/
+__pycache__/
+*.pyc
+output/
