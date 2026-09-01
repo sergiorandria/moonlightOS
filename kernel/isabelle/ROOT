@@ -1,0 +1,12 @@
+session Moonlight = HOL +
+  options [document = pdf, document_output = "output"]
+  theories
+    RISCV_CHERI
+    CacheColoring
+    IOMMU_Verification
+    Moonlight_A
+    Moonlight_E
+    Sched_Verification
+    Refine
+  document_files (with_ext)
+    document/root.tex
