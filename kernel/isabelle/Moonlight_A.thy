@@ -1,5 +1,5 @@
 theory Moonlight_A
-imports Main "HOL-Word.Word" "RISCV_CHERI"
+imports Main "HOL-Library.Word" "RISCV_CHERI"
 begin
 
 (* Abstract spec - MoonlightOS > seL4: adds time + CHERI *)

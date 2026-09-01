@@ -1,5 +1,5 @@
 theory RISCV_CHERI
-imports Main "HOL-Word.Word"
+imports Main "HOL-Library.Word"
 begin
 
 (* Formal ISA model for CHERI-RISC-V - extends riscv-formal with CHERI CC128 *)
