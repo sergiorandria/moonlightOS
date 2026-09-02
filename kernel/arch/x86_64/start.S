@@ -23,19 +23,64 @@ multiboot_end:
 .global _start
 _start:
     cli
-    /* QEMU -kernel loads 64-bit ELF directly in long mode if ELF is 64-bit.
-       If loaded in 32-bit, we need to switch to long mode. Detect via CS.
-       For now, assume QEMU jumps in 64-bit long mode when -kernel is 64-bit ELF.
-       Fallback: if in 32-bit, set up GDT and jump to long mode. */
     mov $stack_top, %esp
-    /* Check if already in long mode by trying to use 64-bit register */
-    /* Simple: set up GDT for 64-bit */
+
+    /* 1. Build minimal identity-mapped page tables (PML4->PDPT->PD, 2MB pages, 0-1GB) */
+    /* Zero PML4 */
+    lea pml4_table, %edi
+    xor %eax, %eax
+    mov $1024, %ecx
+    rep stosl
+    /* PML4[0] -> PDPT */
+    lea pml4_table, %eax
+    lea pdpt, %ebx
+    or $0x03, %ebx /* P | W */
+    mov %ebx, (%eax)
+    /* PDPT[0] -> PD */
+    lea pdpt, %eax
+    lea pd, %ebx
+    or $0x03, %ebx
+    mov %ebx, (%eax)
+    /* PD[0..511] -> 2MB identity pages 0x00000000, 0x00200000, ... */
+    lea pd, %edi
+    mov $512, %ecx
+    xor %eax, %eax
+.Lpd_fill:
+    mov %eax, %ebx
+    shl $21, %ebx
+    or $0x83, %ebx /* P | W | PS | A | D */
+    mov %ebx, (%edi)
+    add $8, %edi
+    add $0x200000, %eax
+    dec %ecx
+    jnz .Lpd_fill
+
+    /* 2. Load CR3 with PML4 physical address */
+    lea pml4_table, %eax
+    mov %eax, %cr3
+
+    /* 3. Enable PAE */
+    mov %cr4, %eax
+    or $0x20, %eax
+    mov %eax, %cr4
+
+    /* 4. Set EFER.LME */
+    mov $0xC0000080, %ecx
+    rdmsr
+    or $0x100, %eax
+    wrmsr
+
+    /* 5. Enable paging (activates long mode) */
+    mov %cr0, %eax
+    or $0x80000000, %eax
+    mov %eax, %cr0
+
     lgdt gdt_ptr
     mov $0x10, %ax
     mov %ax, %ds
     mov %ax, %es
     mov %ax, %ss
-    /* Far jump to 64-bit code segment */
+    /* Far jump to 64-bit code segment - now L=1 is valid */
     ljmp $0x08, $long_mode
 
 .code64
@@ -77,6 +122,13 @@ gdt_ptr:
 gdt_end:
 
 .section .bss
+.align 4096
+pml4_table:
+    .space 4096
+pdpt:
+    .space 4096
+pd:
+    .space 4096
 .align 16
 .space 32768
 stack_top:

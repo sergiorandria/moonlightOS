@@ -47,8 +47,8 @@ fi
 # GDB support
 if [ "$2" = "--gdb" ] || [ "$3" = "--gdb" ]; then
   echo "GDB on :1234 - connect with: riscv64-unknown-elf-gdb $ELF -ex 'target remote :1234'"
-  exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" -S -s -serial mon:stdio -d guest_errors
+  exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" -S -s -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
 fi
 
-echo "QEMU: $QEMU $CHERI_ARGS $DISP -kernel $ELF"
-exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" $DISP -serial mon:stdio -d guest_errors
+echo "QEMU: $QEMU $CHERI_ARGS $DISP -kernel $ELF -no-reboot -d int,cpu_reset"
+exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" $DISP -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
