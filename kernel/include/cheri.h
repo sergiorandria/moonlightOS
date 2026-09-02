@@ -60,16 +60,28 @@ static inline size_t cheri_length_get(sim_cap_t c) { return c.top - c.base; }
 /* Microarchitectural flush - proven flush-on-switch */
 static inline void cheri_flush_microarch(void) {
 #ifdef __riscv
+    /* Probe for CHERI CSR 0x800: trap if absent - use illegal-insn handler */
+    #ifdef __CHERI_PURE_CAPABILITY__
     __asm__ volatile(
         "fence.i\n"
         "sfence.vma\n"
-        /* CHERI tag cache clear + BTB/BHT flush via custom CSR */
         "csrw 0x800, x0\n"
         ::: "memory");
+    #else
+    __asm__ volatile("fence.i; sfence.vma" ::: "memory");
+    #endif
 #else
     __asm__ volatile("" ::: "memory");
 #endif
 }
+
+#ifdef __CHERI_PURE_CAPABILITY__
+void cheri_init_ddc(void);
+bool cheri_is_purecap(void);
+#else
+static inline void cheri_init_ddc(void) {}
+static inline bool cheri_is_purecap(void) { return false; }
+#endif
 
 /* Strict bounds-checked copy - constant time wrt secret length */
 void *cheri_memcpy_capped(CHERI_CAP dst, const void *src, size_t len);
