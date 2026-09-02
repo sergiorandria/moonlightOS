@@ -8,7 +8,7 @@ CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE)
 
 ISABELLE = isabelle
 LD = riscv64-unknown-elf-ld
-SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c
+SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c
 ASM = src/start.S src/trap.S
 OBJ = $(SRC:.c=.o) $(ASM:.S=.o)
 TARGET = build/moonlight.elf

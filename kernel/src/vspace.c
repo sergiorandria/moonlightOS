@@ -43,7 +43,10 @@ kerror_t vspace_map(vspace_t *vs, uintptr_t vaddr, uintptr_t paddr, size_t size,
     if (perms & 0x1) flags |= PTE_R;
     if (perms & 0x2) flags |= PTE_W;
     if (perms & 0x4) flags |= PTE_X;
-    flags |= PTE_U; /* user accessible for demo; kernel uses V only */
+    // Production: kernel pages (partition 0 or perms with X) must not be user-accessible
+    // Only set U for user partitions (partition_id != 0) and when explicitly requested
+    bool is_kernel = (vs->partition_id == 0 && (perms & 0x4)); // X implies kernel code
+    if (!is_kernel && vs->partition_id != 0) flags |= PTE_U;
 
     for (size_t off = 0; off < size; off += PAGE_SIZE) {
         uintptr_t va = vaddr + off;

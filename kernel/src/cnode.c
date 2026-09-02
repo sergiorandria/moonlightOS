@@ -12,8 +12,19 @@ kerror_t cnode_init(cnode_t *cn, uint32_t guard, uint8_t radix) {
 
 cap_t* cnode_lookup(cnode_t *cn, cptr_t idx) {
     if (!cn) return NULL;
-    if (idx >= MAX_CAPS_PER_CNODE) return NULL;
-    cap_t *c = &cn->slots[idx];
+    // Production: guard/radix decode (seL4-style)
+    // For radix=8, guard_size=0, idx is direct. For larger, validate guard.
+    if (cn->radix == 0 || cn->radix > 8) return NULL;
+    uint32_t mask = (1u << cn->radix) - 1;
+    if (cn->guard_size > 0) {
+        uint32_t guard_bits = idx >> cn->radix;
+        if (guard_bits != (cn->guard & ((1u << cn->guard_size)-1))) return NULL;
+    }
+    uint32_t slot = idx & mask;
+    // Also support full 256 when radix=8
+    if (cn->radix == 8) slot = idx & 0xFF;
+    if (slot >= MAX_CAPS_PER_CNODE) return NULL;
+    cap_t *c = &cn->slots[slot];
     if (!c->is_valid) return NULL;
     if (!cheri_tag_get(c->hw_cap)) return NULL;
     return c;

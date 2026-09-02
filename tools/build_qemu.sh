@@ -3,7 +3,7 @@ set -e
 # Stock QEMU build (no CHERI LLVM needed) - hybrid sim
 CC="clang --target=riscv64-unknown-elf"
 CFLAGS="-march=rv64imac -mabi=lp64 -O2 -ffreestanding -nostdlib -Wall -mcmodel=medany -mno-relax -fno-builtin -I$(dirname $0)/../kernel/include -I/usr/lib/clang/22/include -I/usr/include -include stdbool.h -fno-stack-protector"
-SRC="cap.c cnode.c tcb.c vspace.c endpoint.c syscall.c cheri.c iommu.c irq.c alloc.c revoke.c process.c hardening.c"
+SRC="cap.c cnode.c tcb.c vspace.c endpoint.c syscall.c cheri.c iommu.c irq.c alloc.c revoke.c process.c hardening.c notification.c"
 # sched int to avoid float
 cat > /tmp/sched_qemu.c <<'C'
 #include "../include/sched.h"
@@ -30,6 +30,7 @@ OBJ="/tmp/start_qemu.o /tmp/trap_qemu.o /tmp/minilib_qemu.o /tmp/sched_qemu.o"
 for s in $SRC; do $CC $CFLAGS -c kernel/src/$s -o /tmp/${s%.c}_qemu.o; OBJ="$OBJ /tmp/${s%.c}_qemu.o"; done
 $CC $CFLAGS -c kernel/src/boot.c -o /tmp/boot_qemu.o
 OBJ="$OBJ /tmp/boot_qemu.o"
+mkdir -p kernel/build
 $CC $CFLAGS -fuse-ld=lld -T kernel/linker.ld -o kernel/build/moonlight.elf $OBJ -Wl,--no-undefined -nostdlib
 ls -lh kernel/build/moonlight.elf
 echo "qemu build OK"
