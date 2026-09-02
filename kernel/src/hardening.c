@@ -53,16 +53,14 @@ bool is_canonical_addr(uintptr_t addr) {
 void panic(const char *msg) {
     (void)msg;
 #ifdef __riscv
-    /* Try UART print if available, then halt */
-    __asm__ volatile("csrw 0x800, x0" ::: "memory"); /* flush if CHERI */
-#endif
-    while(1) {
-#ifdef __riscv
-        __asm__ volatile("wfi");
+    __asm__ volatile("csrw 0x800, x0" ::: "memory");
+    while(1) __asm__ volatile("wfi");
+#elif defined(__x86_64__)
+    while(1) __asm__ volatile("hlt");
 #else
-        __asm__ volatile("" ::: "memory"); break;
+    while(1) __asm__ volatile("" ::: "memory");
 #endif
-    }
+    __builtin_unreachable();
 }
 
 void ubsan_handler(const char *file, int line, const char *msg) {

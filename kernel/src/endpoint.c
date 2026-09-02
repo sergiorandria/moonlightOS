@@ -11,11 +11,6 @@ typedef struct {
     bool valid;
 } ep_slot_t;
 
-static bool ep_has_grant(ipc_msg_t *msg){
-    // Check cap transfer needs GRANT on endpoint cap (enforced in syscall, here for defense)
-    return msg->caps > 0;
-}
-
 kerror_t endpoint_send(endpoint_t *ep, uint32_t sender, ipc_msg_t *msg) {
     if (!ep || !msg) return ERR_INVALID_ARG;
     if (msg->length > IPC_MSG_MAX) return ERR_INVALID_ARG;
