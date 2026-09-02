@@ -27,7 +27,11 @@ endif
 
 ISABELLE = isabelle
 OBJ = $(SRC:.c=.o) $(ASM:.S=.o)
+ifeq ($(ARCH),x86_64)
+TARGET = build/moonlight.x86_64.elf
+else
 TARGET = build/moonlight.elf
+endif
 TARGET_QEMU = build/moonlight.qemu.elf
 
 all: $(TARGET)
@@ -73,6 +77,11 @@ cbmc:
 	@cbmc --bounds-check --pointer-check --div-by-zero-check src/cap.c src/cnode.c --unwind 10
 
 clean:
-	rm -rf build src/*.o ../build
+ifeq ($(ARCH),x86_64)
+	rm -f build/moonlight.x86_64.elf src/*.o arch/x86_64/*.o
+else
+	rm -f build/moonlight.elf build/moonlight.qemu.elf src/*.o
+endif
+	@rmdir --ignore-fail-on-non-empty build 2>/dev/null || true
 
 .PHONY: all qemu isabelle verify cbmc clean
