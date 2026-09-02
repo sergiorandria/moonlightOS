@@ -8,6 +8,14 @@ typedecl cap
 typedecl tcb
 typedecl partition
 
+type_synonym cptr = "32 word"
+datatype tcb_state = TCBInvalid | TCBRunnable | TCBBlocked
+type_synonym time_partition = nat
+type_synonym syscall_args = nat
+
+consts cap_otype :: "cap \<Rightarrow> otype"
+consts has_right :: "cap \<Rightarrow> nat \<Rightarrow> bool"
+
 datatype cap_type = NullCap | UntypedCap nat | CNodeCap nat nat | TCBCap tcb
                   | VSpaceCap nat | FrameCap nat nat | EndpointCap nat nat
                   | SchedContextCap nat nat | TimePartitionCap nat
@@ -18,6 +26,13 @@ record abs_state =
   partitions :: "partition \<Rightarrow> time_partition"
   cur_partition :: "partition"
   hw_caps :: "cptr \<Rightarrow> cheri_cap"  (* HW CHERI tag/bounds *)
+
+consts cap_valid_invariant :: "abs_state \<Rightarrow> bool"
+consts partition_isolation :: "abs_state \<Rightarrow> bool"
+consts authority_confinement :: "abs_state \<Rightarrow> bool"
+consts schedulable :: "abs_state \<Rightarrow> bool"
+consts partition_budget :: "abs_state \<Rightarrow> nat"
+consts deadline_met :: "abs_state \<Rightarrow> bool"
 
 datatype abs_event = SysCall cptr syscall_args | Tick nat | PartitionSwitch partition
 

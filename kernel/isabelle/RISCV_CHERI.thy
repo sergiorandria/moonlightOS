@@ -28,7 +28,7 @@ definition cheri_perms_and :: "cheri_cap \<Rightarrow> perms \<Rightarrow> cheri
   "cheri_perms_and c p = c\<lparr> cheri_perms := p \<rparr>"
 
 definition cheri_seal :: "cheri_cap \<Rightarrow> otype \<Rightarrow> cheri_cap" where
-  "cheri_seal c o = c\<lparr> cheri_sealed := True, cheri_otype := o \<rparr>"
+  "cheri_seal c ot = c\<lparr> cheri_sealed := True, cheri_otype := ot \<rparr>"
 
 (* Monotonicity - core CHERI security property, proven *)
 lemma cheri_mono_perms: "cheri_perms (cheri_perms_and c p) = p"

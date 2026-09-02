@@ -24,7 +24,6 @@ $(TARGET): $(OBJ) linker.ld
 
 isabelle:
 	$(ISABELLE) build -D isabelle -v
-	$(ISABELLE) build -D isabelle Moonlight_A -v
 
 clean:
 	rm -rf build src/*.o
