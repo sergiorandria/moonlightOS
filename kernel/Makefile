@@ -3,12 +3,12 @@ ifeq ($(ARCH),x86_64)
   CC ?= clang
   CFLAGS_CHERI =
   CFLAGS_BASE = -O2 -ffreestanding -nostdlib -Wall -Wextra -Werror \
-                -fno-builtin -mno-red-zone -mcmodel=large -no-pie \
+                -fno-builtin -mno-red-zone -mcmodel=large -no-pie -fno-pic -fno-PIE \
                 -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
                 -Wimplicit-fallthrough -Wcast-align -Wshadow
   CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE) -DARCH_X86_64 -D__x86_64__
   LD = ld.lld
-  SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c arch/x86_64/paging.c
+  SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c src/flush.c src/elf.c arch/x86_64/paging.c
   ASM = arch/x86_64/start.S arch/x86_64/trap.S
   LINKER = linker.x86_64.ld
 else
@@ -20,7 +20,7 @@ else
                 -Wimplicit-fallthrough -Wcast-align -Wshadow
   CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE)
   LD = riscv64-unknown-elf-ld
-  SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c
+  SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c src/flush.c src/elf.c
   ASM = src/start.S src/trap.S
   LINKER = linker.ld
 endif

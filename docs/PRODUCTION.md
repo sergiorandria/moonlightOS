@@ -37,6 +37,17 @@
 ## Known Gaps (post-1.0)
 
 - `sched.c` float EDF → fixed-point int (done in `build_qemu` fallback, upstream to CHERI)
-- `vspace` PT alloc should use `alloc_frame` per-color, not bump
-- `userspace` drivers need IOMMU window caps wired to `vspace_map`
+- `vspace` PT alloc should use `alloc_frame` per-color, not bump (currently `.pt_pool` bump, 64 pages)
+- `userspace` drivers need IOMMU window caps wired to `vspace_map` (virtio_net still uses `mmio_base` cast, needs `cheri_bounds_set`)
 - `cheri` purecap needs `cheribuild.py llvm` CI
+
+## Fixed in 2025-09-03
+
+- `handle_invoke` wired to `cap_retype`/`cnode_copy`/`vspace_map` with `g_root_cnode` + `g_mdb` insert, `dest` via `arg1>>8` (was no-op stub)
+- `boot.c` spawns `user_hello` via `process_create` + `alloc_init`/`mdb_init`, demonstrates `handle_invoke` retype, `user_hello` runs as TCB
+- `tests/test_ipc_trap.c` IPC across `ecall`/`syscall_handler` (was host-direct only)
+- `cap.h` proper `irq`/`iommu`/`notification` union members (was `frame.paddr` overloading)
+- `tcb.c` `tcb_resume` now wakes `BLOCKED_*`, `tcb_wake_from_ipc` added
+- `endpoint.c` FIFO `queue_msgs[16]` per-slot + wake `tcb_wake_from_ipc`, `sched.c` skips blocked TCBs
+- `process.c` `endpoint_cleanup_for_tcb` + `cspace` zero + `mdb` fix, `revoke.c` `mdb_lookup` respects `cnode_id`
+- `arch/x86_64/start.S` 5-step long-mode (was triple-fault), `linker.x86_64.ld` PVH `Xen` note, `Makefile` arch-aware `TARGET`

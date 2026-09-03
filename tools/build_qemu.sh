@@ -3,7 +3,7 @@ set -e
 # Stock QEMU build (no CHERI LLVM needed) - hybrid sim
 CC="clang --target=riscv64-unknown-elf"
 CFLAGS="-march=rv64imac -mabi=lp64 -O2 -ffreestanding -nostdlib -Wall -mcmodel=medany -mno-relax -fno-builtin -I$(dirname $0)/../kernel/include -I/usr/lib/clang/22/include -I/usr/include -include stdbool.h -fno-stack-protector"
-SRC="cap.c cnode.c tcb.c vspace.c endpoint.c syscall.c cheri.c iommu.c irq.c alloc.c revoke.c process.c hardening.c notification.c"
+SRC="cap.c cnode.c tcb.c vspace.c endpoint.c syscall.c cheri.c iommu.c irq.c alloc.c revoke.c process.c hardening.c notification.c flush.c elf.c"
 # sched int to avoid float
 cat > /tmp/sched_qemu.c <<'C'
 #include "../include/sched.h"
