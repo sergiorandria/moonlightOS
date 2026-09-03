@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 /* CHERI RISC-V purecap/hybrid abstraction.
  * On non-CHERI host, degrades to checked-pointer simulation for testing.

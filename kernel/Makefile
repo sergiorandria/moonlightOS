@@ -13,13 +13,36 @@ ifeq ($(ARCH),x86_64)
   LINKER = linker.x86_64.ld
 else
   CC ?= riscv64-unknown-elf-clang
-  CFLAGS_CHERI = -march=rv64imacxcheri -mabi=l64pc128d -cheri-bounds=conservative
+  # Autodetect CHERI support (stock clang 22 lacks xcheri)
+  CHERI_CC := $(shell which $(CC) 2>/dev/null || which clang 2>/dev/null || echo cc)
+  CHERI_OK := $(shell echo | $(CHERI_CC) -march=rv64imacxcheri -E -dM - > /dev/null 2>&1 && echo yes || echo no)
+  # Fallback to stock clang --target=riscv64 if CHERI toolchain missing
+  ifeq (,$(shell which $(CC) 2>/dev/null))
+    CC := clang
+    CFLAGS_CHERI_DETECT := --target=riscv64-unknown-elf
+  else
+    CFLAGS_CHERI_DETECT :=
+  endif
+  ifeq ($(CHERI_OK),yes)
+    CFLAGS_CHERI = $(CFLAGS_CHERI_DETECT) -march=rv64imacxcheri -mabi=l64pc128d -cheri-bounds=conservative -mcmodel=medany -mno-relax
+    LDFLAGS =
+    LD = riscv64-unknown-elf-ld
+  else
+    $(warning CHERI toolchain not found, falling back to stock QEMU hybrid sim - use tools/build_qemu.sh for full build)
+    CC := clang
+    CFLAGS_CHERI = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -mcmodel=medany -mno-relax -I/usr/include -I/usr/lib/clang/22/include
+    LDFLAGS = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib
+    LD = ld.lld
+  endif
   CFLAGS_BASE = -O2 -ffreestanding -nostdlib -Wall -Wextra -Werror \
                 -fno-builtin -mcmodel=medany -mno-relax \
                 -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
                 -Wimplicit-fallthrough -Wcast-align -Wshadow
+  ifeq ($(CHERI_OK),yes)
   CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE)
-  LD = riscv64-unknown-elf-ld
+  else
+  CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE) -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-cast-align
+  endif
   SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c src/flush.c src/elf.c
   ASM = src/start.S src/trap.S
   LINKER = linker.ld
@@ -39,7 +62,7 @@ all: $(TARGET)
 # CHERI build (requires CTSRD LLVM for riscv, stock clang for x86_64)
 $(TARGET): $(OBJ) $(LINKER)
 	@mkdir -p build
-	$(CC) $(CFLAGS) -T $(LINKER) -o $@ $(OBJ)
+	$(CC) $(CFLAGS) $(LDFLAGS) -T $(LINKER) -o $@ $(OBJ)
 
 # Stock QEMU fallback (hybrid sim, no CHERI LLVM) - riscv only
 qemu: $(TARGET_QEMU)

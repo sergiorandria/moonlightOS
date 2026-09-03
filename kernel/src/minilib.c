@@ -1,5 +1,6 @@
 // minilib - freestanding memset/memcpy for x86_64 and riscv
 #include <stddef.h>
+#include <stdint.h>
 void *memset(void *s, int c, size_t n){
     unsigned char *p = s;
     while(n--) *p++ = (unsigned char)c;
@@ -16,6 +17,7 @@ int memcmp(const void *a, const void *b, size_t n){
     while(n--) if(*aa!=*bb) return *aa-*bb; else {aa++;bb++;}
     return 0;
 }
+uintptr_t __stack_chk_guard = 0xDEADBEEF;
 void __stack_chk_fail(void){
     while(1) {
 #ifdef __x86_64__

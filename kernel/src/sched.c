@@ -96,15 +96,14 @@ uint32_t sched_pick_next(sched_state_t *s, uint64_t now_us) {
 }
 
 bool sched_is_schedulable(sched_state_t *s) {
-    /* EDF utilization test per partition: sum(budget/period) <= 1 - proven in Isabelle */
     for (uint32_t p=0;p<s->num_partitions;p++) {
-        double util = 0;
+        uint64_t sum = 0;
         for (uint32_t i=0;i<MAX_SCHED_CONTEXTS;i++) {
             if (!s->contexts[i].bound) continue;
             if (s->contexts[i].partition_id != p) continue;
-            util += (double)s->contexts[i].budget_us / (double)s->contexts[i].period_us;
+            sum += s->contexts[i].budget_us * 100 / s->contexts[i].period_us;
         }
-        if (util > 0.99) return false;
+        if (sum > 99) return false;
     }
     return true;
 }

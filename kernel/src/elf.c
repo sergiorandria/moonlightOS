@@ -17,7 +17,7 @@ kerror_t elf_load(const void *elf_data, size_t elf_size, uintptr_t *out_entry, u
     const elf64_hdr_t *hdr = elf_data;
     if(hdr->phoff + hdr->phnum * sizeof(elf64_phdr_t) > elf_size) return ERR_INVALID_ARG;
     const elf64_phdr_t *phdrs = (const void*)((uintptr_t)elf_data + hdr->phoff);
-    uintptr_t first_vaddr = 0xFFFFFFFFFFFFFFFF;
+    uintptr_t first_vaddr = (uintptr_t)-1;
     for(int i=0;i<hdr->phnum;i++){
         if(phdrs[i].type != PT_LOAD) continue;
         if(phdrs[i].vaddr < first_vaddr) first_vaddr = phdrs[i].vaddr;

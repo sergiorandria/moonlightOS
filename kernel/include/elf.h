@@ -2,6 +2,7 @@
 #include "types.h"
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 // Minimal ELF64 loader for initrd/userspace binaries
 #define ELF_MAGIC 0x464C457F
