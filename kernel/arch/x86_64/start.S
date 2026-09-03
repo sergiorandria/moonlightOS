@@ -4,7 +4,7 @@
 .long 4, 4, 18
 .asciz "Xen"
 .align 4
-.long 0x100000  /* PHYS32_ENTRY */
+.long _start  /* PHYS32_ENTRY - must match ELF entry */
 
 .section .text
 .code32
@@ -25,12 +25,20 @@ _start:
     cli
     mov $stack_top, %esp
 
-    /* 1. Build minimal identity-mapped page tables (PML4->PDPT->PD, 2MB pages, 0-1GB) */
-    /* Zero PML4 */
-    lea pml4_table, %edi
+    /* 0. Clear BSS (includes page tables below) BEFORE building page tables.
+       This must run before the paging structures are populated: the old
+       code cleared BSS a second time AFTER CR3 was loaded and paging
+       enabled, wiping the live PML4/PDPT/PD tables out from under the CPU
+       and causing an immediate #PF -> #DF -> triple fault right after
+       entering long mode (before any UART output). */
+    lea _bss, %edi
+    lea _bss_end, %ecx
+    sub %edi, %ecx
+    shr $2, %ecx
     xor %eax, %eax
-    mov $1024, %ecx
     rep stosl
+
+    /* 1. Build minimal identity-mapped page tables (PML4->PDPT->PD, 2MB pages, 0-1GB) */
     /* PML4[0] -> PDPT */
     lea pml4_table, %eax
     lea pdpt, %ebx
@@ -86,14 +94,15 @@ _start:
 .code64
 long_mode:
     mov $stack_top, %rsp
-    /* Clear BSS */
-    lea _bss(%rip), %rdi
-    lea _bss_end(%rip), %rcx
-    sub %rdi, %rcx
-    shr $3, %rcx
-    xor %rax, %rax
-    rep stosq
-    /* Set up IDT */
+    /* BSS already cleared in 32-bit mode before page tables were built -
+       do NOT clear it again here, it would wipe the live PML4/PDPT/PD
+       that CR3 currently points to and fault on the next access. */
+    /* Populate IDT gate descriptors before loading it - lidt only loads the
+       table *pointer*, it does not construct entries. idt[] starts as all
+       zero (Present=0 for every vector), so without this step any trap,
+       including the deliberate int $0x80 self-test below, immediately
+       #GP-faults on the absent gate and the CPU triple-faults. */
+    call build_idt
     lea idt_ptr(%rip), %rax
     lidt (%rax)
     /* Enable SSE */
@@ -109,6 +118,36 @@ long_mode:
 .Lpark:
     hlt
     jmp .Lpark
+
+/* Build one 64-bit interrupt-gate descriptor: selector 0x08 (our CS64),
+   IST=0, type=0x8E (Present | DPL0 | 64-bit interrupt gate). */
+.macro SET_GATE vec, handler
+    lea \handler(%rip), %rax
+    lea idt(%rip), %rbx
+    add $(\vec*16), %rbx
+    mov %ax, (%rbx)
+    movw $0x08, 2(%rbx)
+    movb $0, 4(%rbx)
+    movb $0x8E, 5(%rbx)
+    mov %rax, %rcx
+    shr $16, %rcx
+    mov %cx, 6(%rbx)
+    mov %rax, %rcx
+    shr $32, %rcx
+    mov %ecx, 8(%rbx)
+    movl $0, 12(%rbx)
+.endm
+
+.global build_idt
+build_idt:
+    SET_GATE 0, trap_0
+    SET_GATE 8, trap_8
+    SET_GATE 13, trap_13
+    SET_GATE 14, trap_14
+    SET_GATE 32, trap_32
+    SET_GATE 33, trap_33
+    SET_GATE 0x80, trap_syscall
+    ret
 
 .section .rodata
 .align 8

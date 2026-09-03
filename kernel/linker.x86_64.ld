@@ -34,6 +34,12 @@ SECTIONS {
         *(.pt_pool)
         _pt_pool_end = .;
     } :text
+    . = 0x10200000;
+    .rodata.posttrap : ALIGN(4096) {
+        KEEP(*(.rodata.flush))
+        KEEP(*(.rodata.boot))
+        KEEP(*(.rodata.trap))
+    } :text
     _kernel_end = .;
     /* CHERI/CET bounded stacks */
     _bss_end = _kernel_end;

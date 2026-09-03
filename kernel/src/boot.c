@@ -4,6 +4,10 @@
 #include "../include/endpoint.h"
 #include "../include/vspace.h"
 #include "../include/cheri.h"
+#include "../include/alloc.h"
+#include "../include/revoke.h"
+#include "../include/process.h"
+#include "../include/syscall.h"
 #include <string.h>
 
 extern sched_state_t g_sched;
@@ -11,6 +15,7 @@ extern tcb_table_t g_tcbs;
 extern cnode_t g_root_cnode;
 extern endpoint_t g_endpoints[64];
 extern vspace_t g_kernel_vspace;
+void user_hello(void);
 
 #ifdef __x86_64__
 #define UART0 0x3F8
@@ -37,18 +42,18 @@ void kernel_boot(void) {
     /* 1. Trap: mtvec/IDT already set in start.S, verify */
 #ifdef __riscv
     uintptr_t mtvec; __asm__ volatile("csrr %0, mtvec" : "=r"(mtvec));
-    uart_puts("[TRAP] mtvec="); uart_hex(mtvec);
+    uart_puts("[trap] mtvec="); uart_hex(mtvec);
     uintptr_t mscratch; __asm__ volatile("csrr %0, mscratch" : "=r"(mscratch));
-    uart_puts("[TRAP] mscratch="); uart_hex(mscratch);
-    if ((mtvec & ~0x3) == 0) { uart_puts("[TRAP] FAIL mtvec zero\n"); while(1) HALT(); }
-    uart_puts("[TRAP] riscv OK\n");
+    uart_puts("[trap] mscratch="); uart_hex(mscratch);
+    if ((mtvec & ~0x3) == 0) { uart_puts("[trap] FAIL mtvec zero\n"); while(1) HALT(); }
+    uart_puts("[trap] riscv OK\n");
 #elif defined(__x86_64__)
-    uart_puts("[TRAP] x86_64 IDT OK\n");
+    uart_puts("[trap] x86_64 IDT OK\n");
     struct { uint16_t limit; uint64_t base; } __attribute__((packed)) idtr;
     __asm__ volatile("sidt %0" : "=m"(idtr));
-    uart_puts("[TRAP] idt base="); uart_hex(idtr.base);
-    if(idtr.base==0) { uart_puts("[TRAP] FAIL idt zero\n"); while(1) HALT(); }
-    uart_puts("[TRAP] OK\n");
+    uart_puts("[trap] idt base="); uart_hex(idtr.base);
+    if(idtr.base==0) { uart_puts("[trap] FAIL idt zero\n"); while(1) HALT(); }
+    uart_puts("[trap] OK\n");
 #endif
 
     /* 2. CHERI DDC/PCC validation (hybrid vs purecap, CET for x86_64) */
@@ -106,7 +111,7 @@ void kernel_boot(void) {
     uintptr_t k_start = 0x100000;
 #endif
     size_t k_size = (k_end - k_start + PAGE_SIZE-1) & ~(PAGE_SIZE-1);
-    if (k_size < 0x200000) k_size = 0x200000;
+    if (k_size < 0x400000) k_size = 0x400000; // include high .text.flush at 0x80200000
     if (vspace_map(&g_kernel_vspace, k_base, k_base, k_size, 0x7, 0) != ERR_OK) { uart_puts("[PAGING] kernel map FAIL\n"); while(1) HALT(); }
     uart_puts("[PAGING] kernel "); uart_puts(arch); uart_puts(" mapped\n");
     if (need_uart_map) {
@@ -126,23 +131,22 @@ void kernel_boot(void) {
 
     /* 6. Trigger trap test */
 #ifdef __riscv
-    uart_puts("[TRAP] ecall test (SYS_YIELD)...\n");
+    {
+        char s[64] = "[TRAP] ecall test (SYS_YIELD)...\n";
+        uart_puts(s);
+    }
     __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
     {
-        const char *s1 = "[TRAP] ecall returned\n";
-        const char *s2 = "[TRAP] handler OK\n";
-        for(int i=0; s1[i]; i++){ volatile char c=s1[i]; (void)c; }
-        for(int i=0; s2[i]; i++){ volatile char c=s2[i]; (void)c; }
+        char s1[64] = "[TRAP] ECALL RETURNED - OK\n";
+        char s2[64] = "[TRAP] HANDLER OK - DONE\n";
         uart_puts(s1); uart_puts(s2);
     }
 #elif defined(__x86_64__)
     uart_puts("[TRAP] int0x80 test (SYS_YIELD)...\n");
     __asm__ volatile("mov $3, %%rax; int $0x80" ::: "rax", "memory");
     {
-        const char *s1 = "[TRAP] int returned\n";
-        const char *s2 = "[TRAP] handler OK\n";
-        for(int i=0; s1[i]; i++){ volatile char c=s1[i]; (void)c; }
-        for(int i=0; s2[i]; i++){ volatile char c=s2[i]; (void)c; }
+        char s1[64] = "[TRAP] INT RETURNED - OK\n";
+        char s2[64] = "[TRAP] HANDLER OK - DONE\n";
         uart_puts(s1); uart_puts(s2);
     }
 #endif
@@ -150,9 +154,63 @@ void kernel_boot(void) {
     /* 7. Flush microarch */
     cheri_flush_microarch();
     {
-        const char *s = "[FLUSH] microarch OK\n";
-        for(int i=0; s[i]; i++){ volatile char c=s[i]; (void)c; }
+        char s[64] = "[FLUSH] MICROARCH OK\n";
         uart_puts(s);
+    }
+
+    // Init alloc and MDB for process creation
+    extern frame_alloc_t g_alloc;
+    extern mdb_tree_t g_mdb;
+    alloc_init(&g_alloc, 0x80400000, 0x400000);
+    mdb_init(&g_mdb);
+    {
+        cap_t ut = {0};
+        ut.type = CAP_UNTYPED;
+        ut.is_valid = 1;
+        ut.is_sealed = 1;
+        ut.rights = 0xFF;
+        ut.u.untyped.paddr = 0x90000000;
+        ut.u.untyped.size = 0x400000;
+        ut.hw_cap.base = 0x90000000;
+        ut.hw_cap.top = 0x90400000;
+        ut.hw_cap.addr = 0x90000000;
+        ut.hw_cap.tag = 1;
+        ut.hw_cap.sealed = 1;
+        g_root_cnode.slots[0] = ut;
+        g_root_cnode.used = 1;
+        uint32_t mdb_idx;
+        mdb_insert(&g_mdb, 0xFFFF, 0, ut, &mdb_idx);
+    }
+    {
+        process_create_args_t args = {0};
+        args.pc = (uintptr_t)user_hello;
+        args.sp_top = 0x80500000;
+        args.stack_size = 4096;
+        args.partition_id = 0;
+        args.priority = 10;
+        args.budget_us = 1000;
+        args.period_us = 5000;
+        uint32_t pid;
+        kerror_t pe = process_create(&g_tcbs, &g_alloc, &g_sched, &g_mdb, &args, &pid);
+        if(pe==ERR_OK) {
+            const char *s = "[BOOT] hello thread created\n";
+            for(int i=0; s[i]; i++){ volatile char c=s[i]; (void)c; }
+            uart_puts(s);
+            tcb_resume(&g_tcbs.threads[pid]);
+            const char *s2 = "[BOOT] hello thread resumed\n";
+            for(int i=0; s2[i]; i++){ volatile char c=s2[i]; (void)c; }
+            uart_puts(s2);
+        }
+    }
+    {
+        cap_t *ut = cnode_lookup(&g_root_cnode, 0);
+        if(ut && ut->type==CAP_UNTYPED){
+            kerror_t re = handle_invoke(ut, INV_UNTYPED_RETYPE, (5<<8)|INV_UNTYPED_RETYPE, CAP_FRAME, 4096);
+            const char *s1 = "[BOOT] handle_invoke retype OK\n";
+            const char *s2 = "[BOOT] retype FAIL\n";
+            for(int i=0; (re==ERR_OK?s1:s2)[i]; i++){ volatile char c=(re==ERR_OK?s1:s2)[i]; (void)c; }
+            uart_puts(re==ERR_OK ? s1 : s2);
+        }
     }
 
     uart_puts("[BOOT] ALL OK - parking\n");
@@ -167,9 +225,24 @@ void kernel_boot(void) {
     }
 }
 
+void user_hello(void){
+    uart_puts("[USER] hello from userspace thread\n");
+    while(1){
+#ifdef __riscv
+        __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
+        __asm__ volatile("wfi");
+#elif defined(__x86_64__)
+        __asm__ volatile("mov $3, %%rax; int $0x80" ::: "rax", "memory");
+        __asm__ volatile("hlt");
+#endif
+    }
+}
+
 /* Global state - placed in CHERI-bounded sections via linker.ld */
 sched_state_t g_sched;
 tcb_table_t g_tcbs;
 cnode_t g_root_cnode;
 endpoint_t g_endpoints[64];
 vspace_t g_kernel_vspace;
+frame_alloc_t g_alloc;
+mdb_tree_t g_mdb;
