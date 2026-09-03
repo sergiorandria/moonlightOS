@@ -1,6 +1,8 @@
 #include "../include/sched.h"
+#include "../include/tcb.h"
 #include "../include/cheri.h"
 #include <string.h>
+extern tcb_table_t g_tcbs;
 
 void sched_init(sched_state_t *s) {
     memset(s, 0, sizeof(*s));
@@ -77,7 +79,6 @@ void sched_flush_partition(sched_state_t *s, uint32_t old_part) {
 uint32_t sched_pick_next(sched_state_t *s, uint64_t now_us) {
     (void)now_us;
     uint32_t part = s->current_partition;
-    /* Fixed priority within partition, EDF tie-break */
     for (int prio=0; prio<256; prio++) {
         for (uint32_t i=0;i<MAX_SCHED_CONTEXTS;i++) {
             sched_context_t *sc = &s->contexts[i];
@@ -85,6 +86,9 @@ uint32_t sched_pick_next(sched_state_t *s, uint64_t now_us) {
             if (sc->partition_id != part) continue;
             if (sc->priority != prio) continue;
             if (sc->remaining_us == 0) continue;
+            // Production: skip blocked TCBs - prevents burning budget on non-runnable
+            tcb_t *tcb = &g_tcbs.threads[sc->tcb_id];
+            if (!tcb_is_runnable(tcb)) continue;
             return sc->tcb_id;
         }
     }

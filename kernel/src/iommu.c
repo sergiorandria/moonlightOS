@@ -20,7 +20,7 @@ kerror_t iommu_map(iommu_state_t *iommu, cap_t *iommu_cap, uintptr_t dev_id, uin
             iommu->windows[i].paddr_base = paddr;
             iommu->windows[i].size = size;
             iommu->windows[i].perms = perms;
-            iommu->windows[i].partition_id = iommu_cap->u.frame.paddr; /* misuse: store partition from cap color */
+            iommu->windows[i].partition_id = iommu_cap->u.iommu.dev_id; // proper: dev_id from cap
             iommu->windows[i].cap = *iommu_cap;
             iommu->count++;
             /* Real HW: program RISC-V IOMMU page table via CHERI-bounded register cap */

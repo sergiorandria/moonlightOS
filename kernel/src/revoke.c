@@ -87,8 +87,13 @@ kerror_t mdb_delete(mdb_tree_t *mdb, uint32_t idx) {
 }
 
 uint32_t mdb_lookup(mdb_tree_t *mdb, uint32_t cnode_id, cptr_t slot) {
-    (void)cnode_id;
-    for (uint32_t i=0;i<MAX_MDB_NODES;i++) if (mdb->nodes[i].valid && mdb->nodes[i].cptr==slot) return i;
+    for (uint32_t i=0;i<MAX_MDB_NODES;i++) {
+        if (!mdb->nodes[i].valid) continue;
+        // cptr encodes cnode_id<<8 | slot, also check explicit fields
+        if (mdb->nodes[i].cnode_id == cnode_id && mdb->nodes[i].slot == slot) return i;
+        if (mdb->nodes[i].cptr == slot && cnode_id == 0) return i; // legacy: process uses cptr=tcb_id
+        if (mdb->nodes[i].cptr == ((cnode_id<<8) | slot)) return i;
+    }
     return NIL;
 }
 

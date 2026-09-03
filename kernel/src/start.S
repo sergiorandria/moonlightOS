@@ -15,9 +15,9 @@ _start:
     # set up kernel stack
     la sp, _stack_top
 
-    # clear BSS + stack + pt_pool (linker provides _bss .. _kernel_end)
+    # clear BSS only (do not wipe .text.flush/.rodata.posttrap at 0x80200000)
     la t0, _bss
-    la t1, _kernel_end
+    la t1, _bss_end
     beq t0, t1, .Lbss_done
 .Lbss_clear:
     sd zero, 0(t0)
