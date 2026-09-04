@@ -111,8 +111,16 @@ void kernel_boot(void) {
     uintptr_t k_start = 0x100000;
 #endif
     size_t k_size = (k_end - k_start + PAGE_SIZE-1) & ~(PAGE_SIZE-1);
+#ifdef __x86_64__
+    // x86_64 _kernel_end includes high rodata at 0x10200000, cap to 2M for PML4
+    if (k_size > 0x400000) k_size = 0x400000;
+    if (k_size < 0x200000) k_size = 0x200000;
+#else
     if (k_size < 0x400000) k_size = 0x400000; // include high .text.flush at 0x80200000
-    if (vspace_map(&g_kernel_vspace, k_base, k_base, k_size, 0x7, 0) != ERR_OK) { uart_puts("[PAGING] kernel map FAIL\n"); while(1) HALT(); }
+#endif
+    uart_puts("k_size="); uart_hex(k_size);
+    kerror_t map_err = vspace_map(&g_kernel_vspace, k_base, k_base, k_size, 0x7, 0);
+    if (map_err != ERR_OK) { uart_puts("[PAGING] kernel map FAIL err="); uart_hex(map_err); while(1) HALT(); }
     uart_puts("[PAGING] kernel "); uart_puts(arch); uart_puts(" mapped\n");
     if (need_uart_map) {
         if (vspace_map(&g_kernel_vspace, uart_base, uart_base, PAGE_SIZE, 0x3, 0) != ERR_OK) { uart_puts("[PAGING] UART map FAIL\n"); while(1) HALT(); }
