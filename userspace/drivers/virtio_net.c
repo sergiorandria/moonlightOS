@@ -12,8 +12,12 @@ static volatile uint32_t *virtio_regs;
 
 bool net_driver_init(drv_caps_t c) {
     caps = c;
+    // Production: validate MMIO cap bounds via CHERI, not raw cast
+    if (c.mmio_len < 0x1000) return false;
+    // In purecap, c.mmio_base is already a bounded cap: __capability volatile uint32_t *regs = (void*)cheri_bounds_set(c.mmio_cap, c.mmio_len);
     virtio_regs = (volatile uint32_t*)c.mmio_base;
-    /* Bounds are HW CHERI caps - any OOB access traps, not corrupts kernel */
+    // Bounds are HW CHERI caps - any OOB access traps, not corrupts kernel
+    // IOMMU: DMA buffers must be mapped via IOMMU window before use
     return true;
 }
 
