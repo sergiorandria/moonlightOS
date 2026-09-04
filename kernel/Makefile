@@ -1,4 +1,4 @@
-ARCH ?= riscv
+ARCH ?= x86_64
 ifeq ($(ARCH),x86_64)
   CC ?= clang
   CFLAGS_CHERI =
