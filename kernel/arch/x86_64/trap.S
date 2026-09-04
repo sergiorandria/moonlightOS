@@ -8,19 +8,27 @@
 .macro TRAP_HANDLER n
 .global trap_\n
 trap_\n:
+    push $0
+    push $\n
+    jmp trap_common
+.endm
+.macro TRAP_HANDLER_ERR n
+.global trap_\n
+trap_\n:
     push $\n
     jmp trap_common
 .endm
 
 TRAP_HANDLER 0
-TRAP_HANDLER 8  /* double fault */
-TRAP_HANDLER 13 /* GP */
-TRAP_HANDLER 14 /* PF */
+TRAP_HANDLER_ERR 8  /* double fault has error */
+TRAP_HANDLER_ERR 13 /* GP has error */
+TRAP_HANDLER_ERR 14 /* PF has error */
 TRAP_HANDLER 32 /* IRQ0 */
 TRAP_HANDLER 33
-/* Syscall int 0x80 */
+/* Syscall int 0x80 - no error code, push dummy */
 .global trap_syscall
 trap_syscall:
+    push $0
     push $0x80
     jmp trap_common
 

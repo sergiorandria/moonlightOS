@@ -18,10 +18,17 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
 #ifdef __riscv
     __asm__ volatile("rdtime %0" : "=r"(entry_us));
 #endif
+#ifdef __x86_64__
+    syscall_t sys = (syscall_t)frame->rax;
+    cptr_t cap_ptr = (cptr_t)frame->rdi;
+    uintptr_t arg1 = frame->rsi;
+    uintptr_t arg2 = frame->rdx;
+#else
     syscall_t sys = (syscall_t)frame->a7;
     cptr_t cap_ptr = (cptr_t)frame->a0;
     uintptr_t arg1 = frame->a1;
     uintptr_t arg2 = frame->a2;
+#endif
 
     /* Bounds check syscall number - proven exhaustive */
     if (sys > SYS_INVOKE) return ERR_INVALID_ARG;
@@ -101,7 +108,11 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
     /* WCET enforcement */
     if (!wcet_check(entry_us)) return ERR_WCET_EXCEEDED;
 
+#ifdef __x86_64__
+    frame->rax = err;
+#else
     frame->a0 = err;
+#endif
     return err;
 }
 
