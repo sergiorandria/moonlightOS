@@ -44,11 +44,22 @@ else
   DISP="-nographic"
 fi
 
+# VGA framebuffer (ramfb) for Hello world on screen - only with graphics
+VGA_ARGS=""
+if [ "$DISP" != "-nographic" ]; then
+  # ramfb provides 800x600x32 at 0x40000000 for MoonlightOS vga driver
+  if $QEMU -device help 2>&1 | grep -q "ramfb"; then
+    VGA_ARGS="-device ramfb"
+  elif $QEMU -device help 2>&1 | grep -q "virtio-gpu"; then
+    VGA_ARGS="-device virtio-gpu-device"
+  fi
+fi
+
 # GDB support
 if [ "$2" = "--gdb" ] || [ "$3" = "--gdb" ]; then
   echo "GDB on :1234 - connect with: riscv64-unknown-elf-gdb $ELF -ex 'target remote :1234'"
-  exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" -S -s -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
+  exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" $VGA_ARGS -S -s -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
 fi
 
-echo "QEMU: $QEMU $CHERI_ARGS $DISP -kernel $ELF -no-reboot -d int,cpu_reset"
-exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" $DISP -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
+echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS -kernel $ELF -no-reboot -d int,cpu_reset"
+exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" $DISP $VGA_ARGS -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset

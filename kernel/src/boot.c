@@ -8,6 +8,7 @@
 #include "../include/revoke.h"
 #include "../include/process.h"
 #include "../include/syscall.h"
+#include "../include/vga.h"
 #include <string.h>
 
 extern sched_state_t g_sched;
@@ -136,6 +137,17 @@ void kernel_boot(void) {
     }
     vspace_switch(&g_kernel_vspace);
     uart_puts("[PAGING] "); uart_puts(arch); uart_puts(" switch OK\n");
+
+    /* 5b. VGA driver - map framebuffer and show Hello world on screen */
+    if (vga_init(&g_kernel_vspace)==ERR_OK) {
+        uart_puts("[VGA] framebuffer mapped, drawing Hello world\n");
+        vga_draw_hello();
+        uart_puts("[VGA] Hello world on screen OK\n");
+        // also keep UART hello for nographic
+        uart_puts("Hello world\n");
+    } else {
+        uart_puts("[VGA] FAIL map framebuffer\n");
+    }
 
     /* 6. Trigger trap test */
 #ifdef __riscv
