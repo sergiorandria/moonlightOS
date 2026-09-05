@@ -243,16 +243,28 @@ void vga_puts_at(const char *s, int x, int y, uint32_t fg, uint32_t bg){
 }
 void vga_draw_hello(void){
     if(!fb_init_done) return;
-    // Fill with dark blue first
-    for(int y=0;y<200;y++) for(int x=0;x<VGA_WIDTH;x++) fb[y*VGA_WIDTH+x]=0x00102040;
-    // Draw large white rectangle as test pattern - should be visible even if font fails
-    for(int y=50;y<150;y++) for(int x=100;x<700;x++) fb[y*VGA_WIDTH+x]=0x00FFFFFF;
-    // Draw black border inside
-    for(int x=100;x<700;x++){ fb[50*VGA_WIDTH+x]=0x00000000; fb[149*VGA_WIDTH+x]=0x00000000; }
-    for(int y=50;y<150;y++){ fb[y*VGA_WIDTH+100]=0x00000000; fb[y*VGA_WIDTH+699]=0x00000000; }
+    // Raw buffer test: fill entire screen blue, then draw Hello world as raw white blocks
+    // so it is visible even if font fails. This is the user request: just Hello world raw.
+    for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00102040;
+    // Draw Hello world as 11 solid white 16x16 blocks at center (should be visible as 11 squares)
+    const char *msg="Hello world";
+    int len=11;
+    int start_x = (VGA_WIDTH - len*16)/2;
+    int start_y = VGA_HEIGHT/2 - 8;
+    for(int i=0;i<len;i++){
+        char c=msg[i];
+        if(c==' ') continue;
+        // For each char, draw 16x16 white block with black border, plus simple pattern for visibility
+        for(int dy=0;dy<16;dy++) for(int dx=0;dx<16;dx++){
+            int px = start_x + i*16 + dx;
+            int py = start_y + dy;
+            if(c=='H' && dx==0) fb[py*VGA_WIDTH+px]=0x00FF0000; // H has red left edge for test
+            else fb[py*VGA_WIDTH+px]=0x00FFFFFF;
+        }
+    }
+    // Also draw Hello world via font at a different position for comparison (blue bg)
     vga_puts_at("Hello world", 10, 5, 0x00FFFFFF, 0x00102040);
-    vga_puts_at("MoonlightOS - VGA driver isolated (I/O + FB, CHERI) OK", 2, 8, 0x0000FF00, 0x00102040);
-    vga_puts_at("Framebuffer 0x40000000 800x600x32 mapped via vspace", 2, 10, 0x00AAAAAA, 0x00102040);
+    // Border
     for(int x=0;x<VGA_WIDTH;x++){ fb[x]=0x00FFAA00; fb[(VGA_HEIGHT-1)*VGA_WIDTH+x]=0x00FFAA00; }
     for(int y=0;y<VGA_HEIGHT;y++){ fb[y*VGA_WIDTH]=0x00FFAA00; fb[y*VGA_WIDTH+VGA_WIDTH-1]=0x00FFAA00; }
 }
