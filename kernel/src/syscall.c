@@ -97,7 +97,7 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
         case SYS_YIELD:
             break;
         case SYS_INVOKE: {
-            invoke_op_t op = (invoke_op_t)arg1;
+            invoke_op_t op = (invoke_op_t)(arg1 & 0xFF);
             err = handle_invoke(cap, op, arg1, arg2, frame->a3);
             break;
         }
