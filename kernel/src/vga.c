@@ -243,10 +243,13 @@ void vga_puts_at(const char *s, int x, int y, uint32_t fg, uint32_t bg){
 }
 void vga_draw_hello(void){
     if(!fb_init_done) return;
-    // Don't do full 800*600 clear here (480k writes is heavy in TCG, causes 3s timeout)
-    // vga_init already cleared a small area and set background; just draw border+text
-    // Clear only top 200 lines where text lives (200*800=160k writes, faster)
+    // Fill with dark blue first
     for(int y=0;y<200;y++) for(int x=0;x<VGA_WIDTH;x++) fb[y*VGA_WIDTH+x]=0x00102040;
+    // Draw large white rectangle as test pattern - should be visible even if font fails
+    for(int y=50;y<150;y++) for(int x=100;x<700;x++) fb[y*VGA_WIDTH+x]=0x00FFFFFF;
+    // Draw black border inside
+    for(int x=100;x<700;x++){ fb[50*VGA_WIDTH+x]=0x00000000; fb[149*VGA_WIDTH+x]=0x00000000; }
+    for(int y=50;y<150;y++){ fb[y*VGA_WIDTH+100]=0x00000000; fb[y*VGA_WIDTH+699]=0x00000000; }
     vga_puts_at("Hello world", 10, 5, 0x00FFFFFF, 0x00102040);
     vga_puts_at("MoonlightOS - VGA driver isolated (I/O + FB, CHERI) OK", 2, 8, 0x0000FF00, 0x00102040);
     vga_puts_at("Framebuffer 0x40000000 800x600x32 mapped via vspace", 2, 10, 0x00AAAAAA, 0x00102040);
