@@ -7,20 +7,19 @@ if [ ! -f "$ELF" ]; then
   exit 1
 fi
 
-# Autodetect QEMU binary - prefer stock QEMU for graphics (has bochs/ramfb)
+# Autodetect QEMU binary
 QEMU=""
-# For graphics (DISPLAY set), prefer stock QEMU which has bochs-display/ramfb
-if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
-  for cand in /usr/bin/qemu-system-riscv64 qemu-system-riscv64 \
-              /tmp/qb2/qemu-system-riscv64 /tmp/qb2/qemu-system-riscv64cheristd \
-              qemu-system-riscv64cheristd; do
-    if [ -x "$cand" ]; then QEMU="$cand"; break; fi
-  done
-else
-  for cand in /tmp/qb2/qemu-system-riscv64cheristd /tmp/qb2/qemu-system-riscv64 \
-              qemu-system-riscv64cheristd qemu-system-riscv64 \
-              /usr/bin/qemu-system-riscv64; do
-    if [ -x "$cand" ]; then QEMU="$cand"; break; fi
+for cand in /usr/bin/qemu-system-riscv64 qemu-system-riscv64 \
+            /tmp/qb2/qemu-system-riscv64cheristd /tmp/qb2/qemu-system-riscv64 \
+            qemu-system-riscv64cheristd; do
+  if [ -x "$cand" ]; then QEMU="$cand"; break; fi
+done
+# If selected QEMU lacks bochs/ramfb but another has it, prefer the one with display
+if ! $QEMU -device help 2>&1 | grep -qE "bochs-display|ramfb"; then
+  for cand in /usr/bin/qemu-system-riscv64 /tmp/qb2/qemu-system-riscv64 qemu-system-riscv64; do
+    if [ -x "$cand" ] && $cand -device help 2>&1 | grep -qE "bochs-display|ramfb"; then
+      QEMU="$cand"; break;
+    fi
   done
 fi
 if [ -z "$QEMU" ]; then
@@ -53,17 +52,16 @@ else
   DISP="-nographic"
 fi
 
-# VGA framebuffer for Hello world on screen - only with graphics
-# Prefer bochs-display (fixed FB at 0x40000000, no fw_cfg needed) over ramfb
+# VGA framebuffer for Hello world on screen
+# Always add bochs-display if available so PCI scan succeeds even in --nographic
+# (needed for diagnostics via serial alone). Prefer bochs over ramfb.
 VGA_ARGS=""
-if [ "$DISP" != "-nographic" ]; then
-  if $QEMU -device help 2>&1 | grep -q "bochs-display"; then
-    VGA_ARGS="-device bochs-display"
-  elif $QEMU -device help 2>&1 | grep -q "ramfb"; then
-    VGA_ARGS="-device ramfb"
-  elif $QEMU -device help 2>&1 | grep -q "virtio-gpu"; then
-    VGA_ARGS="-device virtio-gpu-device"
-  fi
+if $QEMU -device help 2>&1 | grep -q "bochs-display"; then
+  VGA_ARGS="-device bochs-display"
+elif $QEMU -device help 2>&1 | grep -q "ramfb"; then
+  VGA_ARGS="-device ramfb"
+elif $QEMU -device help 2>&1 | grep -q "virtio-gpu"; then
+  VGA_ARGS="-device virtio-gpu-device"
 fi
 
 BIOS_ARGS="-bios none"
