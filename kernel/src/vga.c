@@ -73,17 +73,22 @@ static const uint8_t font8x8[128][8] = {
 };
 
 kerror_t vga_init(vspace_t *vs) {
-    // Map 800*600*4 = 1920000 ~ 469 pages, round to 2M
+    // Map framebuffer at VGA_FB_BASE (800x600x32). For QEMU virt with
+    // -device bochs-display (PCI BAR0) the FB is at 0x40000000 after BIOS init.
+    // For -device ramfb, the FB is also at 0x40000000 after fw_cfg config, but
+    // ramfb requires fw_cfg write which we avoid for simplicity in nographic.
+    // In nographic mode we just write to FB memory (will be visible when GTK is used
+    // with bochs-display). The "guest has not initialized display" message is specific
+    // to ramfb when not configured via fw_cfg, so we prefer bochs-display in run_qemu.sh.
     size_t fb_size = VGA_WIDTH * VGA_HEIGHT * (VGA_BPP/8);
     fb_size = (fb_size + PAGE_SIZE-1) & ~(PAGE_SIZE-1);
-    // Align to 2M to stay within kernel 4M mapping? Use separate mapping at 0x40000000
     kerror_t e = vspace_map(vs, VGA_FB_BASE, VGA_FB_BASE, fb_size, 0x7, 0);
     if (e != ERR_OK) return e;
-    // Also ensure fb pointer is valid after satp switch (identity)
+    // Also map PCI ECAM for bochs-display (best-effort)
+    vspace_map(vs, 0x30000000, 0x30000000, 0x1000000, 0x7, 0);
     fb = (volatile uint32_t*)VGA_FB_BASE;
-    // clear to dark blue
-    for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00102040;
     fb_init_done=1;
+    for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00102040;
     return ERR_OK;
 }
 

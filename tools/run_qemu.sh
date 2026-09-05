@@ -44,11 +44,13 @@ else
   DISP="-nographic"
 fi
 
-# VGA framebuffer (ramfb) for Hello world on screen - only with graphics
+# VGA framebuffer for Hello world on screen - only with graphics
+# Prefer bochs-display (fixed FB at 0x40000000, no fw_cfg needed) over ramfb
 VGA_ARGS=""
 if [ "$DISP" != "-nographic" ]; then
-  # ramfb provides 800x600x32 at 0x40000000 for MoonlightOS vga driver
-  if $QEMU -device help 2>&1 | grep -q "ramfb"; then
+  if $QEMU -device help 2>&1 | grep -q "bochs-display"; then
+    VGA_ARGS="-device bochs-display"
+  elif $QEMU -device help 2>&1 | grep -q "ramfb"; then
     VGA_ARGS="-device ramfb"
   elif $QEMU -device help 2>&1 | grep -q "virtio-gpu"; then
     VGA_ARGS="-device virtio-gpu-device"
