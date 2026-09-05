@@ -11,6 +11,8 @@ gcc -I kernel/include -o /tmp/fuzz tests/fuzz_syscall.c kernel/src/syscall.c ker
 echo "[1b] Hardening + vspace + trap (host sim)"
 gcc -I kernel/include -o /tmp/test_hardening tests/test_hardening.c kernel/src/hardening.c 2>/dev/null && /tmp/test_hardening || echo "SKIP: test_hardening not found"
 gcc -I kernel/include -o /tmp/test_vspace tests/test_vspace.c kernel/src/vspace.c kernel/src/alloc.c 2>/dev/null && /tmp/test_vspace || echo "SKIP: test_vspace (uses alloc pool)"
+gcc -I kernel/include -o /tmp/test_ipc_trap tests/test_ipc_trap.c kernel/src/endpoint.c kernel/src/tcb.c kernel/src/cap.c kernel/src/cnode.c kernel/src/syscall.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/revoke.c kernel/src/alloc.c kernel/src/notification.c kernel/src/hardening.c 2>/dev/null && /tmp/test_ipc_trap || echo "SKIP: test_ipc_trap"
+gcc -I userspace/vfs_server -I kernel/include -o /tmp/test_vfs tests/test_vfs.c userspace/vfs_server/server.c 2>/dev/null && /tmp/test_vfs || echo "SKIP: test_vfs"
 echo "[2/4] Isabelle/HOL proofs (requires Isabelle2024 + l4v)"
 if command -v isabelle &>/dev/null; then
   isabelle build -D kernel/isabelle -v

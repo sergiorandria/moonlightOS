@@ -36,12 +36,17 @@ extern int moonlight_recv(uint32_t ep, ipc_msg_t *msg);
 
 kerror_t vfs_create(const char *name, uint32_t cap, uint32_t size, uint16_t color){
     for(int i=0;i<MAX_FILES;i++) if(!files[i].valid){
+#ifdef __CHERI_PURE_CAPABILITY__
+        __capability void *c = (void*)(uintptr_t)cap;
+        if(!__builtin_cheri_tag_get(c)) return -1;
+#endif
         files[i].cap = cap;
         files[i].size = size;
         files[i].used = 0;
         files[i].color = color;
         strncpy(files[i].name, name, 32);
         files[i].valid = true;
+        // In production: block driver would allocate via IOMMU window and color check
         return 0;
     }
     return -1;
@@ -64,9 +69,17 @@ int vfs_read(int fd, void *buf, size_t len){
     if(fd<0||fd>=MAX_FD||!fds[fd].valid) return -1;
     vfs_file_t *f = &files[fds[fd].file_id];
     if(fds[fd].offset + len > f->used) len = f->used - fds[fd].offset;
-    // In production: copy via CHERI-bounded memcpy from Frame cap
-    // cheri_memcpy_capped(f->cap, buf, len) with tag check
-    (void)buf;
+#ifdef __CHERI_PURE_CAPABILITY__
+    // Production: CHERI-bounded copy, tag check, no kernel access
+    __capability void *src = (void*)(uintptr_t)f->cap;
+    if(!__builtin_cheri_tag_get(src)) return -1;
+    if(__builtin_cheri_length_get(src) < len) return -1;
+    __builtin_memcpy(buf, (void*)src, len);
+#else
+    // Hybrid sim: check bounds
+    if(f->cap < 0x10000000 || f->cap + len > 0x20000000) return -1;
+    memcpy(buf, (void*)(uintptr_t)f->cap, len);
+#endif
     fds[fd].offset += len;
     return len;
 }
