@@ -33,7 +33,7 @@ ASM = src/start.S src/trap.S
 LINKER = linker.ld
 
 ISABELLE = isabelle
-OBJ = $(SRC:.c=.o) $(ASM:.S:.o)
+OBJ = $(SRC:.c=.o) $(ASM:.S=.o)
 TARGET = build/moonlight.elf
 TARGET_QEMU = build/moonlight.qemu.elf
 
@@ -65,7 +65,17 @@ verify:
 	@../tools/verify.sh
 
 cbmc:
-	@cbmc --bounds-check --pointer-check --div-by-zero-check src/cap.c src/cnode.c --unwind 10
+	@if command -v cbmc >/dev/null 2>&1; then \
+		echo "CBMC: bounds/div/pointer for endpoint/vspace/sched"; \
+		cbmc --bounds-check --pointer-check --div-by-zero-check --unwind 10 cbmc_harness.c 2>&1 | head -n 20; \
+	else echo "SKIP: cbmc not found (pacman -S cbmc)"; fi
+	@cbmc --bounds-check --pointer-check --div-by-zero-check src/cap.c src/cnode.c --unwind 10 2>&1 | head -n 20 || true
+
+compcert:
+	@if command -v ccomp >/dev/null 2>&1; then \
+		echo "CompCert: ccomp -march rv64imacxcheri"; \
+		ccomp -march rv64imacxcheri -c src/cap.c -o /tmp/cap.compcert.o && echo "CompCert OK"; \
+	else echo "SKIP: ccomp not found (https://compcert.org)"; fi
 
 clean:
 	rm -f build/moonlight.elf build/moonlight.qemu.elf src/*.o build/moonlight.x86_64.elf

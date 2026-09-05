@@ -26,7 +26,7 @@ static void uart_putc(char c){ while((inb(UART0+5) & 0x20)==0) {} outb(UART0, c)
 #define UART0 0x10000000
 static void uart_putc(char c){ *(volatile char*)UART0 = c; }
 #endif
-static void uart_puts(const char*s){ while(*s) uart_putc(*s++); }
+static void __attribute__((noinline)) uart_puts(const char*s){ volatile const char *vs=s; while(*vs) uart_putc(*vs++); }
 static void uart_hex(uint64_t v){ for(int i=60;i>=0;i-=4){ int n=(v>>i)&0xF; uart_putc(n<10?'0'+n:'a'+n-10);} uart_putc('\n'); }
 #ifdef __riscv
 #define HALT() __asm__ volatile("wfi")
@@ -139,32 +139,20 @@ void kernel_boot(void) {
 
     /* 6. Trigger trap test */
 #ifdef __riscv
-    {
-        char s[64] = "[TRAP] ecall test (SYS_YIELD)...\n";
-        uart_puts(s);
-    }
+    uart_puts("[TRAP] ecall test (SYS_YIELD)...\n");
     __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
-    {
-        char s1[64] = "[trap] ECALL RETURNED - OK\n";
-        char s2[64] = "[trap] HANDLER OK - DONE\n";
-        uart_puts(s1); uart_puts(s2);
-    }
+    uart_puts("[TRAP] ECALL RETURNED - OK\n");
+    uart_puts("[TRAP] HANDLER OK - DONE\n");
 #elif defined(__x86_64__)
     uart_puts("[TRAP] int0x80 test (SYS_YIELD)...\n");
     __asm__ volatile("mov $3, %%rax; int $0x80" ::: "rax", "memory");
-    {
-        char s1[64] = "[TRAP] INT RETURNED - OK\n";
-        char s2[64] = "[trap] HANDLER OK - DONE\n";
-        uart_puts(s1); uart_puts(s2);
-    }
+    uart_puts("[TRAP] INT RETURNED - OK\n");
+    uart_puts("[TRAP] HANDLER OK - DONE\n");
 #endif
 
     /* 7. Flush microarch */
     cheri_flush_microarch();
-    {
-        char s[64] = "[FLUSH] MICROARCH OK\n";
-        uart_puts(s);
-    }
+    uart_puts("[FLUSH] MICROARCH OK\n");
 
     // Init alloc and MDB for process creation
     extern frame_alloc_t g_alloc;
