@@ -73,21 +73,54 @@ static const uint8_t font8x8[128][8] = {
 };
 
 kerror_t vga_init(vspace_t *vs) {
-    // Map framebuffer at VGA_FB_BASE (800x600x32). For QEMU virt with
-    // -device bochs-display (PCI BAR0) the FB is at 0x40000000 after BIOS init.
-    // For -device ramfb, the FB is also at 0x40000000 after fw_cfg config, but
-    // ramfb requires fw_cfg write which we avoid for simplicity in nographic.
-    // In nographic mode we just write to FB memory (will be visible when GTK is used
-    // with bochs-display). The "guest has not initialized display" message is specific
-    // to ramfb when not configured via fw_cfg, so we prefer bochs-display in run_qemu.sh.
+    // Map framebuffer at VGA_FB_BASE (800x600x32). For QEMU virt:
+    // - with -bios none, PCI BARs are not configured by firmware, so we must
+    //   configure bochs-display (0x1234:0x1111) BAR0 to 0x40000000 ourselves via ECAM
+    // - with -device ramfb, FW would configure via fw_cfg, but we prefer bochs
     size_t fb_size = VGA_WIDTH * VGA_HEIGHT * (VGA_BPP/8);
     fb_size = (fb_size + PAGE_SIZE-1) & ~(PAGE_SIZE-1);
     kerror_t e = vspace_map(vs, VGA_FB_BASE, VGA_FB_BASE, fb_size, 0x7, 0);
     if (e != ERR_OK) return e;
-    // Also map PCI ECAM for bochs-display (best-effort)
+    // Map PCI ECAM (0x30000000) and PCI I/O (0x03000000) for bochs VBE ports
     vspace_map(vs, 0x30000000, 0x30000000, 0x1000000, 0x7, 0);
+    vspace_map(vs, 0x03000000, 0x03000000, 0x10000, 0x7, 0);
+    vspace_map(vs, 0x10100000, 0x10100000, PAGE_SIZE, 0x3, 0);
     fb = (volatile uint32_t*)VGA_FB_BASE;
     fb_init_done=1;
+
+    // PCI ECAM init for bochs-display when running with -bios none
+    // ECAM: 0x30000000 + (bus<<20 | dev<<15 | fn<<12 | offset)
+    // Scan bus 0 for vendor 0x1234 device 0x1111 (bochs)
+    for(int dev=0; dev<32; dev++){
+        volatile uint32_t *ecam = (volatile uint32_t*)(0x30000000 | (dev<<15));
+        uint32_t id = ecam[0]; // offset 0x00: vendor | device<<16
+        if(id==0xffffffff) continue;
+        uint16_t ven = id & 0xFFFF;
+        uint16_t devid = (id>>16) & 0xFFFF;
+        if(ven==0x1234 && devid==0x1111){
+            // Found bochs-display, configure BAR0 to VGA_FB_BASE
+            volatile uint32_t *bar0 = (volatile uint32_t*)((uintptr_t)ecam + 0x10);
+            volatile uint32_t *cmd = (volatile uint32_t*)((uintptr_t)ecam + 0x04);
+            // Write BAR0
+            *bar0 = VGA_FB_BASE;
+            // Enable memory + I/O + bus master
+            uint32_t c = *cmd;
+            c |= 0x07; // I/O + Memory + Bus Master
+            *cmd = c;
+            __asm__ volatile("fence; fence.i; sfence.vma" ::: "memory");
+            // Now set Bochs VBE mode 800x600x32 via I/O ports 0x1CE/0x1CF at PCI I/O 0x03000000
+            volatile uint16_t *vbe_idx = (volatile uint16_t*)(0x03000000 + 0x1CE);
+            volatile uint16_t *vbe_val = (volatile uint16_t*)(0x03000000 + 0x1CF);
+            // VBE registers: 0=ID,1=XRES,2=YRES,3=BPP,4=ENABLE
+            *vbe_idx = 0; *vbe_val = 0xB0C4; // VBE ID 0xB0C4
+            *vbe_idx = 1; *vbe_val = VGA_WIDTH;
+            *vbe_idx = 2; *vbe_val = VGA_HEIGHT;
+            *vbe_idx = 3; *vbe_val = 32;
+            *vbe_idx = 4; *vbe_val = 0x41; // ENABLE + LFB
+            __asm__ volatile("fence" ::: "memory");
+            break;
+        }
+    }
     for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00102040;
     return ERR_OK;
 }
