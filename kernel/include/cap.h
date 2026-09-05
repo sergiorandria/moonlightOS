@@ -41,6 +41,9 @@ typedef struct {
         struct { uintptr_t root_pt; uint16_t asid; } vspace;
         struct { uintptr_t paddr; uint8_t perms; uint16_t color; } frame;
         struct { uintptr_t ep_ptr; uint32_t badge; } endpoint;
+        struct { uint64_t badge; uint32_t bound_tcb; } notification;
+        struct { uint32_t irq; uint32_t badge; } irq;
+        struct { uint32_t dev_id; uintptr_t paddr; size_t size; uint32_t perms; } iommu;
         struct { uint64_t budget_us; uint64_t period_us; uint8_t crit; } sched;
         struct { uint32_t id; uint64_t budget_us; } timepart;
     } u;

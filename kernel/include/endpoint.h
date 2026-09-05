@@ -10,7 +10,9 @@ typedef struct endpoint {
     ipc_msg_t pending_msg;
     bool pending;
     uint32_t queue[16];
+    ipc_msg_t queue_msgs[16]; // per-slot messages for FIFO
     uint8_t q_head, q_tail, q_len;
+    uint64_t badge; // for demux
 } endpoint_t;
 
 #define MAX_ENDPOINTS 64
