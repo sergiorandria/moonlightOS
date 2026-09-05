@@ -7,13 +7,22 @@ if [ ! -f "$ELF" ]; then
   exit 1
 fi
 
-# Autodetect QEMU binary
+# Autodetect QEMU binary - prefer stock QEMU for graphics (has bochs/ramfb)
 QEMU=""
-for cand in /tmp/qb2/qemu-system-riscv64cheristd /tmp/qb2/qemu-system-riscv64 \
-            qemu-system-riscv64cheristd qemu-system-riscv64 \
-            /usr/bin/qemu-system-riscv64; do
-  if [ -x "$cand" ]; then QEMU="$cand"; break; fi
-done
+# For graphics (DISPLAY set), prefer stock QEMU which has bochs-display/ramfb
+if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+  for cand in /usr/bin/qemu-system-riscv64 qemu-system-riscv64 \
+              /tmp/qb2/qemu-system-riscv64 /tmp/qb2/qemu-system-riscv64cheristd \
+              qemu-system-riscv64cheristd; do
+    if [ -x "$cand" ]; then QEMU="$cand"; break; fi
+  done
+else
+  for cand in /tmp/qb2/qemu-system-riscv64cheristd /tmp/qb2/qemu-system-riscv64 \
+              qemu-system-riscv64cheristd qemu-system-riscv64 \
+              /usr/bin/qemu-system-riscv64; do
+    if [ -x "$cand" ]; then QEMU="$cand"; break; fi
+  done
+fi
 if [ -z "$QEMU" ]; then
   echo "qemu-system-riscv64 not found. Build CTSRD-CHERI/qemu: https://github.com/CTSRD-CHERI/qemu"
   echo "  mkdir -p /tmp/qb2 && cd /tmp/qb2 && /path/to/qemu/configure --target-list=riscv64-softmmu,riscv64cheristd-softmmu && ninja"
@@ -57,11 +66,13 @@ if [ "$DISP" != "-nographic" ]; then
   fi
 fi
 
+BIOS_ARGS="-bios none"
+
 # GDB support
 if [ "$2" = "--gdb" ] || [ "$3" = "--gdb" ]; then
   echo "GDB on :1234 - connect with: riscv64-unknown-elf-gdb $ELF -ex 'target remote :1234'"
-  exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" $VGA_ARGS -S -s -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
+  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $VGA_ARGS -S -s -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
 fi
 
-echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS -kernel $ELF -no-reboot -d int,cpu_reset"
-exec $QEMU $CHERI_ARGS -m 256M -bios none -kernel "$ELF" $DISP $VGA_ARGS -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
+echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $BIOS_ARGS -kernel $ELF -no-reboot -d int,cpu_reset"
+exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $DISP $VGA_ARGS -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
