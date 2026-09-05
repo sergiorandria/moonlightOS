@@ -145,8 +145,8 @@ void kernel_boot(void) {
     }
     __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
     {
-        char s1[64] = "[TRAP] ECALL RETURNED - OK\n";
-        char s2[64] = "[TRAP] HANDLER OK - DONE\n";
+        char s1[64] = "[trap] ECALL RETURNED - OK\n";
+        char s2[64] = "[trap] HANDLER OK - DONE\n";
         uart_puts(s1); uart_puts(s2);
     }
 #elif defined(__x86_64__)
@@ -154,7 +154,7 @@ void kernel_boot(void) {
     __asm__ volatile("mov $3, %%rax; int $0x80" ::: "rax", "memory");
     {
         char s1[64] = "[TRAP] INT RETURNED - OK\n";
-        char s2[64] = "[TRAP] HANDLER OK - DONE\n";
+        char s2[64] = "[trap] HANDLER OK - DONE\n";
         uart_puts(s1); uart_puts(s2);
     }
 #endif
