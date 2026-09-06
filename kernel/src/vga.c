@@ -141,6 +141,12 @@ static const uint8_t font8x8[128][8] = {
     { 0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+007E (~)
     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}    // U+007F
 };
+// Console state
+#define CONSOLE_COLS (VGA_WIDTH/8)
+#define CONSOLE_ROWS (VGA_HEIGHT/16)
+static int console_cx = 0;
+static int console_cy = 0;
+
 // Bochs VBE dispi spec
 #define VBE_DISPI_INDEX_ID          0x0
 #define VBE_DISPI_INDEX_XRES        0x1
@@ -231,7 +237,65 @@ kerror_t vga_init(vspace_t *vs) {
     uart_puts("[VGA] init done, clearing FB\n");
     for(size_t i=0;i<100;i++) fb[i]=0x00000000;
     uart_puts("[VGA] FB clear done\n");
+    console_cx=0; console_cy=0;
     return ERR_OK;
+}
+
+int vga_is_initialized(void){ return fb_init_done; }
+
+void vga_console_clear(void){
+    if(!fb_init_done) return;
+    // No full clear here - vga_init already cleared small area, console will overwrite
+    console_cx=0; console_cy=0;
+}
+
+static void vga_console_scroll(void){
+    if(!fb_init_done) return;
+    // Simple scroll: clear screen and reset to top (faster than memmove, avoids 480k writes)
+    for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00000000;
+    console_cy=0; console_cx=0;
+}
+
+void vga_console_putc(char c){
+    if(!fb_init_done) return;
+    if(c=='\r'){ console_cx=0; return; }
+    if(c=='\n'){
+        console_cx=0;
+        console_cy++;
+        if(console_cy >= CONSOLE_ROWS){
+            vga_console_scroll();
+            console_cy = CONSOLE_ROWS-1;
+        }
+        return;
+    }
+    // draw char at console position
+    if((unsigned char)c<0x20 || (unsigned char)c>0x7E) c='?';
+    const uint8_t *g = font8x8[(unsigned char)c];
+    for(int row=0;row<8;row++){
+        uint8_t bits = g[row];
+        for(int col=0;col<8;col++){
+            int px = console_cx*8+col;
+            int py = console_cy*16+row*2;
+            if(px>=VGA_WIDTH || py>=VGA_HEIGHT) continue;
+            uint32_t colr = (bits & (1 << col)) ? 0x00FFFFFF : 0x00000000;
+            fb[py*VGA_WIDTH+px]=colr;
+            if(py+1<VGA_HEIGHT) fb[(py+1)*VGA_WIDTH+px]=colr;
+        }
+    }
+    console_cx++;
+    if(console_cx >= CONSOLE_COLS){
+        console_cx=0;
+        console_cy++;
+        if(console_cy >= CONSOLE_ROWS){
+            vga_console_scroll();
+            console_cy = CONSOLE_ROWS-1;
+        }
+    }
+}
+
+void vga_console_puts(const char *s){
+    if(!s) return;
+    while(*s) vga_console_putc(*s++);
 }
 
 void vga_clear(uint32_t color){
@@ -287,8 +351,6 @@ void vga_render_text(const char *text, int x, int y, uint32_t fg, uint32_t bg){
 }
 void vga_draw_hello(void){
     if(!fb_init_done) return;
-    // Clear framebuffer to black
-    for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00000000;
-    // Render "Hello world" in white on black background
-    vga_render_text("Hello world", 10, 5, 0x00FFFFFF, 0x00000000);
+    vga_console_clear();
+    vga_console_puts("Hello world\n");
 }

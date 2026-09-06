@@ -18,3 +18,7 @@ void vga_puts(const char *s);
 void vga_puts_at(const char *s, int x, int y, uint32_t fg, uint32_t bg);
 void vga_draw_hello(void);
 void vga_render_text(const char *text, int x, int y, uint32_t fg, uint32_t bg);
+void vga_console_clear(void);
+void vga_console_putc(char c);
+void vga_console_puts(const char *s);
+int vga_is_initialized(void);

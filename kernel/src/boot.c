@@ -27,8 +27,14 @@ static void uart_putc(char c){ while((inb(UART0+5) & 0x20)==0) {} outb(UART0, c)
 #define UART0 0x10000000
 static void uart_putc(char c){ *(volatile char*)UART0 = c; }
 #endif
-static void __attribute__((noinline)) uart_puts(const char*s){ volatile const char *vs=s; while(*vs) uart_putc(*vs++); }
-static void uart_hex(uint64_t v){ for(int i=60;i>=0;i-=4){ int n=(v>>i)&0xF; uart_putc(n<10?'0'+n:'a'+n-10);} uart_putc('\n'); }
+void vga_console_puts(const char *s);
+int vga_is_initialized(void);
+static void __attribute__((noinline)) uart_puts(const char*s){ volatile const char *vs=s; while(*vs) uart_putc(*vs++); if(vga_is_initialized()) vga_console_puts(s); }
+static void uart_hex(uint64_t v){ 
+    for(int i=60;i>=0;i-=4){ int n=(v>>i)&0xF; uart_putc(n<10?'0'+n:'a'+n-10);} 
+    uart_putc('\n');
+    if(vga_is_initialized()){ char buf[17]; for(int i=0;i<16;i++){ int n=(v>>((15-i)*4))&0xF; buf[i]= n<10?'0'+n:'a'+n-10; } buf[16]='\0'; vga_console_puts(buf); vga_console_puts("\n"); }
+}
 #ifdef __riscv
 #define HALT() __asm__ volatile("wfi")
 #elif defined(__x86_64__)
@@ -140,11 +146,9 @@ void kernel_boot(void) {
 
     /* 5b. VGA driver - map framebuffer and show Hello world on screen */
     if (vga_init(&g_kernel_vspace)==ERR_OK) {
+        vga_draw_hello(); // Hello world first line via console (black bg)
         uart_puts("[VGA] framebuffer mapped, drawing Hello world\n");
-        vga_draw_hello();
         uart_puts("[VGA] Hello world on screen OK\n");
-        // also keep UART hello for nographic
-        uart_puts("Hello world\n");
     } else {
         uart_puts("[VGA] FAIL map framebuffer\n");
     }
