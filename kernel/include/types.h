@@ -2,6 +2,15 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Freestanding rv64 lp64 must have 8-byte uintptr_t. Host glibc
+ * bits/wordsize.h breaks this under --target=riscv64 if -I/usr/include
+ * is pulled (see PLAN 3). Fail loudly instead of silently truncating
+ * vspace.c/syscall.c/elf.c/boot.c address casts. */
+_Static_assert(sizeof(uintptr_t) == 8, "uintptr_t must be 8 bytes for rv64 lp64");
+_Static_assert(sizeof(void *) == 8, "void* must be 8 bytes for rv64 lp64");
+_Static_assert(sizeof(uint64_t) == 8, "uint64_t must be 8 bytes");
+_Static_assert(sizeof(size_t) == 8, "size_t must be 8 bytes for rv64 lp64");
+
 #define PAGE_SIZE 4096
 #define MAX_PARTITIONS 8
 #define MAX_THREADS 256

@@ -2,7 +2,11 @@
 set -e
 # Stock QEMU build (no CHERI LLVM needed) - hybrid sim
 CC="clang --target=riscv64-unknown-elf"
-CFLAGS="-march=rv64imac -mabi=lp64 -O2 -ffreestanding -nostdlib -Wall -mcmodel=medany -mno-relax -fno-builtin -I$(dirname $0)/../kernel/include -I/usr/lib/clang/22/include -I/usr/include -include stdbool.h -fno-stack-protector"
+# Freestanding: never pull host glibc (-I/usr/include) — breaks uintptr_t
+# (bits/wordsize.h falls back to 32-bit under --target=riscv64). Clang
+# resource dir supplies correct freestanding <stdint.h>. Keep in sync with
+# kernel/Makefile non-CHERI CFLAGS_CHERI + CFLAGS_BASE (warning suppressions).
+CFLAGS="-march=rv64imac -mabi=lp64 -O2 -ffreestanding -nostdlib -Wall -mcmodel=medany -mno-relax -fno-builtin -I$(dirname $0)/../kernel/include -I/usr/lib/clang/22/include -include stdbool.h -fno-stack-protector -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-cast-align"
 SRC="cap.c cnode.c tcb.c vspace.c endpoint.c syscall.c cheri.c iommu.c irq.c alloc.c revoke.c process.c hardening.c notification.c flush.c elf.c vga.c"
 # sched int to avoid float
 cat > /tmp/sched_qemu.c <<'C'

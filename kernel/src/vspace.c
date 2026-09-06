@@ -22,14 +22,13 @@ static pte_t *alloc_pt_page(vspace_t *vs) {
         return p;
 #else
         /* Host simulation: paddr from alloc_frame is simulated (e.g. 0x80400000)
-         * and not host-valid. Use host-backed pool while keeping the sealed cap
+         * and not host-valid. Use host-backed malloc while keeping the sealed cap
          * for color isolation accounting. The PTE will contain the host address
          * so traversal stays host-valid; the cap's paddr/color proves partition
          * isolation. */
-        static uint8_t host_pt_pool[64][PAGE_SIZE] __attribute__((aligned(PAGE_SIZE)));
-        static uint32_t host_next = 0;
-        if (host_next >= 64) return NULL;
-        pte_t *p = (pte_t *)host_pt_pool[host_next++];
+        void *ptr = NULL;
+        if (posix_memalign(&ptr, PAGE_SIZE, PAGE_SIZE) != 0) return NULL;
+        pte_t *p = (pte_t *)ptr;
         memset(p, 0, PAGE_SIZE);
         return p;
 #endif

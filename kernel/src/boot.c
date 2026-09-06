@@ -94,11 +94,17 @@ void kernel_boot(void) {
     cnode_init(&g_root_cnode, 0, 8);
     uart_puts("[CNODE] root OK\n");
 
-    /* 5. Paging: identity map kernel + UART (Sv39 or PML4) */
+    /* 5. Paging: identity map kernel + UART (Sv39 or PML4)
+     * PT pages are now per-color via alloc_frame (partition 0, color 0).
+     * Init allocator before vspace so PT allocations are color-isolated. */
+    extern frame_alloc_t g_alloc;
+    extern mdb_tree_t g_mdb;
+    alloc_init(&g_alloc, 0x80400000, 0x400000);
+    mdb_init(&g_mdb);
     extern char _kernel_end;
     extern char _kernel_start;
-    if (vspace_init(&g_kernel_vspace, 1, 0) != ERR_OK) { uart_puts("[PAGING] vspace_init FAIL\n"); while(1) HALT(); }
-    uart_puts("[PAGING] root PT alloc OK\n");
+    if (vspace_init_with_alloc(&g_kernel_vspace, 1, 0, &g_alloc) != ERR_OK) { uart_puts("[PAGING] vspace_init FAIL\n"); while(1) HALT(); }
+    uart_puts("[PAGING] root PT alloc OK (per-color via alloc_frame, color 0)\n");
 #ifdef __riscv
     uintptr_t k_base = 0x80000000;
     uintptr_t uart_base = 0x10000000;
@@ -170,11 +176,7 @@ void kernel_boot(void) {
     cheri_flush_microarch();
     uart_puts("[FLUSH] MICROARCH OK\n");
 
-    // Init alloc and MDB for process creation
-    extern frame_alloc_t g_alloc;
-    extern mdb_tree_t g_mdb;
-    alloc_init(&g_alloc, 0x80400000, 0x400000);
-    mdb_init(&g_mdb);
+    // Alloc/MDB already init before paging for per-color PT alloc; reuse for process creation
     {
         cap_t ut = {0};
         ut.type = CAP_UNTYPED;

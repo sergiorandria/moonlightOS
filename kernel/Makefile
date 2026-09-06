@@ -15,7 +15,11 @@ ifeq ($(CHERI_OK),yes)
 else
   $(warning CHERI toolchain not found, falling back to stock QEMU hybrid sim - use tools/build_qemu.sh for full build)
   CC := clang
-  CFLAGS_CHERI = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -mcmodel=medany -mno-relax -I/usr/include -I/usr/lib/clang/22/include
+  # Freestanding: never pull host glibc headers (-I/usr/include) — it breaks
+  # uintptr_t via bits/wordsize.h (32-bit fallback under --target=riscv64).
+  # Clang resource dir provides correct freestanding <stdint.h>/<stddef.h>/<stdbool.h>.
+  # kernel/include/string.h provides freestanding memset/memcpy (host string.h not needed).
+  CFLAGS_CHERI = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -mcmodel=medany -mno-relax -I include -I/usr/lib/clang/22/include
   LDFLAGS = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib
   LD = ld.lld
 endif
