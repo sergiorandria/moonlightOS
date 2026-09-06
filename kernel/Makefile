@@ -78,7 +78,7 @@ compcert:
 	else echo "SKIP: ccomp not found (https://compcert.org)"; fi
 
 clean:
-	rm -f build/moonlight.elf build/moonlight.qemu.elf src/*.o build/moonlight.x86_64.elf
+	rm -f build/moonlight.elf build/moonlight.qemu.elf src/*.o
 	@rmdir --ignore-fail-on-non-empty build 2>/dev/null || true
 
 .PHONY: all qemu isabelle verify cbmc clean

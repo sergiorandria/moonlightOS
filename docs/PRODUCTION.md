@@ -22,8 +22,8 @@
 - [x] `tools/verify.sh` 4 stages: host unit (cap/sched/revoke/host_emul/bench/fuzz), hardening/vspace, Isabelle, CHERI/stock QEMU + 3s smoke
 - [x] `kernel/isabelle` 7 theories typecheck (Isabelle2025)
 - [x] QEMU window `DISPLAY=:0` GTK shows `[BOOT] ALL OK - parking` on both `riscv64` and `riscv64cheristd`
-- [ ] CBMC `kernel/Makefile:cbmc` --bounds-check (manual)
-- [ ] CompCert `ccomp -march rv64imacxcheri` (requires license)
+- [ ] CBMC `kernel/Makefile:cbmc` --bounds-check (manual - not in CI, run locally `pacman -S cbmc && make -C kernel cbmc`; target exists and was spot-checked, no CI runner)
+- [ ] CompCert `ccomp -march rv64imacxcheri` - not pursued (no license; CompCert requires commercial license for CHERI-RISC-V, verification via `tools/verify.sh` + `isabelle` instead)
 
 ## Docs
 
@@ -32,7 +32,7 @@
 - [x] `docs/SYSCALLS.md` 6 syscalls + 12 invoke ops, WCET, temporal isolation
 - [x] `docs/CAPABILITIES.md` sealing, otype, attenuation, coloring, revocation
 - [x] `docs/ARCHITECTURE.md`/`THREAT_MODEL.md`/`REPRODUCIBLE.md` existing
-- [ ] `docs/SECURITY.md` (planned)
+- [x] `docs/SECURITY.md` disclosure process, supported CHERI HW, cross-ref `THREAT_MODEL.md`
 
 ## Known Gaps (post-1.0)
 
@@ -50,4 +50,3 @@
 - `tcb.c` `tcb_resume` now wakes `BLOCKED_*`, `tcb_wake_from_ipc` added
 - `endpoint.c` FIFO `queue_msgs[16]` per-slot + wake `tcb_wake_from_ipc`, `sched.c` skips blocked TCBs
 - `process.c` `endpoint_cleanup_for_tcb` + `cspace` zero + `mdb` fix, `revoke.c` `mdb_lookup` respects `cnode_id`
-- `arch/x86_64/start.S` 5-step long-mode (was triple-fault), `linker.x86_64.ld` PVH `Xen` note, `Makefile` arch-aware `TARGET`
