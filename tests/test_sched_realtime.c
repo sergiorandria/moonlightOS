@@ -1,6 +1,9 @@
 #include "../kernel/include/sched.h"
+#include "../kernel/include/tcb.h"
 #include <assert.h>
 #include <stdio.h>
+
+extern tcb_table_t g_tcbs;
 
 int main(void) {
     printf("=== Realtime partition test ===\n");
@@ -13,6 +16,9 @@ int main(void) {
     sched_context_bind(&s, 0, 1, 1, 500, 2000, 5); /* RT task in partition 1 */
     sched_context_bind(&s, 1, 2, 1, 500, 2000, 10);
     assert(sched_is_schedulable(&s));
+    /* TCBs must be runnable for sched_pick_next (production check) */
+    g_tcbs.threads[1].state = TCB_RUNNABLE;
+    g_tcbs.threads[2].state = TCB_RUNNABLE;
 
     /* Simulate tick across major frame: verify partition switches and budget replenish */
     uint64_t t=0;

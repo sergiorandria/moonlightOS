@@ -5,7 +5,7 @@ kerror_t irq_bind(irq_state_t *is, cap_t *irq_cap, uint32_t tcb_id, uint32_t ntf
     if (!is || !irq_cap) return ERR_INVALID_ARG;
     if (irq_cap->type != CAP_IRQ) return ERR_INVALID_CAP;
     if (!irq_cap->is_valid) return ERR_INVALID_CAP;
-    uint32_t irq = (uint32_t)irq_cap->u.frame.paddr; /* irq num stashed in paddr field for simplicity */
+    uint32_t irq = irq_cap->u.irq.irq;
     if (irq >= MAX_IRQS) return ERR_INVALID_ARG;
     if (is->irqs[irq].bound) return ERR_REVOKE_NEEDED;
     is->irqs[irq].valid = true;

@@ -34,4 +34,5 @@ kerror_t tcb_configure(tcb_t *tcb, cnode_t *cspace, uintptr_t vspace_root, asid_
 kerror_t tcb_set_regs(tcb_t *tcb, uintptr_t pc, uintptr_t sp, CHERI_CAP pcc, CHERI_CAP csp);
 void tcb_suspend(tcb_t *tcb);
 void tcb_resume(tcb_t *tcb);
+kerror_t tcb_wake_from_ipc(tcb_t *tcb, uint32_t sender_id);
 bool tcb_is_runnable(tcb_t *tcb);

@@ -1,4 +1,4 @@
-session Moonlight = HOL +
+session Moonlight = "HOL-Library" +
   options [document = pdf, document_output = "output"]
   theories
     RISCV_CHERI
@@ -8,5 +8,3 @@ session Moonlight = HOL +
     Moonlight_E
     Sched_Verification
     Refine
-  document_files (with_ext)
-    document/root.tex

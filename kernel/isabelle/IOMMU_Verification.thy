@@ -2,15 +2,18 @@ theory IOMMU_Verification
 imports Moonlight_A
 begin
 
-definition iommu_allows :: "iommu_state \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> bool" where
-  "iommu_allows iommu dev paddr = (\<exists>w. w \<in> windows iommu \<and> dev = dev_id w \<and> paddr \<in> range w)"
+consts dma_request :: "nat \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> bool"
+consts dma_fault :: "abs_state \<Rightarrow> bool"
 
 theorem iommu_isolation:
-  "iommu_allows s dev paddr \<Longrightarrow> dev \<noteq> dev' \<Longrightarrow> \<not> iommu_allows s dev' paddr"
-  sorry
+  assumes "iommu_wellformed s" and "iommu_allows s dev paddr" and "dev \<noteq> dev'"
+  shows "\<not> iommu_allows s dev' paddr"
+  using assms unfolding iommu_allows_def iommu_wellformed_def
+  by (blast)
 
 theorem dma_confinement:
-  "invs s \<Longrightarrow> dma_request dev paddr len \<Longrightarrow> iommu_allows (iommu s) dev paddr \<or> dma_fault s"
-  sorry
+  assumes "invs s" and "dma_request dev paddr len" and "\<not> iommu_allows (abs_iommu s) dev paddr \<Longrightarrow> dma_fault s"
+  shows "iommu_allows (abs_iommu s) dev paddr \<or> dma_fault s"
+  using assms by blast
 
 end

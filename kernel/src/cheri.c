@@ -33,4 +33,18 @@ void *cheri_memcpy_capped(CHERI_CAP cap, const void *src, size_t len) {
     __builtin_memcpy(d, src, len);
     return d;
 }
+void cheri_init_ddc(void) {
+    /* Validate PCC/DDC tags on purecap HW; hybrid traps if no CHERI */
+    __capability void *pcc;
+    __capability void *ddc;
+    __asm__ volatile ("cgetpcc %0" : "=C"(pcc));
+    __asm__ volatile ("cgetddc %0" : "=C"(ddc));
+    if (!cheri_tag_get(pcc) || !cheri_tag_get(ddc)) {
+        while(1) __asm__ volatile("wfi");
+    }
+    /* Restrict DDC to kernel range 0x80000000-0x90000000 for demo */
+    ddc = cheri_bounds_set(ddc, 0x10000000);
+    __asm__ volatile ("csetddc %0" :: "C"(ddc));
+}
+bool cheri_is_purecap(void) { return true; }
 #endif
