@@ -229,7 +229,7 @@ kerror_t vga_init(vspace_t *vs) {
     uart_puts("[VGA] BAR0="); uart_hex(found_bar0); uart_puts("[VGA] BAR2="); uart_hex(found_bar2);
     uart_puts("[VGA] ECAM "); uart_hex(found_ecam); 
     uart_puts("[VGA] init done, clearing FB\n");
-    for(size_t i=0;i<100;i++) fb[i]=0x00102040;
+    for(size_t i=0;i<100;i++) fb[i]=0x00000000;
     uart_puts("[VGA] FB clear done\n");
     return ERR_OK;
 }
@@ -248,7 +248,7 @@ static void draw_char(int x, int y, char c, uint32_t fg, uint32_t bg){
             int px = x*8+col;
             int py = y*16+row*2;
             if(px>=VGA_WIDTH || py>=VGA_HEIGHT) continue;
-            uint32_t colr = (bits & (0x80>>col)) ? fg : bg;
+            uint32_t colr = (bits & (1 << col)) ? fg : bg;
             fb[py*VGA_WIDTH+px]=colr;
             if(py+1<VGA_HEIGHT) fb[(py+1)*VGA_WIDTH+px]=colr;
         }
@@ -260,7 +260,7 @@ void vga_puts(const char *s){
     int x=0,y=0;
     while(*s){
         if(*s=='\n'){ x=0; y++; s++; continue; }
-        draw_char(x,y,*s,0x00FFFFFF,0x00102040);
+        draw_char(x,y,*s,0x00FFFFFF,0x00000000);
         x++; if(x>=VGA_WIDTH/8){ x=0; y++; }
         s++;
     }
@@ -287,22 +287,8 @@ void vga_render_text(const char *text, int x, int y, uint32_t fg, uint32_t bg){
 }
 void vga_draw_hello(void){
     if(!fb_init_done) return;
-    // Raw buffer Hello world - as requested, just Hello world visible
-    for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00102040;
-    // Use vga_render_text for Hello world - now with complete font it should be visible
-    vga_render_text("Hello world", 10, 5, 0x00FFFFFF, 0x00102040);
-    // Also draw raw white blocks as fallback visible even if font fails
-    const char *msg="Hello world";
-    int start_x = (VGA_WIDTH - 11*16)/2;
-    int start_y = VGA_HEIGHT/2;
-    for(int i=0;msg[i];i++){
-        if(msg[i]==' ') continue;
-        for(int dy=0;dy<16;dy++) for(int dx=0;dx<8;dx++){
-            int px = start_x + i*8 + dx;
-            int py = start_y + dy;
-            fb[py*VGA_WIDTH+px]=0x00FFFFFF;
-        }
-    }
-    for(int x=0;x<VGA_WIDTH;x++){ fb[x]=0x00FFAA00; fb[(VGA_HEIGHT-1)*VGA_WIDTH+x]=0x00FFAA00; }
-    for(int y=0;y<VGA_HEIGHT;y++){ fb[y*VGA_WIDTH]=0x00FFAA00; fb[y*VGA_WIDTH+VGA_WIDTH-1]=0x00FFAA00; }
+    // Clear framebuffer to black
+    for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00000000;
+    // Render "Hello world" in white on black background
+    vga_render_text("Hello world", 10, 5, 0x00FFFFFF, 0x00000000);
 }
