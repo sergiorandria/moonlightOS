@@ -34,7 +34,7 @@ definition cheri_seal :: "cheri_cap \<Rightarrow> otype \<Rightarrow> cheri_cap"
 lemma cheri_mono_perms: "cheri_perms (cheri_perms_and c p) = p"
   by (simp add: cheri_perms_and_def)
 
-lemma cheri_mono_bounds: "cheri_base (cheri_bounds_set c n) \<ge> cheri_base c \<or> \<not> cheri_tag c"
-  sorry
+lemma cheri_mono_bounds: "cheri_is_valid c \<Longrightarrow> cheri_base (cheri_bounds_set c n) \<ge> cheri_base c"
+  by (simp add: cheri_is_valid_def cheri_bounds_set_def)
 
 end
