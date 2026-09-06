@@ -48,6 +48,7 @@ void print_flush(void) {
   uart_putc('e');
   uart_putc('\n');
 }
+
 void print_boot_spawning(void) {
   uart_putc('[');
   uart_putc('B');

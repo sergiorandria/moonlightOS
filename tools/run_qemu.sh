@@ -39,17 +39,24 @@ else
   fi
 fi
 
-# Display handling: use window if DISPLAY set, else nographic
-if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
-  if [ "$2" = "--nographic" ]; then
-    DISP="-nographic"
-  elif $QEMU -display help 2>&1 | grep -q "gtk"; then
+# Display handling: use a window if DISPLAY/WAYLAND_DISPLAY is set,
+# otherwise fall back to VNC so you can still SEE the framebuffer over
+# SSH/headless sessions instead of silently going fully -nographic.
+if [ "$2" = "--nographic" ]; then
+  DISP="-nographic"
+elif [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+  if $QEMU -display help 2>&1 | grep -q "gtk"; then
     DISP="-display gtk"
+  elif $QEMU -display help 2>&1 | grep -q "sdl"; then
+    DISP="-display sdl"
   else
-    DISP="-nographic"
+    echo "No gtk/sdl backend in this QEMU build - falling back to VNC on :0 (connect with a VNC viewer to 127.0.0.1:5900)"
+    DISP="-display vnc=127.0.0.1:0"
   fi
 else
-  DISP="-nographic"
+  echo "No DISPLAY/WAYLAND_DISPLAY set - starting VNC on :0 instead of going fully headless."
+  echo "Connect with a VNC viewer to 127.0.0.1:5900 to see the framebuffer."
+  DISP="-display vnc=127.0.0.1:0"
 fi
 
 # VGA framebuffer for Hello world on screen
