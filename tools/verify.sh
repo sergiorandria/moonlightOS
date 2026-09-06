@@ -16,8 +16,11 @@ echo "[1b] Hardening + vspace + trap (host sim)"
 gcc -I kernel/include -o /tmp/test_hardening tests/test_hardening.c kernel/src/hardening.c 2>/dev/null && /tmp/test_hardening || echo "SKIP: test_hardening not found"
 gcc -I kernel/include -o /tmp/test_vspace tests/test_vspace.c tests/stub_globals.c kernel/src/vspace.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c 2>&1 && /tmp/test_vspace || echo "FAIL: test_vspace"
 gcc -I kernel/include -o /tmp/test_virtio_net tests/test_virtio_net.c tests/stub_globals.c kernel/src/iommu.c kernel/src/cheri.c kernel/src/alloc.c 2>&1 && /tmp/test_virtio_net || echo "FAIL: test_virtio_net"
-gcc -I kernel/include -o /tmp/test_ipc_trap tests/test_ipc_trap.c tests/stub_globals.c kernel/src/endpoint.c kernel/src/tcb.c kernel/src/cap.c kernel/src/cnode.c kernel/src/syscall.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/revoke.c kernel/src/alloc.c kernel/src/notification.c kernel/src/hardening.c 2>/dev/null && /tmp/test_ipc_trap || echo "SKIP: test_ipc_trap"
-gcc -I userspace/vfs_server -I kernel/include -o /tmp/test_vfs tests/test_vfs.c userspace/vfs_server/server.c 2>/dev/null && /tmp/test_vfs || echo "SKIP: test_vfs"
+gcc -I kernel/include -o /tmp/test_ipc_trap tests/test_ipc_trap.c tests/stub_globals.c kernel/src/endpoint.c kernel/src/tcb.c kernel/src/cap.c kernel/src/cnode.c kernel/src/syscall.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/revoke.c kernel/src/alloc.c kernel/src/notification.c kernel/src/hardening.c 2>&1 && /tmp/test_ipc_trap || echo "FAIL: test_ipc_trap"
+gcc -I kernel/include -o /tmp/test_invoke_ops tests/test_invoke_ops.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/vspace.c kernel/src/sched.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/cheri.c kernel/src/syscall.c kernel/src/endpoint.c kernel/src/notification.c 2>&1 && /tmp/test_invoke_ops || echo "FAIL: test_invoke_ops"
+gcc -I kernel/include -o /tmp/test_mem_server tests/test_mem_server.c userspace/mem_server/server.c kernel/src/cap.c kernel/src/cnode.c kernel/src/alloc.c 2>&1 && /tmp/test_mem_server || echo "FAIL: test_mem_server"
+gcc -I kernel/include -o /tmp/test_sched_server tests/test_sched_server.c userspace/sched_server/server.c 2>&1 && /tmp/test_sched_server || echo "FAIL: test_sched_server"
+if gcc -I kernel/include -o /tmp/test_vfs tests/test_vfs.c userspace/vfs_server/server.c 2>&1; then /tmp/test_vfs || echo "FAIL: test_vfs run failed"; else echo "FAIL: test_vfs compile failed"; fi
 echo "[2/4] Isabelle/HOL proofs (requires Isabelle2024 + l4v)"
 if command -v isabelle &>/dev/null; then
   isabelle build -D kernel/isabelle -v

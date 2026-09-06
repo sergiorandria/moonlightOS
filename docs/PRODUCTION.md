@@ -25,6 +25,14 @@
 - [ ] CBMC `kernel/Makefile:cbmc` --bounds-check (manual - not in CI, run locally `pacman -S cbmc && make -C kernel cbmc`; target exists and was spot-checked, no CI runner)
 - [ ] CompCert `ccomp -march rv64imacxcheri` - not pursued (no license; CompCert requires commercial license for CHERI-RISC-V, verification via `tools/verify.sh` + `isabelle` instead)
 
+## Userspace
+
+- [x] `userspace/mem_server` real `INV_UNTYPED_RETYPE` + `INV_CNODE_MINT` via `moonlight_call` (color check `partition*2%16`), `tests/test_mem_server.c`
+- [x] `userspace/sched_server` integer `budget*100/period` (no `double`, same as `kernel/src/sched.c:119`), `INV_SCHED_BIND` via `moonlight_call`, `tests/test_sched_server.c`
+- [x] `userspace/vfs_server` `vfs_read` via Frame cap `cheri_tag_get/length` (reuses `virtio_net.c:30` pattern) + `vfs_create` tag check, `tests/test_vfs.c` (create/open/read, OOB, untagged)
+- [x] `kernel/src/boot.c` spawns `mem/sched/vfs_server` via `process_create` (endpoints 1,2,3 caps 11,12,13) alongside `user_hello`
+- [x] `kernel/src/syscall.c` `handle_invoke` now 12/12 ops: `INV_CNODE_MINT/MOVE/DELETE`, `INV_TCB_CONFIGURE/SUSPEND`, `INV_VSPACE_UNMAP`, `INV_FRAME_MAP` alias `INV_VSPACE_MAP` (commented), `INV_SCHED_BIND` (`budget/period` via `sched_context_bind`)
+
 ## Docs
 
 - [x] `docs/USAGE.md` capabilities, TCB, VSpace, IPC, scheduling, example

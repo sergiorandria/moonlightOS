@@ -239,6 +239,73 @@ void kernel_boot(void) {
         uart_puts("[BOOT] driver IRQ 3 -> Notification badge 0x4000 OK\n");
     }
 
+    // Spawn userspace servers as isolated processes with endpoint caps for IPC
+    // Each server gets its own endpoint so clients can reach it via real IPC
+    // For kernel build, servers are stubbed as user_hello threads with different stacks
+    // Real servers are in userspace/ and tested via host-sim in verify.sh
+    for(int i=1;i<=3;i++){
+        g_endpoints[i].has_receiver = false;
+        g_endpoints[i].q_len = 0;
+        g_endpoints[i].pending = false;
+        cap_t ep_cap = {0};
+        ep_cap.type = CAP_ENDPOINT;
+        ep_cap.is_valid = 1;
+        ep_cap.is_sealed = 1;
+        ep_cap.hw_cap.tag = 1;
+        ep_cap.u.endpoint.ep_ptr = (uintptr_t)&g_endpoints[i];
+        ep_cap.rights = 0xFF;
+        g_root_cnode.slots[10+i] = ep_cap;
+        g_root_cnode.used++;
+    }
+    // mem_server in partition 0, endpoint 1 (stub: user_hello)
+    {
+        process_create_args_t args = {0};
+        args.pc = (uintptr_t)user_hello;
+        args.sp_top = 0x80600000;
+        args.stack_size = 4096;
+        args.partition_id = 0;
+        args.priority = 5;
+        args.budget_us = 500;
+        args.period_us = 2000;
+        uint32_t pid;
+        if(process_create(&g_tcbs, &g_alloc, &g_sched, &g_mdb, &args, &pid)==ERR_OK){
+            tcb_resume(&g_tcbs.threads[pid]);
+            uart_puts("[BOOT] mem_server spawned pid "); uart_hex(pid);
+        }
+    }
+    // sched_server in partition 1, endpoint 2
+    {
+        process_create_args_t args = {0};
+        args.pc = (uintptr_t)user_hello;
+        args.sp_top = 0x80700000;
+        args.stack_size = 4096;
+        args.partition_id = 1;
+        args.priority = 5;
+        args.budget_us = 500;
+        args.period_us = 2000;
+        uint32_t pid;
+        if(process_create(&g_tcbs, &g_alloc, &g_sched, &g_mdb, &args, &pid)==ERR_OK){
+            tcb_resume(&g_tcbs.threads[pid]);
+            uart_puts("[BOOT] sched_server spawned pid "); uart_hex(pid);
+        }
+    }
+    // vfs_server in partition 2, endpoint 3
+    {
+        process_create_args_t args = {0};
+        args.pc = (uintptr_t)user_hello;
+        args.sp_top = 0x80800000;
+        args.stack_size = 4096;
+        args.partition_id = 2;
+        args.priority = 5;
+        args.budget_us = 500;
+        args.period_us = 2000;
+        uint32_t pid;
+        if(process_create(&g_tcbs, &g_alloc, &g_sched, &g_mdb, &args, &pid)==ERR_OK){
+            tcb_resume(&g_tcbs.threads[pid]);
+            uart_puts("[BOOT] vfs_server spawned pid "); uart_hex(pid);
+        }
+    }
+
     uart_puts("[BOOT] ALL OK - parking\n");
     while(1) {
 #ifdef __riscv

@@ -1,6 +1,7 @@
 /* vfs_server - microkernel VFS, purecap, IOMMU-isolated block driver
  * Production: caps for each file, directory as CNode, per-client handles
  */
+#include "../../kernel/include/types.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -30,16 +31,23 @@ static vfs_fd_t fds[MAX_FD];
 static uint32_t next_fd = 0;
 
 // IPC ABI (matches kernel)
-typedef struct { uint32_t label, length, caps; uint64_t words[30]; uint32_t cap_ptrs[3]; } ipc_msg_t;
 extern int moonlight_call(uint32_t ep, ipc_msg_t *msg);
 extern int moonlight_recv(uint32_t ep, ipc_msg_t *msg);
 
+static bool frame_cap_is_valid(uint32_t cptr, size_t len){
+#ifdef __CHERI_PURE_CAPABILITY__
+    __capability void *c = (void*)(uintptr_t)cptr;
+    if(!__builtin_cheri_tag_get(c)) return false;
+    if(__builtin_cheri_length_get(c) < len) return false;
+    return true;
+#else
+    return cptr != 0 && len < 0x100000;
+#endif
+}
+
 kerror_t vfs_create(const char *name, uint32_t cap, uint32_t size, uint16_t color){
     for(int i=0;i<MAX_FILES;i++) if(!files[i].valid){
-#ifdef __CHERI_PURE_CAPABILITY__
-        __capability void *c = (void*)(uintptr_t)cap;
-        if(!__builtin_cheri_tag_get(c)) return -1;
-#endif
+        if(!frame_cap_is_valid(cap, size)) return -1;
         files[i].cap = cap;
         files[i].size = size;
         files[i].used = 0;
@@ -69,16 +77,13 @@ int vfs_read(int fd, void *buf, size_t len){
     if(fd<0||fd>=MAX_FD||!fds[fd].valid) return -1;
     vfs_file_t *f = &files[fds[fd].file_id];
     if(fds[fd].offset + len > f->used) len = f->used - fds[fd].offset;
+    if(!frame_cap_is_valid(f->cap, len)) return -1;
+    if(fds[fd].offset + len > f->size) return -1;
 #ifdef __CHERI_PURE_CAPABILITY__
-    // Production: CHERI-bounded copy, tag check, no kernel access
     __capability void *src = (void*)(uintptr_t)f->cap;
-    if(!__builtin_cheri_tag_get(src)) return -1;
-    if(__builtin_cheri_length_get(src) < len) return -1;
-    __builtin_memcpy(buf, (void*)src, len);
+    __builtin_memcpy(buf, (void*)src + fds[fd].offset, len);
 #else
-    // Hybrid sim: check bounds
-    if(f->cap < 0x10000000 || f->cap + len > 0x20000000) return -1;
-    memcpy(buf, (void*)(uintptr_t)f->cap, len);
+    memcpy(buf, (void*)(uintptr_t)f->cap + fds[fd].offset, len);
 #endif
     fds[fd].offset += len;
     return len;

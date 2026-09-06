@@ -170,6 +170,92 @@ kerror_t handle_invoke(cap_t *cap, invoke_op_t op, uintptr_t arg1, uintptr_t arg
             // Map frame's paddr at vaddr with frame's perms
             return vspace_map(vs, (uintptr_t)arg2, frame_cap->u.frame.paddr, PAGE_SIZE, frame_cap->u.frame.perms, frame_cap->u.frame.color);
         }
+        case INV_CNODE_MINT: {
+            if (cap->type != CAP_CNODE) return ERR_INVALID_CAP;
+            // arg2 = src slot (low 8), badge in high bits of arg2, arg3 = dst slot
+            cptr_t src_slot = (cptr_t)(arg2 & 0xFF);
+            cptr_t dst_slot = (cptr_t)(arg3 & 0xFF);
+            uint32_t badge = (uint32_t)((arg2 >> 8) & 0xFF);
+            extern cnode_t g_root_cnode;
+            return cnode_mint(&g_root_cnode, dst_slot, &g_root_cnode, src_slot, cap->rights, badge);
+        }
+        case INV_CNODE_MOVE: {
+            if (cap->type != CAP_CNODE) return ERR_INVALID_CAP;
+            cptr_t src_slot = (cptr_t)(arg2 & 0xFF);
+            cptr_t dst_slot = (cptr_t)(arg3 & 0xFF);
+            extern cnode_t g_root_cnode;
+            return cnode_move(&g_root_cnode, dst_slot, &g_root_cnode, src_slot);
+        }
+        case INV_CNODE_DELETE: {
+            if (cap->type != CAP_CNODE) return ERR_INVALID_CAP;
+            cptr_t slot = (cptr_t)(arg2 & 0xFF);
+            extern cnode_t g_root_cnode;
+            return cnode_delete(&g_root_cnode, slot);
+        }
+        case INV_TCB_CONFIGURE: {
+            if (cap->type != CAP_TCB) return ERR_INVALID_CAP;
+            // arg1 high bits encodes cspace slot and vspace slot, arg2 = asid/partition, arg3 = vspace_root or partition
+            // Demo encoding: arg1 high dest unused, arg2 = cspace slot, arg3 = vspace_root slot (low 8) + partition in high
+            // For test, we use g_root_cnode slots
+            extern cnode_t g_root_cnode;
+            cptr_t cspace_slot = (cptr_t)(arg1 >> 16 & 0xFF);
+            cptr_t vspace_slot = (cptr_t)(arg2 & 0xFF);
+            cap_t *cspace_cap = cnode_lookup(&g_root_cnode, cspace_slot);
+            cap_t *vspace_cap = cnode_lookup(&g_root_cnode, vspace_slot);
+            if (!cspace_cap || cspace_cap->type != CAP_CNODE) return ERR_INVALID_CAP;
+            if (!vspace_cap || vspace_cap->type != CAP_VSPACE) return ERR_INVALID_CAP;
+            tcb_t *t = (tcb_t*)(uintptr_t)cap->u.tcb.tcb_ptr;
+            uintptr_t vspace_root = vspace_cap->u.vspace.root_pt;
+            asid_t asid = (asid_t)(arg3 & 0xFF);
+            uint32_t partition = (uint32_t)((arg3 >> 8) & 0xFF);
+            cnode_t *cspace = (cnode_t*)(uintptr_t)cspace_cap->u.cnode.guard; // actually cnode cap stores guard/radix, but for demo use g_root_cnode
+            // Use g_root_cnode as cspace for simplicity, as cnode cap doesn't store pointer
+            (void)cspace;
+            return tcb_configure(t, &g_root_cnode, vspace_root, asid, partition);
+        }
+        case INV_TCB_SUSPEND: {
+            if (cap->type != CAP_TCB) return ERR_INVALID_CAP;
+            tcb_t *t = (tcb_t*)(uintptr_t)cap->u.tcb.tcb_ptr;
+            tcb_suspend(t);
+            return ERR_OK;
+        }
+        case INV_VSPACE_UNMAP: {
+            if (cap->type != CAP_VSPACE) return ERR_INVALID_CAP;
+            // arg2 = vaddr, arg3 = size (demo, must be PAGE_SIZE aligned)
+            vspace_t *vs = (vspace_t*)(uintptr_t)cap->u.vspace.root_pt;
+            return vspace_unmap(vs, (uintptr_t)arg2, (size_t)arg3);
+        }
+        case INV_FRAME_MAP:
+            // INV_FRAME_MAP is functionally identical to INV_VSPACE_MAP in this
+            // implementation - both map a Frame cap into a VSpace at vaddr.
+            // Docs list both opcodes for historical API compatibility; we alias
+            // FRAME_MAP to VSPACE_MAP to avoid leaving the opcode unimplemented
+            // and falling through to ERR_INVALID_ARG. The distinction (Frame vs
+            // VSpace cap type) is not enforced here beyond the VSpace cap check.
+            if (cap->type != CAP_VSPACE) return ERR_INVALID_CAP;
+            {
+                extern cnode_t g_root_cnode;
+                cptr_t frame_slot = (cptr_t)(arg3 & 0xFF);
+                cap_t *frame_cap = cnode_lookup(&g_root_cnode, frame_slot);
+                if (!frame_cap || frame_cap->type != CAP_FRAME) return ERR_INVALID_CAP;
+                vspace_t *vs = (vspace_t*)(uintptr_t)cap->u.vspace.root_pt;
+                return vspace_map(vs, (uintptr_t)arg2, frame_cap->u.frame.paddr, PAGE_SIZE, frame_cap->u.frame.perms, frame_cap->u.frame.color);
+            }
+        case INV_SCHED_BIND: {
+            // Demo encoding for sched_context_bind(s, sc_id, tcb_id, part_id, budget, period, prio)
+            // arg1: bits 8-15 sc_id, 16-23 tcb_id, 24-31 part_id, 32-39 prio
+            // arg2 = budget_us (64-bit), arg3 = period_us (64-bit)
+            // Cap check: any valid cap with GRANT or just valid (policy)
+            if (!cap_is_valid(cap)) return ERR_INVALID_CAP;
+            extern sched_state_t g_sched;
+            uint32_t sc_id = (uint32_t)((arg1 >> 8) & 0xFF);
+            uint32_t tcb_id = (uint32_t)((arg1 >> 16) & 0xFF);
+            uint32_t part_id = (uint32_t)((arg1 >> 24) & 0xFF);
+            uint8_t prio = (uint8_t)((arg1 >> 32) & 0xFF);
+            uint64_t budget = (uint64_t)arg2;
+            uint64_t period = (uint64_t)arg3;
+            return sched_context_bind(&g_sched, sc_id, tcb_id, part_id, budget, period, prio);
+        }
         default:
             return ERR_INVALID_ARG;
     }
