@@ -287,11 +287,22 @@ void vga_render_text(const char *text, int x, int y, uint32_t fg, uint32_t bg){
 }
 void vga_draw_hello(void){
     if(!fb_init_done) return;
+    // Raw buffer Hello world - as requested, just Hello world visible
     for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00102040;
+    // Use vga_render_text for Hello world - now with complete font it should be visible
     vga_render_text("Hello world", 10, 5, 0x00FFFFFF, 0x00102040);
-    vga_render_text("MoonlightOS - VGA driver isolated (I/O + FB, CHERI) OK", 2, 8, 0x0000FF00, 0x00102040);
-    vga_render_text("Framebuffer 0x40000000 800x600x32 mapped via vspace", 2, 10, 0x00AAAAAA, 0x00102040);
-    vga_render_text("0123456789 !@#$%^&*() test 123", 2, 12, 0x00FFFFFF, 0x00102040);
+    // Also draw raw white blocks as fallback visible even if font fails
+    const char *msg="Hello world";
+    int start_x = (VGA_WIDTH - 11*16)/2;
+    int start_y = VGA_HEIGHT/2;
+    for(int i=0;msg[i];i++){
+        if(msg[i]==' ') continue;
+        for(int dy=0;dy<16;dy++) for(int dx=0;dx<8;dx++){
+            int px = start_x + i*8 + dx;
+            int py = start_y + dy;
+            fb[py*VGA_WIDTH+px]=0x00FFFFFF;
+        }
+    }
     for(int x=0;x<VGA_WIDTH;x++){ fb[x]=0x00FFAA00; fb[(VGA_HEIGHT-1)*VGA_WIDTH+x]=0x00FFAA00; }
     for(int y=0;y<VGA_HEIGHT;y++){ fb[y*VGA_WIDTH]=0x00FFAA00; fb[y*VGA_WIDTH+VGA_WIDTH-1]=0x00FFAA00; }
 }
