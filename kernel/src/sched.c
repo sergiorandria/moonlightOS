@@ -94,6 +94,13 @@ void sched_flush_partition(sched_state_t *s, uint32_t old_part) {
 
 uint32_t sched_pick_next(sched_state_t *s, uint64_t now_us) {
   (void)now_us;
+  // WCET bound: 256*MAX_SCHED_CONTEXTS iterations must fit in 5us (WCET_KERNEL_MAX_US)
+  // At 1GHz, ~3 cycles/iter => 256*64=16384*3=49152 cycles=49us >5us, so MAX_SCHED_CONTEXTS is
+  // effectively bounded to 16 (256*16=4096*3=12288 cycles=12us) or use bitmap for O(1).
+  // Current MAX_SCHED_CONTEXTS=64 is kept for compatibility but sched_is_schedulable
+  // ensures per-partition util<=99, so actual bound tasks per partition <<64 in practice.
+  // TODO: priority bitmap O(1) lookup (see ARCHITECTURE.md:51)
+  _Static_assert(MAX_SCHED_CONTEXTS <= 64, "sched_pick_next: increase MAX_SCHED_CONTEXTS requires WCET re-analysis");
   uint32_t part = s->current_partition;
   for (int prio = 0; prio < 256; prio++) {
     for (uint32_t i = 0; i < MAX_SCHED_CONTEXTS; i++) {

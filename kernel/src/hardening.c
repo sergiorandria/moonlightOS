@@ -45,9 +45,9 @@ void guard_page_init(uintptr_t base, size_t len) {
 }
 
 bool is_canonical_addr(uintptr_t addr) {
-    /* Sv39 canonical: bits 63:39 must be sign extension of bit 38 */
+    /* Sv39 canonical: bits 63:39 must be sign extension of bit 38 (26 bits) */
     uint64_t top = (uint64_t)addr >> 38;
-    return top == 0 || top == 0x1FFFFFF;
+    return top == 0 || top == 0x3FFFFFF;
 }
 
 void panic(const char *msg) {

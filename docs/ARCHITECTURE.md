@@ -20,7 +20,7 @@ seL4 assumes A3 absent. Moonlight **proves** A3 absent: cache coloring (16 color
 
 ## Principles
 
-POLA, complete mediation, least mechanism, fail-safe defaults, defense in depth, **verified down to CHERI ISA + CompCert**.
+POLA, complete mediation, least mechanism, fail-safe defaults, defense in depth, **verified down to CHERI ISA** (CompCert binary correctness planned, not yet pursued per `docs/PRODUCTION.md` checklist).
 
 ## Hardware Profile: RISC-V CHERI
 - Hybrid kernel (M-mode, DDC wide), purecap userspace (PCC/DDC per thread `tcb.h:15`)

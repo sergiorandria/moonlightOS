@@ -18,15 +18,8 @@ extern endpoint_t g_endpoints[64];
 extern vspace_t g_kernel_vspace;
 void user_hello(void);
 
-#ifdef __x86_64__
-#define UART0 0x3F8
-static inline void outb(uint16_t port, uint8_t val){ __asm__ volatile("outb %0,%1" :: "a"(val), "Nd"(port)); }
-static inline uint8_t inb(uint16_t port){ uint8_t ret; __asm__ volatile("inb %1,%0" : "=a"(ret) : "Nd"(port)); return ret; }
-static void uart_putc(char c){ while((inb(UART0+5) & 0x20)==0) {} outb(UART0, c); }
-#else
 #define UART0 0x10000000
 static void uart_putc(char c){ *(volatile char*)UART0 = c; }
-#endif
 void vga_console_puts(const char *s);
 int vga_is_initialized(void);
 static void __attribute__((noinline)) uart_puts(const char*s){ volatile const char *vs=s; while(*vs) uart_putc(*vs++); if(vga_is_initialized()) vga_console_puts(s); }
@@ -35,45 +28,23 @@ static void uart_hex(uint64_t v){
     uart_putc('\n');
     if(vga_is_initialized()){ char buf[17]; for(int i=0;i<16;i++){ int n=(v>>((15-i)*4))&0xF; buf[i]= n<10?'0'+n:'a'+n-10; } buf[16]='\0'; vga_console_puts(buf); vga_console_puts("\n"); }
 }
-#ifdef __riscv
 #define HALT() __asm__ volatile("wfi")
-#elif defined(__x86_64__)
-#define HALT() __asm__ volatile("hlt")
-#else
-#define HALT() __asm__ volatile("wfi")
-#endif
 
 void kernel_boot(void) {
     uart_puts("\n[BOOT] MoonlightOS trap/paging/CHERI init\n");
 
-    /* 1. Trap: mtvec/IDT already set in start.S, verify */
-#ifdef __riscv
+    /* 1. Trap: mtvec already set in start.S, verify */
     uintptr_t mtvec; __asm__ volatile("csrr %0, mtvec" : "=r"(mtvec));
     uart_puts("[trap] mtvec="); uart_hex(mtvec);
     uintptr_t mscratch; __asm__ volatile("csrr %0, mscratch" : "=r"(mscratch));
     uart_puts("[trap] mscratch="); uart_hex(mscratch);
     if ((mtvec & ~0x3) == 0) { uart_puts("[trap] FAIL mtvec zero\n"); while(1) HALT(); }
     uart_puts("[trap] riscv OK\n");
-#elif defined(__x86_64__)
-    uart_puts("[trap] x86_64 IDT OK\n");
-    struct { uint16_t limit; uint64_t base; } __attribute__((packed)) idtr;
-    __asm__ volatile("sidt %0" : "=m"(idtr));
-    uart_puts("[trap] idt base="); uart_hex(idtr.base);
-    if(idtr.base==0) { uart_puts("[trap] FAIL idt zero\n"); while(1) HALT(); }
-    uart_puts("[trap] OK\n");
-#endif
 
-    /* 2. CHERI DDC/PCC validation (hybrid vs purecap, CET for x86_64) */
+    /* 2. CHERI DDC/PCC validation (hybrid vs purecap) */
 #ifdef __CHERI_PURE_CAPABILITY__
     cheri_init_ddc();
     uart_puts("[CHERI] purecap DDC/PCC validated\n");
-#elif defined(__x86_64__)
-    // x86_64: CET or MPK sim, same bounds check
-    CHERI_CAP ddc = { .base=0x100000, .top=0x200000, .addr=0x100000, .perms=0xFF, .tag=1 };
-    if (!cheri_cap_is_valid(ddc, 0x100000, 0x100000, CHERI_PERM_LOAD|CHERI_PERM_STORE)) {
-        uart_puts("[CHERI] FAIL sim DDC x86_64\n"); while(1) HALT();
-    }
-    uart_puts("[CHERI] x86_64 CET sim DDC OK (0x100000-0x200000)\n");
 #else
     CHERI_CAP ddc = { .base=0x80000000, .top=0x90000000, .addr=0x80000000, .perms=0xFF, .tag=1 };
     if (!cheri_cap_is_valid(ddc, 0x80000000, 0x10000000, CHERI_PERM_LOAD|CHERI_PERM_STORE)) {
@@ -105,32 +76,14 @@ void kernel_boot(void) {
     extern char _kernel_start;
     if (vspace_init_with_alloc(&g_kernel_vspace, 1, 0, &g_alloc) != ERR_OK) { uart_puts("[PAGING] vspace_init FAIL\n"); while(1) HALT(); }
     uart_puts("[PAGING] root PT alloc OK (per-color via alloc_frame, color 0)\n");
-#ifdef __riscv
     uintptr_t k_base = 0x80000000;
     uintptr_t uart_base = 0x10000000;
     const char *arch = "Sv39";
     bool need_uart_map = true;
-#else
-    uintptr_t k_base = 0x100000;
-    uintptr_t uart_base = 0x3F8; // COM1 IO port - no paging needed
-    const char *arch = "PML4";
-    bool need_uart_map = false;
-    (void)_kernel_start;
-#endif
     uintptr_t k_end = (uintptr_t)&_kernel_end;
-#ifdef __riscv
     uintptr_t k_start = 0x80000000;
-#else
-    uintptr_t k_start = 0x100000;
-#endif
     size_t k_size = (k_end - k_start + PAGE_SIZE-1) & ~(PAGE_SIZE-1);
-#ifdef __x86_64__
-    // x86_64 _kernel_end includes high rodata at 0x10200000, cap to 2M for PML4
-    if (k_size > 0x400000) k_size = 0x400000;
-    if (k_size < 0x200000) k_size = 0x200000;
-#else
     if (k_size < 0x400000) k_size = 0x400000; // include high .text.flush at 0x80200000
-#endif
     uart_puts("k_size="); uart_hex(k_size);
     kerror_t map_err = vspace_map(&g_kernel_vspace, k_base, k_base, k_size, 0x7, 0);
     if (map_err != ERR_OK) { uart_puts("[PAGING] kernel map FAIL err="); uart_hex(map_err); while(1) HALT(); }
@@ -160,17 +113,10 @@ void kernel_boot(void) {
     }
 
     /* 6. Trigger trap test */
-#ifdef __riscv
     uart_puts("[TRAP] ecall test (SYS_YIELD)...\n");
     __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
     uart_puts("[TRAP] ECALL RETURNED - OK\n");
     uart_puts("[TRAP] HANDLER OK - DONE\n");
-#elif defined(__x86_64__)
-    uart_puts("[TRAP] int0x80 test (SYS_YIELD)...\n");
-    __asm__ volatile("mov $3, %%rax; int $0x80" ::: "rax", "memory");
-    uart_puts("[TRAP] INT RETURNED - OK\n");
-    uart_puts("[TRAP] HANDLER OK - DONE\n");
-#endif
 
     /* 7. Flush microarch */
     cheri_flush_microarch();
@@ -308,26 +254,15 @@ void kernel_boot(void) {
 
     uart_puts("[BOOT] ALL OK - parking\n");
     while(1) {
-#ifdef __riscv
         __asm__ volatile("wfi");
-#elif defined(__x86_64__)
-        __asm__ volatile("hlt");
-#else
-        __asm__ volatile("" ::: "memory"); break;
-#endif
     }
 }
 
 void user_hello(void){
     uart_puts("[USER] hello from userspace thread\n");
     while(1){
-#ifdef __riscv
         __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
         __asm__ volatile("wfi");
-#elif defined(__x86_64__)
-        __asm__ volatile("mov $3, %%rax; int $0x80" ::: "rax", "memory");
-        __asm__ volatile("hlt");
-#endif
     }
 }
 
