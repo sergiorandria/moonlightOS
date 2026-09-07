@@ -22,9 +22,8 @@ definition ex_step :: "ex_state \<Rightarrow> abs_event \<Rightarrow> ex_state o
    | Tick t \<Rightarrow> Some (sched_tick (ex_sched s) t)
    | _ \<Rightarrow> None)"
 
-(* Refinement: E refines A - proven via AutoCorres *)
-(* ex_refines_abs: requires has_right and partition_budget to be satisfiable for SysCall - currently trivially true but keep as axiom for now *)
+(* Refinement: E refines A - requires has_right/partition_budget satisfiability, keep as axiom for now *)
 axiomatization where
-  ex_refines_abs: "ex_step s e = Some s' \<Longrightarrow> \<exists>abs_s abs_s'. abs_step abs_s e abs_s'" 
+  ex_refines_abs: "ex_step s e = Some s' \<Longrightarrow> \<exists>abs_s abs_s'. abs_step abs_s e abs_s'"
 
 end
