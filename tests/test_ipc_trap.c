@@ -43,19 +43,17 @@ int main(void){
     ep_cap.u.endpoint.ep_ptr = (uintptr_t)&ep;
     g_root_cnode.slots[1] = ep_cap;
 
-    // TCB0: SYS_SEND via trap
+    // TCB0: SYS_SEND via trap (RISC-V a0/a1/a7 convention)
+    // ABI: a0=ep_cptr, a1=user ipc_msg_t*, a7=sysno. Kernel copies from user.
     trap_frame_t frame0 = {0};
-#ifdef __x86_64__
-    frame0.rax = SYS_SEND;
-    frame0.rdi = 1;
-    frame0.rsi = 2;
-#endif
+    ipc_msg_t send_msg = {0};
+    send_msg.label = 0;
+    send_msg.length = 2;
+    send_msg.words[0] = 0xCAFE;
+    send_msg.words[1] = 0xBEEF;
     frame0.a0 = 1; // cap ptr
-    frame0.a1 = 2; // len
+    frame0.a1 = (uintptr_t)&send_msg;
     frame0.a7 = SYS_SEND;
-    t0->ipc_buffer.words[0] = 0xCAFE;
-    t0->ipc_buffer.words[1] = 0xBEEF;
-    t0->ipc_buffer.length = 2;
     // Simulate trap from TCB0
     kerror_t e0 = syscall_handler(&frame0, 0);
     printf("T0 send: %d state %d q_len %d pending %d\n", e0, t0->state, ep.q_len, ep.pending);
@@ -63,10 +61,6 @@ int main(void){
 
     // TCB1: SYS_REPLY_RECV via trap - should get message
     trap_frame_t frame1 = {0};
-#ifdef __x86_64__
-    frame1.rax = SYS_REPLY_RECV;
-    frame1.rdi = 1;
-#endif
     frame1.a0 = 1;
     frame1.a7 = SYS_REPLY_RECV;
     kerror_t e1 = syscall_handler(&frame1, 1);
@@ -88,14 +82,6 @@ int main(void){
     ut.u.untyped.size = 8192;
     g_root_cnode.slots[0] = ut;
     trap_frame_t frame2 = {0};
-#ifdef __x86_64__
-    frame2.rax = SYS_INVOKE;
-    frame2.rdi = 0;
-    frame2.rsi = (5<<8) | INV_UNTYPED_RETYPE;
-    frame2.rdx = CAP_FRAME;
-    // r10 for arg3 in x86_64 syscall compat? use a3 field still
-    frame2.a3 = 4096;
-#endif
     frame2.a0 = 0; // root
     frame2.a1 = (5<<8) | INV_UNTYPED_RETYPE; // dest=5 in high bits, op in low
     frame2.a2 = CAP_FRAME;
@@ -106,9 +92,6 @@ int main(void){
     if(e2!=ERR_OK){
         printf("FAIL retype: cap_valid %d can_retype %d dest_used %d err %d\n", cap_is_valid(&ut), cap_can_retype(ut, CAP_FRAME, 4096), g_root_cnode.slots[5].is_valid, e2);
         // try dest 10
-#ifdef __x86_64__
-        frame2.rsi = (10<<8) | INV_UNTYPED_RETYPE;
-#endif
         frame2.a1 = (10<<8) | INV_UNTYPED_RETYPE;
         e2 = syscall_handler(&frame2, 0);
         printf("Retry dest10: %d\n", e2);

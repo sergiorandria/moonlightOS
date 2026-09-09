@@ -42,7 +42,9 @@ typedef struct {
     cptr_t cap_ptrs[IPC_CAPS_MAX];
 } ipc_msg_t;
 
-/* Syscall numbers - only 6 syscalls, minimal TCB */
+/* Syscall numbers - 6 core + 2 debug console (moonsh terminal path).
+ * DEBUG syscalls are M-mode polled UART today; they move behind a console
+ * server (endpoint IPC) once user-mode + scheduler dispatch land. */
 typedef enum {
     SYS_CALL = 0,
     SYS_REPLY_RECV = 1,
@@ -50,7 +52,10 @@ typedef enum {
     SYS_YIELD = 3,
     SYS_SEAL = 4,
     SYS_INVOKE = 5, /* cap invocation: retype, mint, revoke, map, etc */
+    SYS_DEBUG_PUTC = 6, /* a0=char -> UART. Always allowed. */
+    SYS_DEBUG_GETC = 7, /* no args. Returns char 0-255 in a0, or (uintptr_t)-1 if empty. */
 } syscall_t;
+#define SYS_MAX SYS_DEBUG_GETC
 
 typedef enum {
     INV_UNTYPED_RETYPE = 0,

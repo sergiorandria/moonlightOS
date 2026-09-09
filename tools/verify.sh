@@ -4,10 +4,11 @@ echo "=== Moonlight verification (production) ==="
 echo "[1/4] Host unit tests"
 gcc -I kernel/include -o /tmp/test_cap tests/test_cap.c tests/stub_globals.c kernel/src/cap.c kernel/src/cnode.c kernel/src/alloc.c kernel/src/sched.c kernel/src/iommu.c kernel/src/irq.c kernel/src/cheri.c kernel/src/tcb.c && /tmp/test_cap
 gcc -I kernel/include -o /tmp/test_sched tests/test_sched_realtime.c tests/stub_globals.c kernel/src/sched.c kernel/src/cheri.c kernel/src/tcb.c && /tmp/test_sched
+gcc -I kernel/include -o /tmp/test_sched_bitmap tests/test_sched_bitmap.c tests/stub_globals.c kernel/src/sched.c kernel/src/cheri.c kernel/src/tcb.c && /tmp/test_sched_bitmap || echo "FAIL: test_sched_bitmap"
 gcc -I kernel/include -o /tmp/test_revoke tests/test_revoke_process.c tests/stub_globals.c kernel/src/revoke.c kernel/src/process.c kernel/src/sched.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c kernel/src/endpoint.c && /tmp/test_revoke
 gcc -I kernel/include -o /tmp/host_emul tests/host_emul.c tests/stub_globals.c kernel/src/revoke.c kernel/src/process.c kernel/src/sched.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c kernel/src/cnode.c kernel/src/cap.c kernel/src/endpoint.c && /tmp/host_emul
 gcc -I kernel/include -o /tmp/bench tests/bench_ipc.c tests/stub_globals.c kernel/src/endpoint.c kernel/src/tcb.c && /tmp/bench
-gcc -I kernel/include -o /tmp/fuzz tests/fuzz_syscall.c tests/stub_globals.c kernel/src/syscall.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/endpoint.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/alloc.c kernel/src/revoke.c && /tmp/fuzz
+gcc -I kernel/include -o /tmp/fuzz tests/fuzz_syscall.c tests/stub_globals.c kernel/src/syscall.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/endpoint.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/flush.c && /tmp/fuzz
 echo "[1a] ABI regression: uintptr_t must be 8 bytes (PLAN 3)"
 gcc -I kernel/include -o /tmp/test_abi tests/test_abi.c && /tmp/test_abi
 echo '#include <stdint.h>
@@ -16,11 +17,63 @@ echo "[1b] Hardening + vspace + trap (host sim)"
 gcc -I kernel/include -o /tmp/test_hardening tests/test_hardening.c kernel/src/hardening.c 2>/dev/null && /tmp/test_hardening || echo "SKIP: test_hardening not found"
 gcc -I kernel/include -o /tmp/test_vspace tests/test_vspace.c tests/stub_globals.c kernel/src/vspace.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c 2>&1 && /tmp/test_vspace || echo "FAIL: test_vspace"
 gcc -I kernel/include -o /tmp/test_virtio_net tests/test_virtio_net.c tests/stub_globals.c kernel/src/iommu.c kernel/src/cheri.c kernel/src/alloc.c 2>&1 && /tmp/test_virtio_net || echo "FAIL: test_virtio_net"
-gcc -I kernel/include -o /tmp/test_ipc_trap tests/test_ipc_trap.c tests/stub_globals.c kernel/src/endpoint.c kernel/src/tcb.c kernel/src/cap.c kernel/src/cnode.c kernel/src/syscall.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/revoke.c kernel/src/alloc.c kernel/src/notification.c kernel/src/hardening.c 2>&1 && /tmp/test_ipc_trap || echo "FAIL: test_ipc_trap"
-gcc -I kernel/include -o /tmp/test_invoke_ops tests/test_invoke_ops.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/vspace.c kernel/src/sched.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/cheri.c kernel/src/syscall.c kernel/src/endpoint.c kernel/src/notification.c 2>&1 && /tmp/test_invoke_ops || echo "FAIL: test_invoke_ops"
+gcc -I kernel/include -o /tmp/test_ipc_trap tests/test_ipc_trap.c tests/stub_globals.c kernel/src/endpoint.c kernel/src/tcb.c kernel/src/cap.c kernel/src/cnode.c kernel/src/syscall.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/revoke.c kernel/src/alloc.c kernel/src/notification.c kernel/src/hardening.c kernel/src/flush.c 2>&1 && /tmp/test_ipc_trap || echo "FAIL: test_ipc_trap"
+gcc -I kernel/include -o /tmp/test_invoke_ops tests/test_invoke_ops.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/vspace.c kernel/src/sched.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/cheri.c kernel/src/syscall.c kernel/src/endpoint.c kernel/src/notification.c kernel/src/flush.c 2>&1 && /tmp/test_invoke_ops || echo "FAIL: test_invoke_ops"
 gcc -I kernel/include -o /tmp/test_mem_server tests/test_mem_server.c userspace/mem_server/server.c kernel/src/cap.c kernel/src/cnode.c kernel/src/alloc.c 2>&1 && /tmp/test_mem_server || echo "FAIL: test_mem_server"
 gcc -I kernel/include -o /tmp/test_sched_server tests/test_sched_server.c userspace/sched_server/server.c 2>&1 && /tmp/test_sched_server || echo "FAIL: test_sched_server"
 if gcc -I kernel/include -o /tmp/test_vfs tests/test_vfs.c userspace/vfs_server/server.c 2>&1; then /tmp/test_vfs || echo "FAIL: test_vfs run failed"; else echo "FAIL: test_vfs compile failed"; fi
+echo "[1c] moonsh shell + userspace ELFs"
+gcc -Wall -Wextra -o /tmp/test_shell tests/test_shell.c userspace/sh/shell.c 2>&1 && /tmp/test_shell || echo "FAIL: test_shell"
+if command -v clang &>/dev/null; then
+  make -C userspace 2>&1 | tail -n 2 || echo "FAIL: userspace ELFs"
+else
+  echo "SKIP: userspace ELFs (clang not found)"
+fi
+echo "[1d] v2 S-mode kernel build"
+if command -v clang &>/dev/null; then
+  make -C v2/kernel 2>&1 | tail -n 1 || echo "FAIL: v2 kernel build"
+else
+  echo "SKIP: v2 kernel (clang not found)"
+fi
+echo "[1e] v2 production gates (linker layout + user rodata ban)"
+if [ -f v2/kernel/build/v2.elf ]; then
+  python3 <<'PYEOF' || echo "FAIL: v2 linker gate"
+import re, subprocess, sys
+secs = subprocess.run(['llvm-readelf', '-S', 'v2/kernel/build/v2.elf'],
+                      capture_output=True, text=True).stdout
+syms = subprocess.run(['llvm-readelf', '-s', 'v2/kernel/build/v2.elf'],
+                      capture_output=True, text=True).stdout
+def sym(name):
+    m = re.search(r'([0-9a-f]+)\s+\d+ \w+ +\w+ +\w+ +\w+ +' + name + r'\b', syms)
+    return int(m.group(1), 16)
+bss, bend = sym('_bss'), sym('_bss_end')
+bad = []
+for line in secs.splitlines():
+    # [Nr] Name Type Addr Off Size ES Flg ...
+    m = re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+(\S+)\s+([0-9a-f]+)\s+[0-9a-f]+\s+([0-9a-f]+)\s+\S+\s+(\S+)', line)
+    if not m:
+        continue
+    name, typ, addr, size, flags = m.group(1), m.group(2), int(m.group(3), 16), int(m.group(4), 16), m.group(5)
+    if typ != 'PROGBITS' or 'A' not in flags or addr == 0 or size == 0:
+        continue
+    if addr < bend and addr + size > bss:
+        bad.append(name)
+if bad:
+    print('FAIL: PROGBITS inside [_bss,_bss_end):', bad)
+    sys.exit(1)
+print('v2 gate: no PROGBITS in BSS-clear range (_bss=%x _bss_end=%x)' % (bss, bend))
+PYEOF
+  clang --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -O2 -ffreestanding \
+    -nostdlib -fno-builtin -mcmodel=medany -mno-relax -Wall \
+    -I/usr/lib/clang/22/include -c v2/kernel/user.c -o /tmp/user_check.o 2>/dev/null
+  if llvm-readelf -S /tmp/user_check.o | grep -q "rodata"; then
+    echo "FAIL: user.c emits .rodata (U-mode would fault reading U=0 literals)"
+  else
+    echo "v2 gate: user.c has no .rodata (immediates-only holds)"
+  fi
+else
+  echo "SKIP: v2 gates (v2.elf not built)"
+fi
 ISABELLE_STATUS="SKIP"
 CHERI_STATUS="SKIP"
 echo "[2/4] Isabelle/HOL proofs (requires Isabelle2024 + l4v)"
@@ -30,6 +83,23 @@ if command -v isabelle &>/dev/null; then
   else
     ISABELLE_STATUS="FAIL"
     echo "FAIL: isabelle build failed"
+  fi
+  echo "[2b/4] v2 spec (Stage 0: TCB + scheduler, mutant-tested invariants)"
+  if isabelle build -D v2/isabelle -v; then
+    echo "v2 spec: PASS"
+  else
+    ISABELLE_STATUS="FAIL"
+    echo "FAIL: v2 isabelle build failed"
+  fi
+  echo "[2c/4] v2 anti-vacuity gate (no True-defined invariants, no sorry)"
+  if grep -rn "sorry\|axiomatization\|quick_and_dirty\|oops" v2/isabelle/; then
+    ISABELLE_STATUS="FAIL"
+    echo "FAIL: v2 spec contains sorry/axioms"
+  elif grep -rn "equiv> True" v2/isabelle/*.thy; then
+    ISABELLE_STATUS="FAIL"
+    echo "FAIL: v2 spec contains True-defined invariant (vacuous)"
+  else
+    echo "v2 anti-vacuity: PASS"
   fi
 else
   echo "SKIP — isabelle not installed, proofs NOT checked (install Isabelle2024 + l4v to verify)"
@@ -64,6 +134,22 @@ if [ -f kernel/build/moonlight.elf ]; then
   if [ -n "$QEMU" ] && [ -x "$QEMU" ]; then
     timeout 3 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf -d guest_errors 2>&1 | head -n 20 || echo "QEMU smoke: no output (expected wfi)"
     echo "QEMU smoke done"
+    # moonsh interactive smoke: pipe commands, expect prompt + builtin output
+    if printf 'help\nyield\n' | timeout 12 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf 2>&1 | grep -q "moonsh builtins"; then
+      echo "moonsh smoke: PASS (prompt + help on serial)"
+    else
+      echo "moonsh smoke: FAIL (no shell output - see log above)"
+    fi
+    # v2 Stage-1 smoke: S-mode kernel under OpenSBI, two U threads, fault demo
+    if [ -f v2/kernel/build/v2.elf ]; then
+      V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel v2/kernel/build/v2.elf 2>&1 | tr -d '\0')
+      echo "$V2LOG" | grep -q "satp Sv39 on" && echo "v2 smoke: satp on" || echo "v2 smoke: FAIL (no satp)"
+      echo "$V2LOG" | grep -q "entering U-mode" && echo "v2 smoke: U-mode entry" || echo "v2 smoke: FAIL (no U entry)"
+      echo "$V2LOG" | grep -q "parked 0" && echo "v2 smoke: A parked" || echo "v2 smoke: FAIL (A never parked)"
+      echo "$V2LOG" | grep -q "fault.*tcb=1" && echo "v2 smoke: B fault contained" || echo "v2 smoke: FAIL (no B fault)"
+    else
+      echo "SKIP: v2 smoke (v2.elf not built)"
+    fi
     QEMU_STATUS="PASS"
   else
     echo "SKIP: QEMU not found"

@@ -1,4 +1,4 @@
-// minilib - freestanding memset/memcpy for x86_64 and riscv
+// minilib - freestanding memset/memcpy for RISC-V (host-sim compatible)
 #include <stddef.h>
 #include <stdint.h>
 void *memset(void *s, int c, size_t n){
@@ -20,10 +20,11 @@ int memcmp(const void *a, const void *b, size_t n){
 uintptr_t __stack_chk_guard = 0xDEADBEEF;
 void __stack_chk_fail(void){
     while(1) {
-#ifdef __x86_64__
-        __asm__ volatile("hlt");
-#else
+#ifdef __riscv
         __asm__ volatile("wfi");
+#else
+        /* Host-sim: trap instead of privileged halt/wfi */
+        __builtin_trap();
 #endif
     }
 }

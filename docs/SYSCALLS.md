@@ -1,15 +1,17 @@
-# Syscalls (6 Only, Production)
+# Syscalls (8: 6 Core + 2 Debug Console, Production)
 
 All via `ecall`, dispatch `kernel/src/syscall.c:14` `syscall_handler(trap_frame_t *frame, uint32_t cur_tcb)`.
 
 | # | Name | a7 | a0 | a1 | a2 | Returns | Checks |
 |---|---|---|---|---|---|---|---|
-|0| `SYS_CALL` |0| ep_cptr | msg_len | - | `ERR_OK` | `cap_has_right READ|WRITE`, `CAP_ENDPOINT`, `partition budget`, `WCET 5us` |
+|0| `SYS_CALL` |0| ep_cptr | user `ipc_msg_t*` | - | `ERR_OK` | `cap_has_right READ|WRITE`, `CAP_ENDPOINT`, `partition budget`, `WCET 5us`; msg copied from user after `length<=30`/`caps<=3` + vspace-resolve validation |
 |1| `SYS_REPLY_RECV` |1| ep_cptr | - | - | `ERR_OK` | `CAP_ENDPOINT`, blocks `TCB_BLOCKED_RECV` |
-|2| `SYS_SEND` |2| ep_cptr | msg_len | - | `ERR_OK` | `CAP_ENDPOINT` |
+|2| `SYS_SEND` |2| ep_cptr | user `ipc_msg_t*` | - | `ERR_OK` | `CAP_ENDPOINT` + same user-copy validation as `SYS_CALL` |
 |3| `SYS_YIELD` |3| - | - | - | `ERR_OK` | always allowed, even if `!runnable` |
 |4| `SYS_SEAL` |4| cap | otype | - | `ERR_OK` | CHERI `seal` with `OTYPE_*` |
 |5| `SYS_INVOKE` |5| cap | op | arg2 | `ERR_OK` | `cap_is_valid` + `handle_invoke` |
+|6| `SYS_DEBUG_PUTC` |6| char | - | - | `ERR_OK` | none (polled UART; moves behind console server later) |
+|7| `SYS_DEBUG_GETC` |7| - | - | - | char 0-255 in `a0`, `(uintptr_t)-1` if RX empty (NOT a `kerror_t`) | none; never blocks (shell yields on empty) |
 
 `handle_invoke` ops (`kernel/include/types.h:46`):
 

@@ -9,14 +9,18 @@ PHDRS {
 SECTIONS {
     . = 0x80000000;
     /* Keep original 0x80200000 alias for OpenSBI builds */
-    .text : { *(.text.start) *(.text) } :text
-    .rodata : { *(.rodata) } :rodata
+    /* Wildcards catch clang subsections (.text.*, .rodata.str1.1, .rodata.cst8):
+     * orphans would otherwise land inside [_bss, _bss_end) and be wiped by
+     * the start.S BSS clear (that bug cost all kernel text output). */
+    .text : { *(.text.start) *(.text*) } :text
+    .rodata : { *(.rodata*) } :rodata
     .data : { *(.data*) } :rodata
     _bss = .;
     .bss : { *(.bss*) *(COMMON) }
     . = ALIGN(4096);
     _bss_end = .;
-    PROVIDE(__global_pointer$ = . + 0x800);
+    /* Single gp definition (ld PROVIDE keeps the first; a duplicate lived
+     * here and silently shadowed edits to the second). */
     . = 0x80100000;
     .rodata.trap_high : ALIGN(4096) {
         KEEP(*(.rodata.trap))

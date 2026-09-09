@@ -39,14 +39,20 @@ typedef struct {
     uint64_t major_frame_start;
     uint32_t current_partition;
     sched_context_t contexts[MAX_SCHED_CONTEXTS];
-    /* ready queues per partition: 256 priority levels, bitmap */
-    uint32_t ready_bitmap[MAX_PARTITIONS];
-    uint32_t ready_queues[MAX_PARTITIONS][256];
+    /* Ready hint: bit p of word (p/64) = some context MAY be pickable at
+     * (this partition, prio p) on (bound, partition, priority, remaining).
+     * SUPERSET ONLY: TCB-block transitions live in tcb.c/endpoint.c and do
+     * not maintain this. pick_next verifies TCB-runnable in its final scan
+     * and falls back to a full scan when the bitmap yields nothing, so the
+     * bitmap is a pure optimization that cannot change results. Bit set on
+     * bind/replenish; cleared lazily on empty scan or eagerly on unbind. */
+    uint64_t ready_bits[MAX_PARTITIONS][4];
 } sched_state_t;
 
 void sched_init(sched_state_t *s);
 kerror_t sched_partition_create(sched_state_t *s, uint32_t id, uint64_t offset, uint64_t budget, uint8_t crit);
 kerror_t sched_context_bind(sched_state_t *s, uint32_t sc_id, uint32_t tcb_id, uint32_t part_id, uint64_t budget, uint64_t period, uint8_t prio);
+void sched_context_unbind(sched_state_t *s, uint32_t sc_id); /* centralizes bound=false + bit fixup */
 void sched_tick(sched_state_t *s, uint64_t now_us);
 uint32_t sched_pick_next(sched_state_t *s, uint64_t now_us);
 bool sched_is_schedulable(sched_state_t *s); /* EDF utilization test proven in Isabelle */

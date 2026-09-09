@@ -1,22 +1,24 @@
 #include "../include/cheri.h"
-#ifdef __x86_64__
-#define UART0 0x3F8
-static inline void outb(uint16_t port, uint8_t v) {
-  __asm__ volatile("outb %0,%1" ::"a"(v), "Nd"(port));
+#include "../include/flush.h"
+/* RISC-V-only UART (QEMU virt 0x10000000 MMIO). Host-sim falls back to putchar. */
+#ifdef __riscv
+#define UART0 0x10000000
+#define UART_LSR ((volatile uint8_t *)0x10000005)
+#define UART_RBR ((volatile uint8_t *)0x10000000)
+void uart_putc(char c) {
+    while ((*UART_LSR & 0x20) == 0) {} /* wait TX ready: no FIFO drops */
+    *(volatile char *)UART0 = c;
 }
-static inline uint8_t inb(uint16_t port) {
-  uint8_t r;
-  __asm__ volatile("inb %1,%0" : "=a"(r) : "Nd"(port));
-  return r;
-}
-static void uart_putc(char c) {
-  while ((inb(UART0 + 5) & 0x20) == 0) {
-  }
-  outb(UART0, c);
+/* Non-blocking RX: char 0-255, or -1 if empty. QEMU -serial mon:stdio feeds stdin. */
+int uart_getc(void) {
+    if ((*UART_LSR & 0x01) == 0) return -1;
+    return *UART_RBR;
 }
 #else
-#define UART0 0x10000000
-static void uart_putc(char c) { *(volatile char *)UART0 = c; }
+extern int putchar(int);
+void uart_putc(char c) { putchar(c); }
+/* Host-sim: never block a unit test on stdin. Target-only input path. */
+int uart_getc(void) { return -1; }
 #endif
 void print_flush(void) {
   uart_putc('[');

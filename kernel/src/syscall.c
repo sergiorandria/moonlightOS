@@ -5,11 +5,44 @@
 #include "../include/sched.h"
 #include "../include/vspace.h"
 #include "../include/revoke.h"
+#include "../include/flush.h"
 
 extern tcb_table_t g_tcbs;
 extern endpoint_t g_endpoints[MAX_ENDPOINTS];
 extern sched_state_t g_sched;
 extern cnode_t g_root_cnode;
+extern vspace_t g_kernel_vspace;
+
+/* Copy a user ipc_msg_t into the kernel. Length/caps fields are validated
+ * before any word is copied. On target every page of the user range must
+ * resolve in the caller's vspace (identity-mapped kernel vspace today);
+ * host-sim links the same code with direct memcpy so unit tests exercise
+ * the validation logic. */
+static kerror_t copy_msg_from_user(tcb_t *tcb, uintptr_t uaddr, ipc_msg_t *out) {
+    (void)tcb;
+    if (uaddr == 0 || out == NULL) return ERR_INVALID_ARG;
+    /* Validate the header first (label/length/caps) without trusting length. */
+    const ipc_msg_t *u = (const ipc_msg_t *)uaddr;
+#ifdef __riscv
+    uintptr_t base = uaddr & ~(PAGE_SIZE - 1);
+    uintptr_t end = (uaddr + sizeof(ipc_msg_t) - 1) & ~(PAGE_SIZE - 1);
+    for (uintptr_t p = base; ; p += PAGE_SIZE) {
+        uintptr_t pa = 0;
+        if (!vspace_resolve(&g_kernel_vspace, p, &pa)) return ERR_INVALID_ARG;
+        if (p == end) break;
+        if (p + PAGE_SIZE < p) return ERR_INVALID_ARG; /* wrap */
+    }
+#endif
+    uint32_t length = u->length;
+    uint32_t caps = u->caps;
+    if (length > IPC_MSG_MAX || caps > IPC_CAPS_MAX) return ERR_INVALID_ARG;
+    out->label = u->label;
+    out->length = length;
+    out->caps = caps;
+    for (uint32_t i = 0; i < length; i++) out->words[i] = u->words[i];
+    for (uint32_t i = 0; i < caps; i++) out->cap_ptrs[i] = u->cap_ptrs[i];
+    return ERR_OK;
+}
 
 /* Constant-time dispatch - no secret-dependent branches */
 kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
@@ -18,20 +51,31 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
 #ifdef __riscv
     __asm__ volatile("rdtime %0" : "=r"(entry_us));
 #endif
-#ifdef __x86_64__
-    syscall_t sys = (syscall_t)frame->rax;
-    cptr_t cap_ptr = (cptr_t)frame->rdi;
-    uintptr_t arg1 = frame->rsi;
-    uintptr_t arg2 = frame->rdx;
-#else
+    /* RISC-V calling convention: a7=sysno, a0=cap, a1/a2=args.
+     * SYS_CALL/SYS_SEND: a1 = user pointer to ipc_msg_t (matches SYSCALLS.md). */
     syscall_t sys = (syscall_t)frame->a7;
     cptr_t cap_ptr = (cptr_t)frame->a0;
     uintptr_t arg1 = frame->a1;
     uintptr_t arg2 = frame->a2;
-#endif
 
     /* Bounds check syscall number - proven exhaustive */
-    if (sys > SYS_INVOKE) return ERR_INVALID_ARG;
+    if (sys > SYS_MAX) return ERR_INVALID_ARG;
+
+    /* Debug console: no cap needed (moves behind a console server later).
+     * Single-arg convention: the char rides in a0 (like the return slot). */
+    if (sys == SYS_DEBUG_PUTC) {
+        uart_putc((char)(frame->a0 & 0xFF));
+        if (!wcet_check(entry_us)) return ERR_WCET_EXCEEDED;
+        frame->a0 = ERR_OK;
+        return ERR_OK;
+    }
+    if (sys == SYS_DEBUG_GETC) {
+        /* Returns char 0-255, or (uintptr_t)-1 when RX empty (not a kerror_t). */
+        int c = uart_getc();
+        if (!wcet_check(entry_us)) return ERR_WCET_EXCEEDED;
+        frame->a0 = (c < 0) ? (uintptr_t)-1 : (uintptr_t)c;
+        return ERR_OK;
+    }
 
     tcb_t *tcb = &g_tcbs.threads[cur_tcb];
     if (!tcb_is_runnable(tcb) && sys != SYS_YIELD) return ERR_PARTITION_DENIED;
@@ -58,10 +102,8 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
             if (cap->type != CAP_ENDPOINT) return ERR_INVALID_CAP;
             endpoint_t *ep = (endpoint_t*)cap->u.endpoint.ep_ptr;
             ipc_msg_t msg = {0};
-            msg.length = (uint32_t)(arg1 & 0xFF);
-            if (msg.length > IPC_MSG_MAX) return ERR_INVALID_ARG;
-            /* Copy from user IPC buffer via CHERI-bounded memcpy - prevents overflow */
-            for (uint32_t i=0;i<msg.length;i++) msg.words[i] = ((uint64_t*)tcb->ipc_buffer.words)[i];
+            err = copy_msg_from_user(tcb, arg1, &msg);
+            if (err != ERR_OK) return err;
             err = endpoint_send(ep, cur_tcb, &msg);
             if (err == ERR_OK) tcb->state = TCB_BLOCKED_REPLY;
             break;
@@ -86,11 +128,8 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
             if (cap->type != CAP_ENDPOINT) return ERR_INVALID_CAP;
             endpoint_t *ep = (endpoint_t*)cap->u.endpoint.ep_ptr;
             ipc_msg_t msg = {0};
-            msg.length = (uint32_t)(arg1 & 0xFF);
-            if (msg.length > IPC_MSG_MAX) return ERR_INVALID_ARG;
-            for (uint32_t i=0;i<msg.length;i++) msg.words[i] = ((uint64_t*)tcb->ipc_buffer.words)[i];
-            msg.caps = tcb->ipc_buffer.caps;
-            for (uint32_t i=0;i<msg.caps;i++) msg.cap_ptrs[i] = tcb->ipc_buffer.cap_ptrs[i];
+            err = copy_msg_from_user(tcb, arg1, &msg);
+            if (err != ERR_OK) return err;
             err = endpoint_send(ep, cur_tcb, &msg);
             break;
         }
@@ -108,11 +147,7 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
     /* WCET enforcement */
     if (!wcet_check(entry_us)) return ERR_WCET_EXCEEDED;
 
-#ifdef __x86_64__
-    frame->rax = err;
-#else
     frame->a0 = err;
-#endif
     return err;
 }
 

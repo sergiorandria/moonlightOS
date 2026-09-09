@@ -39,12 +39,15 @@
 - [x] `userspace/vfs_server` `vfs_read` via Frame cap `cheri_tag_get/length` (reuses `virtio_net.c:30` pattern) + `vfs_create` tag check, `tests/test_vfs.c` (create/open/read, OOB, untagged)
 - [x] `kernel/src/boot.c` spawns `mem/sched/vfs_server` via `process_create` (endpoints 1,2,3 caps 11,12,13) alongside `user_hello`
 - [x] `kernel/src/syscall.c` `handle_invoke` now 12/12 ops: `INV_CNODE_MINT/MOVE/DELETE`, `INV_TCB_CONFIGURE/SUSPEND`, `INV_VSPACE_UNMAP`, `INV_FRAME_MAP` alias `INV_VSPACE_MAP` (commented), `INV_SCHED_BIND` (`budget/period` via `sched_context_bind`)
+- [x] `userspace/sh/shell.c` moonsh runs on target: `SYS_DEBUG_PUTC/GETC` console (`flush.c` polled UART + RX), `userspace/lib/moonlight.c` ecall stubs, `user.ld` (user ELFs at 0x81000000), `userspace/Makefile` builds `hello.elf`/`moonsh.elf`, `boot.c thread_enter` runs shell on own `.bss` stack, `tests/test_shell.c` host-tests the parser, QEMU smoke pipes `help`/`yield` and greps `moonsh builtins`
+- [x] `kernel/linker.ld` `.rodata*`/`.text*` wildcards: orphan `.rodata.str1.1` no longer lands in `[_bss,_bss_end)` (BSS clear wiped all literals - no kernel text output until this fix)
+- [ ] moonsh next: U-mode (`mret` MPP=U + PMP), scheduler dispatch loop (created TCBs never run today), ELF segment mapping in `elf_load` (validates only), REPLY_RECV copy-out to user, console server to retire DEBUG syscalls - GNU bash needs POSIX/libc/FS, out of scope
 
 ## Docs
 
 - [x] `docs/USAGE.md` capabilities, TCB, VSpace, IPC, scheduling, example
 - [x] `docs/BUILD.md` host, CHERI, stock QEMU, QEMU, reproducible, Isabelle, troubleshooting
-- [x] `docs/SYSCALLS.md` 6 syscalls + 12 invoke ops, WCET, temporal isolation
+- [x] `docs/SYSCALLS.md` 8 syscalls (6 core + 2 debug console) + 12 invoke ops, WCET, temporal isolation
 - [x] `docs/CAPABILITIES.md` sealing, otype, attenuation, coloring, revocation
 - [x] `docs/ARCHITECTURE.md`/`THREAT_MODEL.md`/`REPRODUCIBLE.md` existing
 - [x] `docs/SECURITY.md` disclosure process, supported CHERI HW, cross-ref `THREAT_MODEL.md`

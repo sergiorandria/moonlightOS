@@ -55,10 +55,9 @@ void panic(const char *msg) {
 #ifdef __riscv
     __asm__ volatile("csrw 0x800, x0" ::: "memory");
     while(1) __asm__ volatile("wfi");
-#elif defined(__x86_64__)
-    while(1) __asm__ volatile("hlt");
 #else
-    while(1) __asm__ volatile("" ::: "memory");
+    /* Host-sim fallback: trap, never return */
+    while(1) __builtin_trap();
 #endif
     __builtin_unreachable();
 }

@@ -75,7 +75,7 @@ kerror_t process_create(tcb_table_t *tcbs, frame_alloc_t *alloc,
     return ERR_NO_MEM;
   }
   if (!sched_is_schedulable(sched)) {
-    sched->contexts[tcb->sched_context].bound = false;
+    sched_context_unbind(sched, tcb->sched_context);
     memset(tcb, 0, sizeof(*tcb));
     return ERR_INVALID_ARG;
   }
@@ -155,7 +155,7 @@ kerror_t process_destroy(tcb_table_t *tcbs, sched_state_t *sched,
     mdb_delete(mdb, idx);
   }
   if (t->sched_context < MAX_SCHED_CONTEXTS)
-    sched->contexts[t->sched_context].bound = false;
+    sched_context_unbind(sched, t->sched_context);
   // 4. Scrub TCB - prevent ID reuse with stale data
   memset(t, 0, sizeof(*t));
   tcbs->count--;

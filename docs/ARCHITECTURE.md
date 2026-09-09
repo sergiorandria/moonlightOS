@@ -2,7 +2,7 @@
 
 ## Overview
 
-Moonlight is a **pure microkernel**: 3.5k LOC TCB, 6 syscalls, 11 capability types, all drivers and services in userspace. Every cross-domain interaction is a capability-checked IPC. No ambient authority, no shared memory by default, no `mmap` or `ioctl` escape hatches.
+Moonlight is a **pure microkernel**: 3.5k LOC TCB, 8 syscalls (6 core IPC + 2 debug console), 11 capability types, all drivers and services in userspace. Every cross-domain interaction is a capability-checked IPC. No ambient authority, no shared memory by default, no `mmap` or `ioctl` escape hatches.
 
 ```
 App (purecap) --IPC--> mem_server --Untyped--> Frame (IOMMU-colored)
@@ -48,7 +48,7 @@ All via `UntypedRetype` (`syscall.c:98`).
 
 ## Scheduling: Two-Level Verified
 
-Major frame 10ms, 3 partitions `0:6000/1:2000/3, 1:2000/2` (`boot.c:46`), `sched_is_schedulable` fixed-point `sum(budget*100/period)<=99` (`sched.c:94`), `sched_tick` finds `new_part` by `offset`, `sched_pick_next` scans `prio 0..255` (bitmap TODO), `WCET 5us` `rdtime` (`sched.c:108`).
+Major frame 10ms, 3 partitions `0:6000/1:2000/3, 1:2000/2` (`boot.c:46`), `sched_is_schedulable` fixed-point `sum(budget*100/period)<=99` (`sched.c:94`), `sched_tick` finds `new_part` by `offset`, `sched_pick_next` uses a 256-bit `ready_bits` fast path (set on bind/replenish, self-healing clear) with the legacy full scan as correctness floor — proven equivalent on 3000 randomized states (`tests/test_sched_bitmap.c`); full O(1) awaits TCB-state hooks in `tcb.c`/`endpoint.c`, `WCET 5us` `rdtime` (`sched.c:108`).
 
 Theorem `Sched_Verification.thy: partition_isolation_time`.
 
@@ -68,7 +68,7 @@ Theorem `Sched_Verification.thy: partition_isolation_time`.
 
 `virtio_net.c` `mmio_base` is `Frame` cap bounded, DMA buffers are `Frame` caps mapped via `IOMMU` windows per `dev_id`. `irq.c` binds `IRQ` cap to `Notification`. No driver in kernel.
 
-Services: `mem_server` (Untyped), `sched_server` (EDF admission), `vfs_server` (new, `userspace/vfs_server/server.c:1` per-client `FD` caps, `Frame` per file), `drivers/virtio_net`, `example/hello` (`lib/moonlight.h:12` purecap ABI).
+Services: `mem_server` (Untyped), `sched_server` (EDF admission), `vfs_server` (new, `userspace/vfs_server/server.c:1` per-client `FD` caps, `Frame` per file), `drivers/virtio_net`, `example/hello` (`lib/moonlight.h` purecap ABI), `sh/moonsh` (interactive shell: `SYS_DEBUG_PUTC/GETC` console, cooperative thread via `thread_enter` in `boot.c`, own `.bss` stack; U-mode + scheduler dispatch + ELF loading are the explicit next steps, NOT done).
 
 ## Verification Stack
 

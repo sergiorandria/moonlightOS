@@ -19,7 +19,8 @@ extern vspace_t g_kernel_vspace;
 void user_hello(void);
 
 #define UART0 0x10000000
-static void uart_putc(char c){ *(volatile char*)UART0 = c; }
+#define UART_LSR_TX ((volatile uint8_t *)0x10000005)
+static void uart_putc(char c){ while ((*UART_LSR_TX & 0x20) == 0) {} *(volatile char*)UART0 = c; }
 void vga_console_puts(const char *s);
 int vga_is_initialized(void);
 static void __attribute__((noinline)) uart_puts(const char*s){ volatile const char *vs=s; while(*vs) uart_putc(*vs++); if(vga_is_initialized()) vga_console_puts(s); }
@@ -29,6 +30,43 @@ static void uart_hex(uint64_t v){
     if(vga_is_initialized()){ char buf[17]; for(int i=0;i<16;i++){ int n=(v>>((15-i)*4))&0xF; buf[i]= n<10?'0'+n:'a'+n-10; } buf[16]='\0'; vga_console_puts(buf); vga_console_puts("\n"); }
 }
 #define HALT() __asm__ volatile("wfi")
+
+void shell_main(void); /* userspace/sh/shell.c - interactive shell, own stack below */
+
+/* Shell stack lives in .bss (identity-mapped), NOT the alloc pool: boot thread
+ * stacks at 0x80500000+ were never mapped in the kernel vspace, so running a
+ * thread there would fault. 8K is plenty (128B line buf + small frames). */
+static uint8_t shell_stack[8192] __attribute__((aligned(16)));
+static uintptr_t saved_sp, saved_ra;
+
+/* Cooperative enter: run `pc` on the given stack, return here if it exits.
+ * Single asm block: `pc`/`sp_top` are materialized in registers while sp is
+ * still the kernel stack. (A plain C call after `mv sp` would reload the
+ * arguments from the OLD frame through the NEW sp = garbage jump.)
+ * No scheduler dispatch yet (M-mode, hart0) - see shell U-mode roadmap. */
+static void __attribute__((noinline)) thread_enter(uintptr_t pc, uintptr_t sp_top) {
+    /* Outputs need early-clobber (&): they are written (mv %0,sp) before
+     * inputs are consumed (jalr %3). Without &, the compiler reuses one
+     * register for output+input and thread_enter jumps to ra. */
+    __asm__ volatile(
+        "mv %0, sp\n"
+        "mv %1, ra\n"
+        "mv sp, %2\n"
+        "jalr %3\n"
+        "mv sp, %0\n"
+        "mv ra, %1\n"
+        : "=&r"(saved_sp), "=&r"(saved_ra)
+        : "r"(sp_top), "r"(pc)
+        : "memory");
+}
+
+void user_hello(void){
+    uart_puts("[USER] hello from userspace thread\n");
+    while(1){
+        __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
+        __asm__ volatile("wfi");
+    }
+}
 
 void kernel_boot(void) {
     uart_puts("\n[BOOT] MoonlightOS trap/paging/CHERI init\n");
@@ -65,7 +103,7 @@ void kernel_boot(void) {
     cnode_init(&g_root_cnode, 0, 8);
     uart_puts("[CNODE] root OK\n");
 
-    /* 5. Paging: identity map kernel + UART (Sv39 or PML4)
+    /* 5. Paging: identity map kernel + UART (Sv39)
      * PT pages are now per-color via alloc_frame (partition 0, color 0).
      * Init allocator before vspace so PT allocations are color-isolated. */
     extern frame_alloc_t g_alloc;
@@ -79,7 +117,6 @@ void kernel_boot(void) {
     uintptr_t k_base = 0x80000000;
     uintptr_t uart_base = 0x10000000;
     const char *arch = "Sv39";
-    bool need_uart_map = true;
     uintptr_t k_end = (uintptr_t)&_kernel_end;
     uintptr_t k_start = 0x80000000;
     size_t k_size = (k_end - k_start + PAGE_SIZE-1) & ~(PAGE_SIZE-1);
@@ -88,18 +125,12 @@ void kernel_boot(void) {
     kerror_t map_err = vspace_map(&g_kernel_vspace, k_base, k_base, k_size, 0x7, 0);
     if (map_err != ERR_OK) { uart_puts("[PAGING] kernel map FAIL err="); uart_hex(map_err); while(1) HALT(); }
     uart_puts("[PAGING] kernel "); uart_puts(arch); uart_puts(" mapped\n");
-    if (need_uart_map) {
-        if (vspace_map(&g_kernel_vspace, uart_base, uart_base, PAGE_SIZE, 0x3, 0) != ERR_OK) { uart_puts("[PAGING] UART map FAIL\n"); while(1) HALT(); }
-        uart_puts("[PAGING] UART mapped\n");
-    } else {
-        uart_puts("[PAGING] UART IO port (no map)\n");
-    }
+    if (vspace_map(&g_kernel_vspace, uart_base, uart_base, PAGE_SIZE, 0x3, 0) != ERR_OK) { uart_puts("[PAGING] UART map FAIL\n"); while(1) HALT(); }
+    uart_puts("[PAGING] UART mapped\n");
     uintptr_t pa; bool ok = vspace_resolve(&g_kernel_vspace, k_base, &pa);
     uart_puts(ok && pa==k_base ? "[PAGING] resolve OK\n" : "[PAGING] resolve FAIL\n");
-    if (need_uart_map) {
-        ok = vspace_resolve(&g_kernel_vspace, uart_base, &pa);
-        uart_puts(ok && pa==uart_base ? "[PAGING] UART resolve OK\n" : "[PAGING] UART resolve FAIL\n");
-    }
+    ok = vspace_resolve(&g_kernel_vspace, uart_base, &pa);
+    uart_puts(ok && pa==uart_base ? "[PAGING] UART resolve OK\n" : "[PAGING] UART resolve FAIL\n");
     vspace_switch(&g_kernel_vspace);
     uart_puts("[PAGING] "); uart_puts(arch); uart_puts(" switch OK\n");
 
@@ -252,16 +283,11 @@ void kernel_boot(void) {
         }
     }
 
-    uart_puts("[BOOT] ALL OK - parking\n");
+    uart_puts("[BOOT] ALL OK - entering moonsh on hart0\n");
+    thread_enter((uintptr_t)shell_main,
+                 (uintptr_t)(shell_stack + sizeof(shell_stack)));
+    uart_puts("[BOOT] shell exited - parking\n");
     while(1) {
-        __asm__ volatile("wfi");
-    }
-}
-
-void user_hello(void){
-    uart_puts("[USER] hello from userspace thread\n");
-    while(1){
-        __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
         __asm__ volatile("wfi");
     }
 }

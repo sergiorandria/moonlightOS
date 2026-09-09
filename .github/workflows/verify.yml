@@ -15,3 +15,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: isabelle build -D kernel/isabelle -v
+      - run: isabelle build -D v2/isabelle -v

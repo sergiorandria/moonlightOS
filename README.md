@@ -17,7 +17,7 @@ tools/run_qemu.sh --gdb   # GDB :1234
 ```
 
 ## Structure
-- `kernel/` - 6 syscalls, 3.5k LOC, `cap/cnode/tcb/vspace/endpoint/sched/iommu/irq/alloc/revoke/process`, `start.S`/`trap.S` Sv39, `linker.ld` stacks+pt_pool
+- `kernel/` - 8 syscalls (6 core + 2 debug console), 3.5k LOC, `cap/cnode/tcb/vspace/endpoint/sched/iommu/irq/alloc/revoke/process`, `start.S`/`trap.S` Sv39, `linker.ld` stacks+pt_pool
 - `kernel/isabelle/` - `RISCV_CHERI, CacheColoring, IOMMU_Verification, Moonlight_A/E, Sched_Verification, Refine`
 - `userspace/` - `mem_server` (color-aware), `sched_server` (EDF admission), `vfs_server` (FD caps), `drivers/virtio_net` (IOMMU-isolated), `example/hello`, `lib/moonlight.h` purecap ABI
 - `docs/` - `ARCHITECTURE.md`, `THREAT_MODEL.md`, `REPRODUCIBLE.md`, `USAGE.md`, `BUILD.md`, `SYSCALLS.md`, `CAPABILITIES.md`, `PRODUCTION.md` (DICE attestation planned, `boot/dice.c` not yet wired to boot - see `docs/REPRODUCIBLE.md`)
@@ -35,6 +35,6 @@ tools/run_qemu.sh --gdb   # GDB :1234
 
 - [Usage](docs/USAGE.md) - capabilities, TCB, VSpace, IPC, scheduling, full example
 - [Build](docs/BUILD.md) - host, CHERI, stock QEMU, QEMU, reproducible, troubleshooting
-- [Syscalls](docs/SYSCALLS.md) - 6 syscalls + 12 invoke ops
+- [Syscalls](docs/SYSCALLS.md) - 8 syscalls + 12 invoke ops
 - [Capabilities](docs/CAPABILITIES.md) - sealing, otype, attenuation, coloring
 - [Production](docs/PRODUCTION.md) - checklist, known gaps
