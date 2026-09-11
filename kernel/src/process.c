@@ -4,6 +4,9 @@
 #include <string.h>
 
 extern endpoint_t g_endpoints[MAX_ENDPOINTS];
+extern tcb_table_t g_tcbs;
+extern sched_state_t g_sched;
+extern mdb_tree_t g_mdb;
 
 kerror_t process_create(tcb_table_t *tcbs, frame_alloc_t *alloc,
                         sched_state_t *sched, mdb_tree_t *mdb,
@@ -39,7 +42,21 @@ kerror_t process_create(tcb_table_t *tcbs, frame_alloc_t *alloc,
   tcb->time_partition = args->partition_id;
   tcb->priority = args->priority;
   tcb->pc = args->pc;
-  tcb->sp = args->sp_top;
+  /* Stack top is authoritative from the carved frame (args->sp_top is only
+   * informational): this guarantees a mapped, colored backing store. */
+  tcb->sp = stack_cap.u.frame.paddr + args->stack_size;
+  if (args->name) {
+    size_t i;
+    for (i = 0; i < sizeof(tcb->name) - 1 && args->name[i]; i++)
+      tcb->name[i] = args->name[i];
+    tcb->name[i] = '\0';
+  }
+  /* First dispatch enters via the trampoline (s11 = entry pc). */
+#ifdef __riscv
+  tcb->ctx.ra = (uintptr_t)thread_trampoline;
+#endif
+  tcb->ctx.sp = tcb->sp;
+  tcb->ctx.s[11] = args->pc;
   /* CHERI: PCC and CSP are sealed caps bounded to code/stack */
   CHERI_CAP pcc = {0}, csp = {0};
 #ifndef __CHERI_PURE_CAPABILITY__
@@ -160,4 +177,29 @@ kerror_t process_destroy(tcb_table_t *tcbs, sched_state_t *sched,
   memset(t, 0, sizeof(*t));
   tcbs->count--;
   return ERR_OK;
+}
+
+/* moonsh `kill` (weak hook in shell). op: 0 destroy (SIGKILL-like: full
+ * teardown via process_destroy), 1 STOP (suspend), 2 CONT (resume).
+ * Returns 0 ok, -1 no such thread, -2 bad op. Single hart: the shell runs
+ * only while no thread is executing, so teardown cannot race a live
+ * context (refusing the current one anyway, defensively). */
+int moonsh_kill_tid(long tid, int op) {
+  tcb_t *t;
+  if (op < 0 || op > 2) return -2;
+  if (tid < 0 || tid >= MAX_TCBS) return -1;
+  t = &g_tcbs.threads[tid];
+  if (t->pc == 0 && t->sp == 0 && t->cspace == NULL) return -1;
+  if (op == 0) {
+    if (g_current_tcb != TCB_NONE && tid == (long)g_current_tcb) return -1;
+    return process_destroy(&g_tcbs, &g_sched, &g_mdb, (uint32_t)tid) == ERR_OK
+               ? 0
+               : -1;
+  }
+  if (op == 1) {
+    tcb_suspend(t);
+    return 0;
+  }
+  tcb_resume(t);
+  return 0;
 }

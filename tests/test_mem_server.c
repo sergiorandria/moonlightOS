@@ -1,6 +1,8 @@
 #include "../kernel/include/cap.h"
 #include "../kernel/include/cnode.h"
 #include "../kernel/include/types.h"
+#include "../kernel/include/alloc.h"
+#include "../kernel/include/vspace.h"
 #include <stdio.h>
 #include <assert.h>
 
@@ -25,6 +27,8 @@ int moonlight_retype(uint32_t cptr, uint32_t type, size_t size, uint32_t dest){
 int moonlight_cnode_copy(uint32_t dst, uint32_t src, uint32_t rights){ (void)dst;(void)src;(void)rights; return 0; }
 
 cnode_t g_root_cnode;
+frame_alloc_t g_alloc;    /* for alloc.c moonsh_mem_status (unused here) */
+vspace_t g_kernel_vspace; /* likewise */
 
 int main(){
     printf("=== test_mem_server ===\n");

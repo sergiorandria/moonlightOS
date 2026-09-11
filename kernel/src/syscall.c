@@ -6,6 +6,8 @@
 #include "../include/vspace.h"
 #include "../include/revoke.h"
 #include "../include/flush.h"
+#include "../include/console.h"
+#include "../include/kbd.h"
 
 extern tcb_table_t g_tcbs;
 extern endpoint_t g_endpoints[MAX_ENDPOINTS];
@@ -49,7 +51,9 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
     if (!frame) return ERR_INVALID_ARG;
     uint64_t entry_us = 0;
 #ifdef __riscv
-    __asm__ volatile("rdtime %0" : "=r"(entry_us));
+    /* MMIO clock (see sched_now): TB-cached rdtime would poison wcet_check. */
+    entry_us = *(volatile uint64_t *)0x200BFF8u;
+    __asm__ volatile("fence iorw,iorw" ::: "memory");
 #endif
     /* RISC-V calling convention: a7=sysno, a0=cap, a1/a2=args.
      * SYS_CALL/SYS_SEND: a1 = user pointer to ipc_msg_t (matches SYSCALLS.md). */
@@ -62,29 +66,69 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
     if (sys > SYS_MAX) return ERR_INVALID_ARG;
 
     /* Debug console: no cap needed (moves behind a console server later).
-     * Single-arg convention: the char rides in a0 (like the return slot). */
+     * Single-arg convention: the char rides in a0 (like the return slot).
+     * Routed: mirror mode -> UART+VGA, split (window shell) -> VGA only. */
     if (sys == SYS_DEBUG_PUTC) {
-        uart_putc((char)(frame->a0 & 0xFF));
+        if (g_current_tcb == TCB_NONE) g_putc_shell++;
+        else g_putc_thread++;
+        console_putc((char)(frame->a0 & 0xFF));
         if (!wcet_check(entry_us)) return ERR_WCET_EXCEEDED;
         frame->a0 = ERR_OK;
         return ERR_OK;
     }
     if (sys == SYS_DEBUG_GETC) {
-        /* Returns char 0-255, or (uintptr_t)-1 when RX empty (not a kerror_t). */
-        int c = uart_getc();
+        /* Returns char 0-255, or (uintptr_t)-1 when RX empty (not a kerror_t).
+         * Merged virtio-keyboard + UART ring (kbd_poll drains both). */
+        int c = kbd_getc();
         if (!wcet_check(entry_us)) return ERR_WCET_EXCEEDED;
         frame->a0 = (c < 0) ? (uintptr_t)-1 : (uintptr_t)c;
         return ERR_OK;
     }
 
-    tcb_t *tcb = &g_tcbs.threads[cur_tcb];
-    if (!tcb_is_runnable(tcb) && sys != SYS_YIELD) return ERR_PARTITION_DENIED;
+    /* Cooperative yield: the dispatch handshake. NOT subject to the cap /
+     * budget gates below (yield is how a thread hands budget control back;
+     * denying it would wedge the hart). Shell (TCB_NONE) runs the
+     * dispatcher; a dispatched thread parks back into it. */
+    if (sys == SYS_YIELD) {
+        extern uint32_t g_yield_cause11;
+        extern uint32_t g_yield_causeOther;
+        if ((frame->cause & 0xFFFu) == 11) g_yield_cause11++;
+        else g_yield_causeOther++;
+        if (cur_tcb != TCB_NONE && cur_tcb >= MAX_TCBS) return ERR_INVALID_ARG;
+        if (cur_tcb == TCB_NONE) g_yield_shell++; else g_yield_thread++;
+        /* Snapshot resume: snapshot the caller, install the pick (or keep
+         * the caller). Every trap completes, so trap frames never overlap
+         * suspended C frames (see sched_coop_switch). a0 is completed
+         * inside (install or keep path). */
+        sched_coop_switch(frame, cur_tcb);
+        if (!wcet_check(entry_us)) return ERR_WCET_EXCEEDED;
+        return ERR_OK;
+    }
+
+    /* Resolve the calling thread. The shell runs outside any TCB (TCB_NONE):
+     * no caps, no budget - only the legacy root-INVOKE path stays open. */
+    tcb_t *tcb = NULL;
+    if (cur_tcb != TCB_NONE) {
+        if (cur_tcb >= MAX_TCBS) return ERR_INVALID_ARG;
+        tcb = &g_tcbs.threads[cur_tcb];
+    }
+    if (tcb && !tcb_is_runnable(tcb)) return ERR_PARTITION_DENIED;
 
     /* Every capability invocation validates CHERI tag + rights + partition */
-    cap_t *cap = cnode_lookup(tcb->cspace, cap_ptr);
-    if (sys != SYS_YIELD && !cap) {
+    cap_t *cap = NULL;
+    if (tcb) {
+        cap = cnode_lookup(tcb->cspace, cap_ptr);
+        if (!cap) {
+            if (sys == SYS_INVOKE && cap_ptr == 0) {
+                /* Untyped retype from root - check root cnode */
+                cap = cnode_lookup(&g_root_cnode, arg1);
+                if (!cap) return ERR_INVALID_CAP;
+            } else {
+                return ERR_INVALID_CAP;
+            }
+        }
+    } else {
         if (sys == SYS_INVOKE && cap_ptr == 0) {
-            /* Untyped retype from root - check root cnode */
             cap = cnode_lookup(&g_root_cnode, arg1);
             if (!cap) return ERR_INVALID_CAP;
         } else {
@@ -93,7 +137,11 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
     }
 
     /* Temporal isolation: check partition budget */
-    if (g_sched.contexts[tcb->sched_context].remaining_us == 0) return ERR_WCET_EXCEEDED;
+    if (tcb) {
+        if (tcb->sched_context >= MAX_SCHED_CONTEXTS) return ERR_INVALID_CAP;
+        if (g_sched.contexts[tcb->sched_context].remaining_us == 0)
+            return ERR_WCET_EXCEEDED;
+    }
 
     kerror_t err = ERR_OK;
     switch (sys) {

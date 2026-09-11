@@ -14,6 +14,7 @@ sched_state_t g_sched;
 tcb_table_t g_tcbs;
 mdb_tree_t g_mdb;
 frame_alloc_t g_alloc;
+vspace_t g_kernel_vspace; /* for alloc.c moonsh_mem_status (unused here) */
 
 extern kerror_t handle_invoke(cap_t *cap, invoke_op_t op, uintptr_t arg1, uintptr_t arg2, uintptr_t arg3);
 

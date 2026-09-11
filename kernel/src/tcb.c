@@ -1,6 +1,10 @@
 #include "../include/tcb.h"
 #include <string.h>
 
+/* Must match the save/restore offsets in src/switch.S (ra,sp,s0..s11). */
+_Static_assert(sizeof(sw_ctx_t) == 14 * sizeof(uintptr_t),
+               "sw_ctx_t layout drifted from switch.S");
+
 kerror_t tcb_configure(tcb_t *tcb, cnode_t *cspace, uintptr_t vspace_root, asid_t asid, uint32_t partition) {
     if (!tcb || !cspace) return ERR_INVALID_ARG;
     tcb->cspace = cspace;
@@ -30,6 +34,17 @@ void tcb_resume(tcb_t *tcb) {
     }
 }
 bool tcb_is_runnable(tcb_t *tcb) { return tcb && tcb->state == TCB_RUNNABLE; }
+
+const char *tcb_state_name(tcb_state_t st) {
+  switch (st) {
+    case TCB_INACTIVE: return "INACTIVE";
+    case TCB_RUNNABLE: return "RUNNABLE";
+    case TCB_BLOCKED_SEND: return "BLOCKED_SEND";
+    case TCB_BLOCKED_RECV: return "BLOCKED_RECV";
+    case TCB_BLOCKED_REPLY: return "BLOCKED_REPLY";
+    default: return "UNKNOWN";
+  }
+}
 
 // Explicit wake for IPC - validates transition and clears fault
 kerror_t tcb_wake_from_ipc(tcb_t *tcb, uint32_t sender_id) {

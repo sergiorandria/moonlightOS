@@ -9,6 +9,8 @@
 #include "../include/process.h"
 #include "../include/syscall.h"
 #include "../include/vga.h"
+#include "../include/kbd.h"
+#include "../include/console.h"
 #include <string.h>
 
 extern sched_state_t g_sched;
@@ -60,12 +62,43 @@ static void __attribute__((noinline)) thread_enter(uintptr_t pc, uintptr_t sp_to
         : "memory");
 }
 
+/* Dispatched threads must not use boot.c's raw UART helper (it bypasses
+ * console routing); ecall putc goes through SYS_DEBUG_PUTC instead. */
+static void user_putc(char c){
+    register long r_a0 asm("a0") = (unsigned char)c;
+    register long r_a7 asm("a7") = 6; /* SYS_DEBUG_PUTC */
+    __asm__ volatile("ecall" : "+r"(r_a0) : "r"(r_a7) : "memory");
+}
+
+static void user_puts(const char *s){
+    while (*s) user_putc(*s++);
+}
+
 void user_hello(void){
-    uart_puts("[USER] hello from userspace thread\n");
+    extern uint32_t g_loop_iter[8];
+    extern uint32_t g_current_tcb;
+    user_puts("[USER] hello from dispatched thread\n");
     while(1){
-        __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
-        __asm__ volatile("wfi");
+        if (g_current_tcb < 8) g_loop_iter[g_current_tcb]++;
+        /* Calm the yield storm a little; wfi is banned here (M-mode with no
+         * timer IRQ would sleep the hart forever). */
+        for (volatile unsigned i = 0; i < 2000; i++) {}
+        /* Yield clobbers a0 (syscall result slot): declare it in-out so the
+         * compiler reloads loop-invariant address state (e.g. &g_current_tcb
+         * hoisted into a0) after every yield instead of faulting on a stale
+         * zero. a1-a7 survive the trap (full frame save/restore). */
+        { register long r_a0 asm("a0") = 0;
+          __asm__ volatile("li a7, 3; ecall" : "+r"(r_a0) :: "a7", "memory"); }
     }
+}
+
+/* Strong impl of moonsh's weak power hook: SiFive test finisher at 0x100000
+ * (mapped in kernel_boot). 0x5555 = poweroff, 0x7777 = reset (QEMU virt). */
+void moonsh_system_reset(int do_reset) {
+    volatile uint32_t *fin = (volatile uint32_t *)0x100000;
+    *fin = do_reset ? 0x7777u : 0x5555u;
+    __asm__ volatile("fence iorw,iorw" ::: "memory");
+    while (1) HALT();
 }
 
 void kernel_boot(void) {
@@ -127,6 +160,22 @@ void kernel_boot(void) {
     uart_puts("[PAGING] kernel "); uart_puts(arch); uart_puts(" mapped\n");
     if (vspace_map(&g_kernel_vspace, uart_base, uart_base, PAGE_SIZE, 0x3, 0) != ERR_OK) { uart_puts("[PAGING] UART map FAIL\n"); while(1) HALT(); }
     uart_puts("[PAGING] UART mapped\n");
+    /* SiFive test-finisher (poweroff/reboot behind moonsh `poweroff`/`reboot`).
+     * Non-fatal if unmapped: the shell reports it instead of hanging. */
+    if (vspace_map(&g_kernel_vspace, 0x100000, 0x100000, PAGE_SIZE, 0x3, 0) != ERR_OK)
+        uart_puts("[PAGING] TEST-finisher map FAIL (poweroff/reboot unavailable)\n");
+    else
+        uart_puts("[PAGING] TEST-finisher mapped\n");
+    /* Dispatched thread stacks live in the alloc pool: identity-map it so
+     * the stacks process_create carves are actually addressable. */
+    if (vspace_map(&g_kernel_vspace, 0x80400000, 0x80400000, 0x400000, 0x7, 0) != ERR_OK)
+        { uart_puts("[PAGING] pool map FAIL\n"); while(1) HALT(); }
+    uart_puts("[PAGING] alloc pool mapped\n");
+    /* CLINT (timer/MSI) for preemption: covers mtimecmp0 + mtime. */
+    if (vspace_map(&g_kernel_vspace, 0x2000000, 0x2000000, 0x42000, 0x3, 0) != ERR_OK)
+        { uart_puts("[PAGING] CLINT map FAIL (no preemption)\n"); }
+    else
+        uart_puts("[PAGING] CLINT mapped\n");
     uintptr_t pa; bool ok = vspace_resolve(&g_kernel_vspace, k_base, &pa);
     uart_puts(ok && pa==k_base ? "[PAGING] resolve OK\n" : "[PAGING] resolve FAIL\n");
     ok = vspace_resolve(&g_kernel_vspace, uart_base, &pa);
@@ -143,9 +192,48 @@ void kernel_boot(void) {
         uart_puts("[VGA] FAIL map framebuffer\n");
     }
 
+    /* 5c. Keyboard: virtio-input (MMIO) merged with UART into one ring.
+     * Absence is fine - moonsh falls back to UART-only input. */
+    kbd_init();
+    {
+        kerror_t ke = kbd_virtio_init(&g_kernel_vspace);
+        if (ke == ERR_OK)
+            uart_puts("[KBD] virtio-keyboard bound (eventq live, see `kbd`)\n");
+        else if (ke == ERR_NO_MEM)
+            uart_puts("[KBD] no virtio keyboard - UART-only input\n");
+        else
+            uart_puts("[KBD] virtio keyboard bind FAIL - UART-only input\n");
+    }
+
+    /* 5d. Console routing: window shell when VGA + virtio-kbd are both up
+     * (the launch terminal keeps the boot log above and goes quiet); serial
+     * mirror otherwise (--nographic has neither device). */
+    if (vga_is_initialized() && kbd_is_present()) {
+        uart_puts("[CONSOLE] split: shell on VGA + virtio-kbd (serial keeps boot log)\n");
+        console_set_split(1);
+    } else {
+        uart_puts("[CONSOLE] mirror: shell on serial (no window console)\n");
+    }
+
+    /* Machine-timer preemption: first compare + MTIE. Threads run MIE=1
+     * (trampoline + trap restore); shell/boot stay masked. A tick pending
+     * before the first thread simply fires on entry (self-healing). */
+    timer_init();
+    uart_puts("[TIMER] MTIP armed, slice 100k ticks (see `ps` preempt count)\n");
+    /* TEMP-EXP: spin with MIE=1 in boot; counter must grow if delivery works. */
+    {
+        extern uint64_t g_timer_ticks;
+        __asm__ volatile("csrsi mstatus, 8");
+        for (volatile unsigned long i = 0; i < 30000000ul; i++) {}
+        __asm__ volatile("csrci mstatus, 8");
+        uart_puts("[TIMER-EXP] ticks after boot spin: ");
+        uart_hex(g_timer_ticks);
+    }
+
     /* 6. Trigger trap test */
     uart_puts("[TRAP] ecall test (SYS_YIELD)...\n");
-    __asm__ volatile("li a7, 3; ecall" ::: "a7", "memory");
+    { register long r_a0 asm("a0") = 0;
+      __asm__ volatile("li a7, 3; ecall" : "+r"(r_a0) :: "a7", "memory"); }
     uart_puts("[TRAP] ECALL RETURNED - OK\n");
     uart_puts("[TRAP] HANDLER OK - DONE\n");
 
@@ -175,7 +263,8 @@ void kernel_boot(void) {
     {
         process_create_args_t args = {0};
         args.pc = (uintptr_t)user_hello;
-        args.sp_top = 0x80500000;
+        args.sp_top = 0; /* derived from carved frame */
+        args.name = "hello";
         args.stack_size = 4096;
         args.partition_id = 0;
         args.priority = 10;
@@ -238,7 +327,8 @@ void kernel_boot(void) {
     {
         process_create_args_t args = {0};
         args.pc = (uintptr_t)user_hello;
-        args.sp_top = 0x80600000;
+        args.sp_top = 0; /* derived from carved frame */
+        args.name = "mem_server";
         args.stack_size = 4096;
         args.partition_id = 0;
         args.priority = 5;
@@ -254,7 +344,8 @@ void kernel_boot(void) {
     {
         process_create_args_t args = {0};
         args.pc = (uintptr_t)user_hello;
-        args.sp_top = 0x80700000;
+        args.sp_top = 0; /* derived from carved frame */
+        args.name = "sched_server";
         args.stack_size = 4096;
         args.partition_id = 1;
         args.priority = 5;
@@ -270,7 +361,8 @@ void kernel_boot(void) {
     {
         process_create_args_t args = {0};
         args.pc = (uintptr_t)user_hello;
-        args.sp_top = 0x80800000;
+        args.sp_top = 0; /* derived from carved frame */
+        args.name = "vfs_server";
         args.stack_size = 4096;
         args.partition_id = 2;
         args.priority = 5;

@@ -26,3 +26,16 @@ kerror_t alloc_frame(frame_alloc_t *a, uint32_t partition_id, size_t size, cap_t
 kerror_t alloc_free(frame_alloc_t *a, cap_t *frame);
 uint16_t alloc_color_for_partition(uint32_t partition_id);
 bool alloc_color_is_valid(uint32_t partition_id, uint16_t color);
+
+/* Read-only snapshot for `mem` (pure: no globals, host-testable). */
+typedef struct {
+    uintptr_t base;
+    uintptr_t top;
+    uintptr_t used;          /* next - base */
+    uintptr_t free;          /* top - next */
+    uint32_t frames_carved;  /* entries in frames[] (<=512) */
+    uint32_t color_used[NUM_COLORS];
+} alloc_stats_t;
+kerror_t alloc_stats(frame_alloc_t *a, alloc_stats_t *out);
+/* moonsh `mem` one-shot (weak hook in shell): pool + colors + PT pages. */
+int moonsh_mem_status(char *buf, unsigned len);
