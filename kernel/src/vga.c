@@ -1,5 +1,6 @@
 #include "../include/vga.h"
 #include "../include/vspace.h"
+#include "../include/console.h"
 #include <string.h>
 
 static volatile uint32_t *fb = (volatile uint32_t*)VGA_FB_BASE;
@@ -141,11 +142,19 @@ static const uint8_t font8x8[128][8] = {
     { 0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // U+007E (~)
     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}    // U+007F
 };
-// Console state
+// Console state: shadow text buffer + cursor. Scrolling shifts both the
+// shadow and the pixels up one cell row (no full clears, no lost history).
 #define CONSOLE_COLS (VGA_WIDTH/8)
 #define CONSOLE_ROWS (VGA_HEIGHT/16)
+#define CON_CELL_W 8
+#define CON_CELL_H 16
+#define CON_GLYPH_H 8
+#define CON_FG 0x00FFFFFFu
+#define CON_BG 0x00000000u
 static int console_cx = 0;
 static int console_cy = 0;
+static int console_cursor = 0; /* 1 = inverted block drawn at cx,cy */
+static char console_text[CONSOLE_ROWS][CONSOLE_COLS];
 
 // Bochs VBE dispi spec
 #define VBE_DISPI_INDEX_ID          0x0
@@ -237,65 +246,141 @@ kerror_t vga_init(vspace_t *vs) {
     uart_puts("[VGA] init done, clearing FB\n");
     for(size_t i=0;i<100;i++) fb[i]=0x00000000;
     uart_puts("[VGA] FB clear done\n");
-    console_cx=0; console_cy=0;
+    for(int r=0;r<CONSOLE_ROWS;r++)
+        for(int c=0;c<CONSOLE_COLS;c++)
+            console_text[r][c]=' ';
+    console_cx=0; console_cy=0; console_cursor=0;
     return ERR_OK;
 }
 
 int vga_is_initialized(void){ return fb_init_done; }
 
+static void console_cell_draw(int col, int row, int invert);
+static void console_cursor_show(void);
+
+/* Full console reset: blank shadow + pixels, cursor home (drawn visible so
+ * the input position is always obvious). Backs `clear` via the moonsh hook. */
 void vga_console_clear(void){
+    int r, c;
+    size_t i, n;
     if(!fb_init_done) return;
-    // No full clear here - vga_init already cleared small area, console will overwrite
-    console_cx=0; console_cy=0;
+    console_cursor = 0;
+    for(r=0;r<CONSOLE_ROWS;r++)
+        for(c=0;c<CONSOLE_COLS;c++)
+            console_text[r][c] = ' ';
+    n = (size_t)VGA_WIDTH * (size_t)VGA_HEIGHT;
+    for(i=0;i<n;i++) fb[i] = CON_BG;
+    console_cx = 0;
+    console_cy = 0;
+    console_cursor_show();
 }
 
+static void console_cell_draw(int col, int row, int invert){
+    char c;
+    const uint8_t *g;
+    uint32_t fg, bg;
+    int r, cc;
+    if(col<0 || col>=CONSOLE_COLS || row<0 || row>=CONSOLE_ROWS) return;
+    c = console_text[row][col];
+    if((unsigned char)c<0x20 || (unsigned char)c>0x7E) c='?';
+    g = font8x8[(unsigned char)c];
+    fg = invert ? CON_BG : CON_FG;
+    bg = invert ? CON_FG : CON_BG;
+    for(r=0;r<CON_GLYPH_H;r++){
+        uint8_t bits = g[r];
+        for(cc=0;cc<CON_CELL_W;cc++){
+            int px = col*CON_CELL_W+cc;
+            int py = row*CON_CELL_H+r*2;
+            uint32_t colr = (bits & (1u << cc)) ? fg : bg;
+            fb[py*VGA_WIDTH+px]=colr;
+            fb[(py+1)*VGA_WIDTH+px]=colr;
+        }
+    }
+}
+
+static void console_cursor_erase(void){
+    if(console_cursor){ console_cursor=0; console_cell_draw(console_cx,console_cy,0); }
+}
+
+static void console_cursor_show(void){
+    if(!console_cursor){ console_cursor=1; console_cell_draw(console_cx,console_cy,1); }
+}
+
+/* Scroll up one text row: shadow loop, pixel shift, blanked bottom line. */
 static void vga_console_scroll(void){
+    int r, c;
+    size_t i, n;
+    volatile uint32_t *dst, *src;
     if(!fb_init_done) return;
-    // Simple scroll: clear screen and reset to top (faster than memmove, avoids 480k writes)
-    for(size_t i=0;i<VGA_WIDTH*VGA_HEIGHT;i++) fb[i]=0x00000000;
-    console_cy=0; console_cx=0;
+    console_cursor = 0;
+    for(r=0;r<CONSOLE_ROWS-1;r++)
+        for(c=0;c<CONSOLE_COLS;c++)
+            console_text[r][c] = console_text[r+1][c];
+    for(c=0;c<CONSOLE_COLS;c++)
+        console_text[CONSOLE_ROWS-1][c] = ' ';
+    /* dst < src: forward copy is overlap-safe. */
+    dst = fb;
+    src = fb + (size_t)VGA_WIDTH * CON_CELL_H;
+    n = (size_t)VGA_WIDTH * ((size_t)VGA_HEIGHT - CON_CELL_H);
+    for(i=0;i<n;i++) dst[i] = src[i];
+    n = (size_t)VGA_WIDTH * (size_t)VGA_HEIGHT;
+    for(i=(size_t)VGA_WIDTH*((size_t)VGA_HEIGHT-CON_CELL_H);i<n;i++) fb[i] = CON_BG;
+    console_cx = 0;
+    console_cy = CONSOLE_ROWS-1;
+}
+
+static void console_newline(void){
+    console_cx = 0;
+    console_cy++;
+    if(console_cy >= CONSOLE_ROWS) vga_console_scroll();
 }
 
 void vga_console_putc(char c){
+    int t;
     if(!fb_init_done) return;
-    if(c=='\r'){ console_cx=0; return; }
-    if(c=='\n'){
-        console_cx=0;
-        console_cy++;
-        if(console_cy >= CONSOLE_ROWS){
-            vga_console_scroll();
-            console_cy = CONSOLE_ROWS-1;
-        }
-        return;
-    }
-    // draw char at console position
-    if((unsigned char)c<0x20 || (unsigned char)c>0x7E) c='?';
-    const uint8_t *g = font8x8[(unsigned char)c];
-    for(int row=0;row<8;row++){
-        uint8_t bits = g[row];
-        for(int col=0;col<8;col++){
-            int px = console_cx*8+col;
-            int py = console_cy*16+row*2;
-            if(px>=VGA_WIDTH || py>=VGA_HEIGHT) continue;
-            uint32_t colr = (bits & (1 << col)) ? 0x00FFFFFF : 0x00000000;
-            fb[py*VGA_WIDTH+px]=colr;
-            if(py+1<VGA_HEIGHT) fb[(py+1)*VGA_WIDTH+px]=colr;
+    console_cursor_erase();
+    if(c=='\r'){ console_cx=0; }
+    else if(c=='\n'){ console_newline(); }
+    else if(c=='\b'){ /* erase within the line; never eat the line above */
+        if(console_cx>0){
+            console_cx--;
+            console_text[console_cy][console_cx]=' ';
+            console_cell_draw(console_cx,console_cy,0);
         }
     }
-    console_cx++;
-    if(console_cx >= CONSOLE_COLS){
-        console_cx=0;
-        console_cy++;
-        if(console_cy >= CONSOLE_ROWS){
-            vga_console_scroll();
-            console_cy = CONSOLE_ROWS-1;
+    else if(c=='\t'){ /* tab stops every 8 columns */
+        t = (console_cx+8) & ~7;
+        if(t>=CONSOLE_COLS){ console_newline(); }
+        else {
+            for(;console_cx<t;console_cx++){
+                console_text[console_cy][console_cx]=' ';
+                console_cell_draw(console_cx,console_cy,0);
+            }
         }
     }
+    else {
+        if((unsigned char)c<0x20 || (unsigned char)c>0x7E) c='?';
+        console_text[console_cy][console_cx]=c;
+        console_cell_draw(console_cx,console_cy,0);
+        console_cx++;
+        if(console_cx>=CONSOLE_COLS) console_newline();
+    }
+    console_cursor_show();
 }
 
 void vga_console_puts(const char *s){
     if(!s) return;
     while(*s) vga_console_putc(*s++);
+}
+
+/* Strong impl of moonsh's weak clear hook (userspace ELF has none): clear
+ * the visible console(s). The framebuffer has no ANSI parser, so VGA gets
+ * a real blank; the serial terminal gets ANSI only in mirror mode (in
+ * split mode the launch terminal keeps the boot log untouched). */
+void moonsh_console_clear(void){
+    vga_console_clear();
+    if(!console_is_split())
+        uart_puts("\x1b[2J\x1b[H");
 }
 
 void vga_clear(uint32_t color){
