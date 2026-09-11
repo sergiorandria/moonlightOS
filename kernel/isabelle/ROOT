@@ -7,4 +7,5 @@ session Moonlight = "HOL-Library" +
     Moonlight_A
     Moonlight_E
     Sched_Verification
+    FS_Verification
     Refine

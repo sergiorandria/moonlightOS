@@ -38,6 +38,13 @@ typedef struct {
     uint32_t label;
     uint32_t length;
     uint32_t caps;
+    /* Authenticated sender: filled by the kernel on endpoint_recv (sender
+     * TCB id, or 0xFFFFFFFF when unknown). Servers key per-client state
+     * (e.g. VFS fd tables) on this; clients must ignore it on send (the
+     * kernel overwrites). Appended at the end so existing initializers
+     * ({0}, field writes) keep working. */
+    uint32_t sender_tcb;
+    uint32_t _rsv;
     uint64_t words[IPC_MSG_MAX];
     cptr_t cap_ptrs[IPC_CAPS_MAX];
 } ipc_msg_t;

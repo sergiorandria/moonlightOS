@@ -32,7 +32,7 @@ CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE)
 else
 CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE) -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-cast-align
 endif
-SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c src/flush.c src/elf.c src/vga.c src/kbd.c ../userspace/sh/shell.c ../userspace/lib/moonlight.c
+SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c src/flush.c src/elf.c src/vga.c src/kbd.c ../userspace/sh/shell.c ../userspace/lib/moonlight.c ../userspace/vfs_server/server.c
 ASM = src/start.S src/trap.S src/switch.S
 LINKER = linker.ld
 
@@ -86,7 +86,7 @@ compcert:
 	else echo "SKIP: ccomp not found (https://compcert.org)"; fi
 
 clean:
-	rm -f build/moonlight.elf build/moonlight.qemu.elf src/*.o src/*.d ../userspace/sh/shell.o ../userspace/sh/shell.d ../userspace/lib/moonlight.o ../userspace/lib/moonlight.d
+	rm -f build/moonlight.elf build/moonlight.qemu.elf src/*.o src/*.d ../userspace/sh/shell.o ../userspace/sh/shell.d ../userspace/lib/moonlight.o ../userspace/lib/moonlight.d ../userspace/vfs_server/server.o ../userspace/vfs_server/server.d
 	@rmdir --ignore-fail-on-non-empty build 2>/dev/null || true
 
 .PHONY: all qemu isabelle verify cbmc clean

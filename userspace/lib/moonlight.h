@@ -19,6 +19,10 @@ typedef struct {
     uint32_t label;
     uint32_t length;
     uint32_t caps;
+    /* Kernel-filled on receive (sender TCB id, 0xFFFFFFFF unknown). Clients
+     * must ignore on send. Mirrors kernel ipc_msg_t: do not reorder. */
+    uint32_t sender_tcb;
+    uint32_t _rsv;
     uint64_t words[MOONLIGHT_MSG_MAX];
     uint32_t cap_ptrs[MOONLIGHT_CAPS_MAX];
 } moonlight_msg_t;

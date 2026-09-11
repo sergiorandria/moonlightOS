@@ -8,6 +8,11 @@ typedef struct endpoint {
     uint32_t sender_tcb;
     uint32_t receiver_tcb;
     ipc_msg_t pending_msg;
+    /* Sender of pending_msg (set on every send that stores it): recv stamps
+     * it into the delivered message so servers can authenticate clients
+     * (VFS per-client fd tables). Queue slots carry their senders in
+     * queue[]; see endpoint_send/recv. */
+    uint32_t pending_sender;
     bool pending;
     uint32_t queue[16];
     ipc_msg_t queue_msgs[16]; // per-slot messages for FIFO

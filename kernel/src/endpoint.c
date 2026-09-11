@@ -13,6 +13,7 @@ kerror_t endpoint_send(endpoint_t *ep, uint32_t sender, ipc_msg_t *msg) {
     // Rendezvous: direct copy if receiver waiting, wake it
     if (ep->has_receiver) {
         ep->pending_msg = *msg;
+        ep->pending_sender = sender;
         ep->pending = true;
         uint32_t recvr = ep->receiver_tcb;
         ep->has_receiver = false;
@@ -29,8 +30,17 @@ kerror_t endpoint_send(endpoint_t *ep, uint32_t sender, ipc_msg_t *msg) {
     ep->q_tail = (ep->q_tail+1)%16;
     ep->q_len++;
     ep->pending_msg = *msg;
+    ep->pending_sender = sender;
     ep->pending = true;
     return ERR_OK;
+}
+
+/* Stamp the authenticated sender into a delivered message. Out-of-range
+ * ids (including never-set slots) become 0xFFFFFFFF: servers must treat
+ * that as "no client" and deny per-client operations. */
+static void stamp_sender(ipc_msg_t *out, uint32_t sender) {
+    if (!out) return;
+    out->sender_tcb = (sender < MAX_TCBS) ? sender : 0xFFFFFFFFu;
 }
 
 kerror_t endpoint_recv(endpoint_t *ep, uint32_t receiver, ipc_msg_t *out) {
@@ -42,6 +52,7 @@ kerror_t endpoint_recv(endpoint_t *ep, uint32_t receiver, ipc_msg_t *out) {
         ep->q_len--;
         if (ep->q_len == 0) ep->pending = false;
         else ep->pending_msg = ep->queue_msgs[ep->q_head];
+        stamp_sender(out, sender);
         // Wake queued sender if it was blocked
         if (sender < MAX_TCBS) {
             tcb_t *stcb = &g_tcbs.threads[sender];
@@ -53,6 +64,7 @@ kerror_t endpoint_recv(endpoint_t *ep, uint32_t receiver, ipc_msg_t *out) {
         *out = ep->pending_msg;
         ep->pending = false;
         ep->has_receiver = false;
+        stamp_sender(out, ep->pending_sender);
         return ERR_OK;
     }
     ep->has_receiver = true;
