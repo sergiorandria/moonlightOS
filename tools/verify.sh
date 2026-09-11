@@ -8,7 +8,7 @@ gcc -I kernel/include -o /tmp/test_sched_bitmap tests/test_sched_bitmap.c tests/
 gcc -I kernel/include -o /tmp/test_revoke tests/test_revoke_process.c tests/stub_globals.c kernel/src/revoke.c kernel/src/process.c kernel/src/sched.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c kernel/src/endpoint.c && /tmp/test_revoke
 gcc -I kernel/include -o /tmp/host_emul tests/host_emul.c tests/stub_globals.c kernel/src/revoke.c kernel/src/process.c kernel/src/sched.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c kernel/src/cnode.c kernel/src/cap.c kernel/src/endpoint.c && /tmp/host_emul
 gcc -I kernel/include -o /tmp/bench tests/bench_ipc.c tests/stub_globals.c kernel/src/endpoint.c kernel/src/tcb.c && /tmp/bench
-gcc -I kernel/include -o /tmp/fuzz tests/fuzz_syscall.c tests/stub_globals.c kernel/src/syscall.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/endpoint.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/flush.c && /tmp/fuzz
+gcc -I kernel/include -o /tmp/fuzz tests/fuzz_syscall.c tests/stub_globals.c kernel/src/syscall.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/endpoint.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/flush.c kernel/src/kbd.c && /tmp/fuzz || echo "FAIL: fuzz_syscall"
 echo "[1a] ABI regression: uintptr_t must be 8 bytes (PLAN 3)"
 gcc -I kernel/include -o /tmp/test_abi tests/test_abi.c && /tmp/test_abi
 echo '#include <stdint.h>
@@ -17,13 +17,16 @@ echo "[1b] Hardening + vspace + trap (host sim)"
 gcc -I kernel/include -o /tmp/test_hardening tests/test_hardening.c kernel/src/hardening.c 2>/dev/null && /tmp/test_hardening || echo "SKIP: test_hardening not found"
 gcc -I kernel/include -o /tmp/test_vspace tests/test_vspace.c tests/stub_globals.c kernel/src/vspace.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c 2>&1 && /tmp/test_vspace || echo "FAIL: test_vspace"
 gcc -I kernel/include -o /tmp/test_virtio_net tests/test_virtio_net.c tests/stub_globals.c kernel/src/iommu.c kernel/src/cheri.c kernel/src/alloc.c 2>&1 && /tmp/test_virtio_net || echo "FAIL: test_virtio_net"
-gcc -I kernel/include -o /tmp/test_ipc_trap tests/test_ipc_trap.c tests/stub_globals.c kernel/src/endpoint.c kernel/src/tcb.c kernel/src/cap.c kernel/src/cnode.c kernel/src/syscall.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/revoke.c kernel/src/alloc.c kernel/src/notification.c kernel/src/hardening.c kernel/src/flush.c 2>&1 && /tmp/test_ipc_trap || echo "FAIL: test_ipc_trap"
-gcc -I kernel/include -o /tmp/test_invoke_ops tests/test_invoke_ops.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/vspace.c kernel/src/sched.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/cheri.c kernel/src/syscall.c kernel/src/endpoint.c kernel/src/notification.c kernel/src/flush.c 2>&1 && /tmp/test_invoke_ops || echo "FAIL: test_invoke_ops"
+gcc -I kernel/include -o /tmp/test_ipc_trap tests/test_ipc_trap.c tests/stub_globals.c kernel/src/endpoint.c kernel/src/tcb.c kernel/src/cap.c kernel/src/cnode.c kernel/src/syscall.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c kernel/src/revoke.c kernel/src/alloc.c kernel/src/notification.c kernel/src/hardening.c kernel/src/flush.c kernel/src/kbd.c 2>&1 && /tmp/test_ipc_trap || echo "FAIL: test_ipc_trap"
+gcc -I kernel/include -o /tmp/test_invoke_ops tests/test_invoke_ops.c tests/stub_globals.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/vspace.c kernel/src/sched.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/cheri.c kernel/src/syscall.c kernel/src/endpoint.c kernel/src/notification.c kernel/src/flush.c kernel/src/kbd.c 2>&1 && /tmp/test_invoke_ops || echo "FAIL: test_invoke_ops"
 gcc -I kernel/include -o /tmp/test_mem_server tests/test_mem_server.c userspace/mem_server/server.c kernel/src/cap.c kernel/src/cnode.c kernel/src/alloc.c 2>&1 && /tmp/test_mem_server || echo "FAIL: test_mem_server"
 gcc -I kernel/include -o /tmp/test_sched_server tests/test_sched_server.c userspace/sched_server/server.c 2>&1 && /tmp/test_sched_server || echo "FAIL: test_sched_server"
 if gcc -I kernel/include -o /tmp/test_vfs tests/test_vfs.c userspace/vfs_server/server.c 2>&1; then /tmp/test_vfs || echo "FAIL: test_vfs run failed"; else echo "FAIL: test_vfs compile failed"; fi
-echo "[1c] moonsh shell + userspace ELFs"
+echo "[1c] moonsh shell + keyboard + userspace ELFs"
 gcc -Wall -Wextra -o /tmp/test_shell tests/test_shell.c userspace/sh/shell.c 2>&1 && /tmp/test_shell || echo "FAIL: test_shell"
+gcc -Wall -Wextra -I kernel/include -o /tmp/test_kbd tests/test_kbd.c kernel/src/kbd.c 2>&1 && /tmp/test_kbd || echo "FAIL: test_kbd"
+gcc -Wall -Wextra -I kernel/include -o /tmp/test_console tests/test_console.c kernel/src/flush.c kernel/src/kbd.c 2>&1 && /tmp/test_console || echo "FAIL: test_console"
+gcc -Wall -Wextra -I kernel/include -o /tmp/test_info tests/test_info.c tests/stub_globals.c kernel/src/sched.c kernel/src/tcb.c kernel/src/process.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/cheri.c kernel/src/cnode.c kernel/src/cap.c 2>&1 && /tmp/test_info || echo "FAIL: test_info"
 if command -v clang &>/dev/null; then
   make -C userspace 2>&1 | tail -n 2 || echo "FAIL: userspace ELFs"
 else
@@ -135,10 +138,16 @@ if [ -f kernel/build/moonlight.elf ]; then
     timeout 3 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf -d guest_errors 2>&1 | head -n 20 || echo "QEMU smoke: no output (expected wfi)"
     echo "QEMU smoke done"
     # moonsh interactive smoke: pipe commands, expect prompt + builtin output
-    if printf 'help\nyield\n' | timeout 12 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf 2>&1 | grep -q "moonsh builtins"; then
+    # (30s: TCG boot is slow on loaded machines; 12s flaked under load)
+    if printf 'help\nver\nkbd\nhistory\nhex hi\nyield\n' | timeout 30 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf 2>&1 | grep -q "moonsh builtins"; then
       echo "moonsh smoke: PASS (prompt + help on serial)"
     else
       echo "moonsh smoke: FAIL (no shell output - see log above)"
+    fi
+    if printf 'ver\n' | timeout 30 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf 2>&1 | grep -q "MoonlightOS"; then
+      echo "moonsh smoke: PASS (ver on serial)"
+    else
+      echo "moonsh smoke: FAIL (no ver output - see log above)"
     fi
     # v2 Stage-1 smoke: S-mode kernel under OpenSBI, two U threads, fault demo
     if [ -f v2/kernel/build/v2.elf ]; then

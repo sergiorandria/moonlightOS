@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 # MoonlightOS QEMU runner - production grade, autodetects CHERI vs stock
+# Usage: tools/run_qemu.sh [elf] [--nographic|--gdb|--trace-int]
+# The flag may also be passed as $1 (elf defaults to kernel/build/moonlight.elf).
+if [[ "${1:-}" == --* ]]; then
+  ELF="kernel/build/moonlight.elf"
+  # shift flag into $2 so the checks below keep working
+  set -- "$ELF" "$@"
+fi
 ELF=${1:-kernel/build/moonlight.elf}
 if [ ! -f "$ELF" ]; then
   echo "build first: make -C kernel (or tools/build_qemu.sh)"
@@ -42,7 +49,7 @@ fi
 # Display handling: use a window if DISPLAY/WAYLAND_DISPLAY is set,
 # otherwise fall back to VNC so you can still SEE the framebuffer over
 # SSH/headless sessions instead of silently going fully -nographic.
-if [ "$2" = "--nographic" ]; then
+if [[ "$*" == *"--nographic"* ]]; then
   DISP="-nographic"
 elif [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
   if $QEMU -display help 2>&1 | grep -q "gtk"; then
@@ -59,25 +66,52 @@ else
   DISP="-display vnc=127.0.0.1:0"
 fi
 
-# VGA framebuffer for Hello world on screen
-# Always add bochs-display if available so PCI scan succeeds even in --nographic
-# (needed for diagnostics via serial alone). Prefer bochs over ramfb.
+# VGA + keyboard follow the display: with a window (gtk/sdl/vnc) the shell
+# splits onto VGA + virtio-keyboard and the launch terminal keeps only the
+# boot log. --nographic attaches neither device, so the kernel stays in
+# mirror mode and the shell lives on serial as before.
 VGA_ARGS=""
-if $QEMU -device help 2>&1 | grep -q "bochs-display"; then
-  VGA_ARGS="-device bochs-display"
-elif $QEMU -device help 2>&1 | grep -q "ramfb"; then
-  VGA_ARGS="-device ramfb"
-elif $QEMU -device help 2>&1 | grep -q "virtio-gpu"; then
-  VGA_ARGS="-device virtio-gpu-device"
+KBD_ARGS=""
+if [ "$DISP" != "-nographic" ]; then
+  if $QEMU -device help 2>&1 | grep -q "bochs-display"; then
+    VGA_ARGS="-device bochs-display"
+  elif $QEMU -device help 2>&1 | grep -q "ramfb"; then
+    VGA_ARGS="-device ramfb"
+  elif $QEMU -device help 2>&1 | grep -q "virtio-gpu"; then
+    VGA_ARGS="-device virtio-gpu-device"
+  fi
+
+  # Keyboard: virtio-input over MMIO (riscv-virt has no PS/2). The graphical
+  # window feeds this device; kbd.c merges it with the UART. Absent headless:
+  # the driver logs UART-only fallback and the shell stays on serial.
+  if $QEMU -device help 2>&1 | grep -q "virtio-keyboard-device"; then
+    KBD_ARGS="-device virtio-keyboard-device"
+  fi
 fi
 
 BIOS_ARGS="-bios none"
 
-# GDB support
-if [ "$2" = "--gdb" ] || [ "$3" = "--gdb" ]; then
-  echo "GDB on :1234 - connect with: riscv64-unknown-elf-gdb $ELF -ex 'target remote :1234'"
-  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $VGA_ARGS -S -s -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
+# Logging: -d guest_errors only by default. The moonsh idle loop polls
+# SYS_DEBUG_GETC + SYS_YIELD via ecall at high frequency, so `-d int`
+# floods the terminal with riscv_cpu_do_interrupt lines and hides the
+# actual serial output. Opt in only when tracing traps:
+#   tools/run_qemu.sh [elf] --trace-int
+LOG_ARGS="-d guest_errors"
+if [[ "$*" == *"--trace-int"* ]]; then
+  LOG_ARGS="-d guest_errors,int,cpu_reset"
 fi
 
-echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $BIOS_ARGS -kernel $ELF -no-reboot -d int,cpu_reset"
-exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $DISP $VGA_ARGS -serial mon:stdio -d guest_errors -no-reboot -d int,cpu_reset
+# GDB support
+if [[ "$*" == *"--gdb"* ]]; then
+  echo "GDB on :1234 - connect with: riscv64-unknown-elf-gdb $ELF -ex 'target remote :1234'"
+  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $VGA_ARGS $KBD_ARGS -S -s -serial mon:stdio $LOG_ARGS -no-reboot
+fi
+
+echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $KBD_ARGS $BIOS_ARGS -kernel $ELF -no-reboot $LOG_ARGS"
+if [ "$DISP" = "-nographic" ]; then
+  echo "(shell on serial; use a display for the window shell)"
+else
+  echo "(shell in the QEMU window; serial keeps the boot log)"
+fi
+echo "(use --trace-int to re-enable -d int logging)"
+exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $DISP $VGA_ARGS $KBD_ARGS -serial mon:stdio $LOG_ARGS -no-reboot

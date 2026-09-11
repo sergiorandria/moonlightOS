@@ -1,0 +1,42 @@
+name: cheri-purecap
+on: [push, pull_request]
+jobs:
+  cheri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build lld
+      - name: Build CHERI LLVM via cheribuild
+        run: |
+          git clone https://github.com/CTSRD-CHERI/cheribuild.git /tmp/cheribuild
+          python3 /tmp/cheribuild/cheribuild.py llvm --skip-sdk -d
+          ls -lh /tmp/cheribuild/output/sdk/bin/clang || ls -lh /tmp/cheribuild/output/cheri/bin/clang
+      - name: Check CHERI clang (required)
+        run: |
+          CHERI_CC=$(find /tmp/cheribuild -name clang -type f | head -n1)
+          if [ -z "$CHERI_CC" ] || [ ! -x "$CHERI_CC" ]; then
+            echo "::error::CHERI clang not found after cheribuild — toolchain required for purecap CI"
+            exit 1
+          fi
+          echo "CHERI_CC=$CHERI_CC"
+          $CHERI_CC --version
+          $CHERI_CC -march=rv64imacxcheri -E -dM - < /dev/null | head -n 20
+      - name: Build kernel purecap (required)
+        run: |
+          CHERI_CC=$(find /tmp/cheribuild -name clang -type f | head -n1)
+          if [ -z "$CHERI_CC" ] || [ ! -x "$CHERI_CC" ]; then
+            echo "::error::CHERI toolchain not found — failing purecap job (was previously swallowed with exit 0)"
+            exit 1
+          fi
+          echo "Building with $CHERI_CC"
+          make -C kernel clean
+          CC=$CHERI_CC make -C kernel -j
+          ls -lh kernel/build/moonlight.elf
+          test -f kernel/build/moonlight.elf || (echo "::error::purecap build did not produce kernel/build/moonlight.elf" && exit 1)
+      - name: Verify purecap artifacts
+        run: |
+          if [ -f kernel/build/moonlight.elf ]; then
+            file kernel/build/moonlight.elf
+            riscv64-unknown-elf-readelf -h kernel/build/moonlight.elf 2>/dev/null | head -n 20 || llvm-readelf -h kernel/build/moonlight.elf 2>/dev/null | head -n 20 || true
+          fi
