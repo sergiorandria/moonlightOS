@@ -195,7 +195,7 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
 }
 
 /* test_cap_thread: exercises capability system end-to-end
- * PT_ALLOC → MAP → WRITE → READ → UNMAP → REVOKE → W^X rejection */
+ * PT_ALLOC → MAP → WRITE → READ */
 __attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
     uputc('C'); uputc('A'); uputc('P'); uputc('\n');
 

@@ -164,7 +164,7 @@ int main(void) {
         rc = frame_alloc_slot(&st, 0);
         assert(rc == V2_OK);
         int allocated_slot = -1;
-        for (int i = 0; i < V2_CAP_SLOTS; i++) {
+        for (int i = 0; i < V2_CAP_SLOTS; i++) { /* bound: V2_CAP_SLOTS */
             if (st.caps[0][i].valid && !st.caps[0][i].root) {
                 allocated_slot = i;
                 break;

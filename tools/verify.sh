@@ -32,8 +32,8 @@ else
   echo "SKIP: userspace ELFs (clang not found)"
 fi
 echo "[1f] v2 kernel build + Stage-2/3 host tests"
-gcc -Wall -Wextra -Werror -o /tmp/test_v2ipc tests/test_v2ipc.c 2>&1 && /tmp/test_v2ipc || echo "FAIL: test_v2ipc"
-gcc -Wall -Wextra -Werror -o /tmp/test_v2caps tests/test_v2caps.c 2>&1 && /tmp/test_v2caps || echo "FAIL: test_v2caps"
+clang -Wall -Wextra -Werror -o /tmp/test_v2ipc tests/test_v2ipc.c 2>&1 && /tmp/test_v2ipc || echo "FAIL: test_v2ipc"
+clang -Wall -Wextra -Werror -o /tmp/test_v2caps tests/test_v2caps.c 2>&1 && /tmp/test_v2caps || echo "FAIL: test_v2caps"
 if command -v clang &>/dev/null; then
   make -C kernel 2>&1 | tail -n 1 || echo "FAIL: kernel build"
 else
