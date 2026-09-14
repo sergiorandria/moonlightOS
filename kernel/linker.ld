@@ -8,6 +8,7 @@ PHDRS {
 }
 SECTIONS {
     . = 0x80000000;
+    _text_start = .;
     /* Keep original 0x80200000 alias for OpenSBI builds */
     /* Wildcards catch clang subsections (.text.*, .rodata.str1.1, .rodata.cst8):
      * orphans would otherwise land inside [_bss, _bss_end) and be wiped by
@@ -15,6 +16,17 @@ SECTIONS {
     .text : { *(.text.start) *(.text*) } :text
     .rodata : { *(.rodata*) } :rodata
     .data : { *(.data*) } :rodata
+    /* DICE expected-hash slot: 32 bytes supplied by build/expected_hash.o
+     * (`make provision-dice`). The measurement in kernel/src/dice.c hashes
+     * [_text_start,_dice_expected_start) + [_dice_expected_end,_bss), i.e.
+     * everything file-backed EXCEPT this slot - so provisioning is a fixed
+     * point reached in a single rebuild. KEEP: an unreferenced const would
+     * otherwise be GC'd and the symbols would go undefined. */
+    .dice_expected : ALIGN(4) {
+        _dice_expected_start = .;
+        KEEP(*(.dice_expected))
+        _dice_expected_end = .;
+    } :rodata
     _bss = .;
     .bss : { *(.bss*) *(COMMON) }
     . = ALIGN(4096);

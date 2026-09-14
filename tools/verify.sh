@@ -16,6 +16,7 @@ _Static_assert(sizeof(uintptr_t)==8, "uintptr_t is not 8 bytes");' | clang --tar
 echo "[1b] Hardening + vspace + trap (host sim)"
 gcc -I kernel/include -o /tmp/test_hardening tests/test_hardening.c kernel/src/hardening.c 2>/dev/null && /tmp/test_hardening || echo "SKIP: test_hardening not found"
 gcc -I kernel/include -o /tmp/test_vspace tests/test_vspace.c tests/stub_globals.c kernel/src/vspace.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c 2>&1 && /tmp/test_vspace || echo "FAIL: test_vspace"
+gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_dice tests/test_dice.c kernel/src/sha256.c kernel/src/dice.c 2>&1 && /tmp/test_dice || echo "FAIL: test_dice"
 gcc -I userspace/libc/include -I kernel/include -o /tmp/test_libc tests/test_libc.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/ctype.c userspace/libc/src/time.c userspace/libc/src/errno.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/signal.c userspace/libc/src/fenv.c userspace/libc/src/locale.c userspace/libc/src/scanf.c userspace/libc/src/getopt.c userspace/libc/src/env.c userspace/libc/src/strings.c userspace/libc/src/spawn.c userspace/libc/src/proc.c 2>&1 && /tmp/test_libc || echo "FAIL: test_libc"
 gcc -I userspace/libc/include -I kernel/include -o /tmp/test_newlibc tests/test_newlibc.c userspace/libc/src/complex.c userspace/libc/src/monetary.c userspace/libc/src/langinfo.c userspace/libc/src/iconv.c userspace/libc/src/locale.c userspace/libc/src/math.c userspace/libc/src/nltypes.c userspace/libc/src/threads.c userspace/libc/src/stdlib.c userspace/libc/src/string.c userspace/libc/src/errno.c -lm 2>&1 && /tmp/test_newlibc || echo "FAIL: test_newlibc"
 gcc -I userspace/libc/include -I kernel/include -o /tmp/test_batch4 tests/test_batch4.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/errno.c userspace/libc/src/time.c userspace/libc/src/file.c userspace/libc/src/unistd.c userspace/libc/src/proc.c userspace/libc/src/fcntl.c userspace/libc/src/signal.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/locale.c -lm 2>&1 && /tmp/test_batch4 || echo "FAIL: test_batch4"
@@ -142,17 +143,32 @@ if [ -f kernel/build/moonlight.elf ]; then
   if [ -n "$QEMU" ] && [ -x "$QEMU" ]; then
     timeout 3 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf -d guest_errors 2>&1 | head -n 20 || echo "QEMU smoke: no output (expected wfi)"
     echo "QEMU smoke done"
-    # moonsh interactive smoke: pipe commands, expect prompt + builtin output
-    # (30s: TCG boot is slow on loaded machines; 12s flaked under load)
-    if printf 'help\nver\nkbd\nhistory\nhex hi\nyield\n' | timeout 30 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf 2>&1 | grep -q "moonsh builtins"; then
+    # moonsh interactive smoke: one boot, pipe commands, expect prompt +
+    # builtin output and version banner in the same log.
+    # (60s: TCG boot is slow on loaded machines; 30s flaked under load.
+    # Single boot serves both greps so a slow boot can't fail one half.)
+    MOONSH_LOG=$(printf 'help\nver\nkbd\nhistory\nhex hi\nyield\n' | timeout 60 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf 2>&1 || true)
+    if echo "$MOONSH_LOG" | grep -q "moonsh builtins"; then
       echo "moonsh smoke: PASS (prompt + help on serial)"
     else
       echo "moonsh smoke: FAIL (no shell output - see log above)"
     fi
-    if printf 'ver\n' | timeout 30 $QEMU -M virt -m 256M -nographic -bios none -kernel kernel/build/moonlight.elf 2>&1 | grep -q "MoonlightOS"; then
+    if echo "$MOONSH_LOG" | grep -q "MoonlightOS"; then
       echo "moonsh smoke: PASS (ver on serial)"
     else
       echo "moonsh smoke: FAIL (no ver output - see log above)"
+    fi
+    if echo "$MOONSH_LOG" | grep -q "\[DICE\] kernel_hash="; then
+      echo "dice smoke: PASS (measurement logged on serial)"
+    else
+      echo "dice smoke: FAIL (no DICE measurement - see log above)"
+    fi
+    if echo "$MOONSH_LOG" | grep -q "\[DICE\] verified against provisioned hash"; then
+      echo "dice smoke: provisioned + enforced"
+    elif echo "$MOONSH_LOG" | grep -q "unprovisioned (measure-only)"; then
+      echo "dice smoke: unprovisioned (measure-only)"
+    else
+      echo "dice smoke: FAIL (no DICE verdict - see log above)"
     fi
     # v2 Stage-1 smoke: S-mode kernel under OpenSBI, two U threads, fault demo
     if [ -f v2/kernel/build/v2.elf ]; then

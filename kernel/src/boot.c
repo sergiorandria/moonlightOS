@@ -11,6 +11,7 @@
 #include "../include/vga.h"
 #include "../include/kbd.h"
 #include "../include/console.h"
+#include "../include/dice.h"
 #include <string.h>
 
 extern sched_state_t g_sched;
@@ -30,6 +31,13 @@ static void uart_hex(uint64_t v){
     for(int i=60;i>=0;i-=4){ int n=(v>>i)&0xF; uart_putc(n<10?'0'+n:'a'+n-10);} 
     uart_putc('\n');
     if(vga_is_initialized()){ char buf[17]; for(int i=0;i<16;i++){ int n=(v>>((15-i)*4))&0xF; buf[i]= n<10?'0'+n:'a'+n-10; } buf[16]='\0'; vga_console_puts(buf); vga_console_puts("\n"); }
+}
+static void uart_hexbytes(const uint8_t *p, unsigned n){
+    char buf[65];
+    if (n > 32) n = 32;
+    for(unsigned i=0;i<n;i++){ buf[2*i]="0123456789abcdef"[p[i]>>4]; buf[2*i+1]="0123456789abcdef"[p[i]&0xF]; }
+    buf[2*n]='\0';
+    uart_puts(buf);
 }
 #define HALT() __asm__ volatile("wfi")
 
@@ -123,6 +131,17 @@ void kernel_boot(void) {
     }
     uart_puts("[CHERI] hybrid sim DDC OK (tag=1 bounds 0x80000000-0x90000000)\n");
 #endif
+
+    /* 2b. DICE measured boot: hash the kernel image (expected-hash slot
+     * excluded), enforce if provisioned, derive the CDI. Only the public
+     * measurement is logged - the CDI itself never touches the UART. */
+    {
+        int dice_rc = boot_measure_and_attest(&g_dice);
+        uart_puts("[DICE] kernel_hash="); uart_hexbytes(g_dice.kernel_hash, 32); uart_puts("\n");
+        if (dice_rc == 0) uart_puts("[DICE] verified against provisioned hash, CDI derived\n");
+        else if (dice_rc == 1) uart_puts("[DICE] unprovisioned (measure-only); run make -C kernel provision-dice\n");
+        else { uart_puts("[DICE] FAIL hash mismatch, halting\n"); while(1) HALT(); }
+    }
 
     /* 3. Scheduler */
     sched_init(&g_sched);

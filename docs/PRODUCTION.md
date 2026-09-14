@@ -16,6 +16,7 @@
 - [x] `boot.c:20` UART, `mtvec` check, DDC, EDF, CNode, Sv39 map kernel+UART, `resolve` tests, `ecall` with `volatile` touch warmup
 - [x] `hardening.h:1` `STACK_CANARY`, `GUARD_PAGE`, `is_canonical_addr`, `panic`, `HARDENING_ASSERT`, `fstack-protector`
 - [x] `alloc.c:21` color-aware `alloc_frame`, `hw_cap` sealed, per-color free
+- [x] `dice.c` DICE measured boot wired: freestanding `sha256.c`, slot-excluding two-range measurement, `.dice_expected` 32B slot, `provision-dice` fixed-point gate, `kernel_boot()` enforces-if-provisioned (halts pre-scheduler on mismatch), CDI derived, never logged — `tests/test_dice.c`, QEMU smoke asserts `[DICE]` lines
 
 ## Verification
 

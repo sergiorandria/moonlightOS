@@ -20,7 +20,7 @@ tools/run_qemu.sh --gdb   # GDB :1234
 - `kernel/` - 8 syscalls (6 core + 2 debug console), 3.5k LOC, `cap/cnode/tcb/vspace/endpoint/sched/iommu/irq/alloc/revoke/process`, `start.S`/`trap.S` Sv39, `linker.ld` stacks+pt_pool
 - `kernel/isabelle/` - `RISCV_CHERI, CacheColoring, IOMMU_Verification, Moonlight_A/E, Sched_Verification, Refine`
 - `userspace/` - `mem_server` (color-aware), `sched_server` (EDF admission), `vfs_server` (FD caps), `drivers/virtio_net` (IOMMU-isolated), `example/hello`, `lib/moonlight.h` purecap ABI, `libc/` (Linux-compatible, freestanding rv64) + `example/linux_demo` (see `docs/LINUX.md`)
-- `docs/` - `ARCHITECTURE.md`, `THREAT_MODEL.md`, `REPRODUCIBLE.md`, `USAGE.md`, `BUILD.md`, `SYSCALLS.md`, `CAPABILITIES.md`, `PRODUCTION.md` (DICE attestation planned, `boot/dice.c` not yet wired to boot - see `docs/REPRODUCIBLE.md`)
+- `docs/` - `ARCHITECTURE.md`, `THREAT_MODEL.md`, `REPRODUCIBLE.md`, `USAGE.md`, `BUILD.md`, `SYSCALLS.md`, `CAPABILITIES.md`, `PRODUCTION.md` (DICE measured boot wired: `kernel/src/dice.c` + `sha256.c` measured at boot, `make -C kernel provision-dice` to enforce - see `docs/REPRODUCIBLE.md`)
 
 ## Proven Properties (11 proved, 3 axiomatized - see `docs/PRODUCTION.md` Verification)
 - `RISCV_CHERI` `cheri_mono_perms`/`cheri_mono_bounds` proved, `CacheColoring` `color_disjoint`/`no_cache_interference` proved (with `part<8` bound), `Sched_Verification` `edf_schedulable`/`wcet_bound`/`partition_isolation_time` proved, `IOMMU_Verification` `iommu_isolation`/`dma_confinement` proved (with `iommu_wellformed` hyp)
