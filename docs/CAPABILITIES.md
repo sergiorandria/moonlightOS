@@ -1,5 +1,11 @@
 # Capabilities (CHERI-Sealed, Production)
 
+> **v1-era reference** (historical). This document describes the removed
+> v1 M-mode kernel (`kernel/src`, `kernel/include`). The v2 kernel
+> (`kernel/`) is smaller and under active design in `docs/V2_DESIGN.md`;
+> the frozen ABI survives in `userspace/abi/`. Paths to `kernel/include`
+> and `kernel/src` no longer exist.
+
 `kernel/include/cap.h:30` `cap_t` = sealed `CHERI_CAP hw_cap` + metadata.
 
 | Type | Value | Rights | Fields |

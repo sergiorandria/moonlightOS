@@ -1,6 +1,6 @@
 /* Moonlight libc - errno. Single-threaded: one global (no TLS yet).
  * Full asm-generic Linux value table (single source with
- * kernel/include/linux_abi.h for the subset the kernel returns). */
+ * userspace/abi/linux_abi.h for the subset the kernel returns). */
 #pragma once
 
 extern int errno;

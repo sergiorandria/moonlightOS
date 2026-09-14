@@ -1,5 +1,10 @@
 # Syscalls (8: 6 Core + 2 Debug Console, Production)
 
+> **v1-era reference** (historical). This document describes the removed
+> v1 M-mode kernel. The v2 kernel exposes a smaller set of UABI calls
+> (yield, putc, park, send, recv, notify, wait) via `ecall` from U-mode;
+> the v2 design is in `docs/V2_DESIGN.md` and `kernel/kboot.c`.
+
 All via `ecall`, dispatch `kernel/src/syscall.c:14` `syscall_handler(trap_frame_t *frame, uint32_t cur_tcb)`.
 
 | # | Name | a7 | a0 | a1 | a2 | Returns | Checks |

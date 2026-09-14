@@ -1,11 +1,16 @@
 # Production Checklist
 
+> **v1-era reference** (historical). This checklist describes the removed
+> v1 M-mode kernel (`kernel/src`). The v2 kernel is under active design
+> in `docs/V2_DESIGN.md`; `tools/verify.sh` is the single source of
+> truth for the current verification state.
+
 ## Build
 
 - [x] `kernel/Makefile` includes `start.S` + `trap.S`, `fstack-protector-strong`, `Werror`
 - [x] `tools/build_qemu.sh` fallback for hosts without `riscv64-unknown-elf-clang -march=rv64imacxcheri`
 - [x] `kernel/linker.ld` ENTRY `_start` 0x80000000, `_bss`→`_kernel_end` clear, `.stack`/`.trap_stack` 32K each, `.pt_pool` 64 pages
-- [x] `tools/run_qemu.sh` autodetects `qemu-system-riscv64cheristd` vs stock, `--nographic` vs `gtk`, `--gdb`
+- [x] `tools/run_qemu.sh` autodetects `qemu-system-riscv64cheristd` vs stock, `--nographic` vs `gtk`, `--gdb`, auto-creates + attaches a 256M raw virtio-blk disk (`kernel/build/moonlight-disk.img`, `--no-disk` boots diskless)
 
 ## Kernel
 
@@ -59,7 +64,7 @@
 - [x] `sched.c` EDF is fixed-point `uint64_t` throughout (no `float`/`double`; verified `grep -r float kernel/src/sched.c` — empty; formerly noted as gap but already resolved)
 - [x] `vspace` PT alloc now uses `alloc_frame` per-color (`vspace_init_with_alloc` + `alloc_color_for_partition`, `kernel/src/vspace.c:9` `alloc_pt_page` via `alloc_frame`; no `.pt_pool` bump) — 64 pages color-isolated, verified in `tests/test_vspace.c`
 - [x] `userspace/drivers/virtio_net.c` now wires MMIO via `cheri_bounds_set` + DMA via `iommu_map`/`iommu_check` (`virtio_net.c:30` bounded MMIO cap, `virtio_net.c:63` `net_driver_set_iommu`/`net_driver_dma_map`/`iommu_check` hot path) + TX/RX virtqueues (64 desc, per-packet DMA check, bounded 32/IRQ drain) — verified in `tests/test_virtio_net.c` + `tests/test_net_queue.c`
-- [x] `userspace/drivers/block.c` full virtio-blk (IOMMU bind, 64-slot queue, sector-capacity + direction-correct DMA checks, IRQ drain, micro-reboot) — verified in `tests/test_block.c`; `userspace/drivers/vga.c` bounded framebuffer text driver (100x37, OOB-counting) — verified in `tests/test_vga_drv.c`
+- [x] `userspace/drivers/block.c` full virtio-blk compartment (cap-validated slot selection via `block_probe_slot` over mem_server-minted MMIO caps — no ambient scan, IOMMU bind, 64-slot queue, sector-capacity + direction-correct DMA checks, IRQ drain, micro-reboot, 256M/524288-sector default matching the `tools/run_qemu.sh` image; kernel never touches the disk) — verified in `tests/test_block.c`; `userspace/drivers/vga.c` bounded framebuffer text driver (100x37, OOB-counting) — verified in `tests/test_vga_drv.c`
 - [x] Driver target transport: `userspace/drivers/virtio_mmio.h` probe (magic/version/device-ID) + feature negotiation + real split virtqueues (legacy/modern, `ISTATUS` ACK, bounded drain); `block`/`virtio_net` refuse unvalidated MMIO devices, program real descriptor chains on `__riscv` (host-sim hooks unchanged) — compile-gated by `make -C userspace drivers` (freestanding rv64 `-Werror`) in `tools/verify.sh [1c]`, host tests additionally built with `-Werror`
 - [x] Platform drivers: `userspace/drivers/uart.c` (16550A init/FIFOs/bounded IRQ), `plic.c` (priority/enable/threshold/claim-complete, notification bindings, bounded dispatch), `timer.c` (CLINT slice arm, catch-up re-arm, monotonic ticks), `rtc.c` (goldfish wall clock + one-shot alarms), `power.c` (finisher arm-then-act shutdown/reboot) — verified in `tests/test_uart.c`/`test_plic.c`/`test_timer.c`/`test_rtc.c`/`test_power.c`, in the `drivers` compile gate
 - [ ] Formal proofs: `Moonlight_E:ex_refines_abs`, `Refine:refinement`/`c_refinement` axiomatized (3/14 theorems) — `c_refinement` requires `AutoCorres`/`CompCert`, others need richer invariants; `grep -rn "axiomatization" kernel/isabelle/` lists them, no `sorry`/`quick_and_dirty` left

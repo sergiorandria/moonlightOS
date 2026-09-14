@@ -1,41 +1,73 @@
 # MoonlightOS
 
-General-purpose dynamic microkernel for **RISC-V CHERI**, partially verified in Isabelle/HOL (11/14 theorems proved, 3 axiomatized as known gaps, no `sorry` left except explicitly listed). **Production grade** - trap/paging/CHERI hybrid & purecap, QEMU window tested.
+S-mode microkernel for RISC-V, built spec-first and partially verified in
+Isabelle/HOL. The v2 kernel runs in **S-mode under OpenSBI** and puts
+userspace in **U-mode**; M-mode hosts only OpenSBI. The design lives in
+`docs/V2_DESIGN.md`; every board-verified claim is labelled BUILT there.
 
-**Goals:** 3.5k LOC TCB, HW CHERI caps, proven temporal isolation, real-time EDF, CompCert binary correctness.
+The v1 M-mode kernel (`kernel/src` + `kernel/include`, and the parallel
+`v2/` tree) was removed on 2026-09-14: this repo is now the single v2
+codebase. The v1 userspace feature set survived via the frozen ABI
+headers in `userspace/abi/` and the freestanding C library.
 
-## Quick Start (Production)
+## Quick Start
 
 ```bash
-tools/verify.sh           # host tests (no CHERI HW needed) - now fails loud if isabelle/CHERI missing (see summary)
-tools/build_qemu.sh       # stock QEMU fallback (no CHERI LLVM)
-make -C kernel            # CHERI: needs riscv64-unknown-elf-clang -march=rv64imacxcheri + CompCert
-make -C kernel isabelle   # Isabelle2025-2 + l4v, 7 theories (no quick_and_dirty, 11 proved, 3 axiomatized)
-tools/run_qemu.sh kernel/build/moonlight.elf              # autodetects QEMU, nographic or gtk window
-DISPLAY=:0 tools/run_qemu.sh kernel/build/moonlight.elf   # QEMU window (GTK)
-tools/run_qemu.sh --gdb   # GDB :1234
+tools/verify.sh          # host tests + kernel build + Isabelle + QEMU smoke
+make -C kernel           # v2 kernel -> kernel/build/moonlight.elf (S-mode)
+make -C userspace        # freestanding rv64 userspace ELFs + libc
+tools/run_qemu.sh        # boots under OpenSBI (-bios default)
+tools/run_qemu.sh --nographic
+tools/run_qemu.sh --gdb  # GDB on :1234
 ```
 
-## Structure
-- `kernel/` - 8 syscalls (6 core + 2 debug console), 3.5k LOC, `cap/cnode/tcb/vspace/endpoint/sched/iommu/irq/alloc/revoke/process`, `start.S`/`trap.S` Sv39, `linker.ld` stacks+pt_pool
-- `kernel/isabelle/` - `RISCV_CHERI, CacheColoring, IOMMU_Verification, Moonlight_A/E, Sched_Verification, Refine`
-- `userspace/` - `mem_server` (color-aware), `sched_server` (EDF admission), `vfs_server` (FD caps), `drivers/virtio_net` (IOMMU-isolated), `example/hello`, `lib/moonlight.h` purecap ABI, `libc/` (Linux-compatible, freestanding rv64) + `example/linux_demo` (see `docs/LINUX.md`)
-- `docs/` - `ARCHITECTURE.md`, `THREAT_MODEL.md`, `REPRODUCIBLE.md`, `USAGE.md`, `BUILD.md`, `SYSCALLS.md`, `CAPABILITIES.md`, `PRODUCTION.md` (DICE measured boot wired: `kernel/src/dice.c` + `sha256.c` measured at boot, `make -C kernel provision-dice` to enforce - see `docs/REPRODUCIBLE.md`)
+## Structure (single codebase)
 
-## Proven Properties (11 proved, 3 axiomatized - see `docs/PRODUCTION.md` Verification)
-- `RISCV_CHERI` `cheri_mono_perms`/`cheri_mono_bounds` proved, `CacheColoring` `color_disjoint`/`no_cache_interference` proved (with `part<8` bound), `Sched_Verification` `edf_schedulable`/`wcet_bound`/`partition_isolation_time` proved, `IOMMU_Verification` `iommu_isolation`/`dma_confinement` proved (with `iommu_wellformed` hyp)
-- `Moonlight_A` `nonleakage_time`/`availability`/`integrity` proved, `Moonlight_E` `ex_refines_abs` axiomatized, `Refine` `refinement`/`c_refinement` axiomatized (AutoCorres/CompCert not set up)
-- Trap: `mtvec`/`mscratch` separate stacks, `mcause`+`mepc+4`, `sfence` - verified QEMU `riscv64`/`riscv64cheristd`
-- Paging: Sv39 3-level PT walk, `PTE_A|PTE_D`, `alloc_frame` per-color 64 pages (was bump `.pt_pool`), `satp` switch
+- `kernel/` - v2 S-mode kernel: `kboot.c` (Sv39 U-bit tables, stvec traps,
+  SBI console + timer, lowest-Runnable scheduler, blocking rendezvous IPC
+  `SEND/RECV` + `NOTIFY/WAIT`, fault containment), `user.c` (U-mode ping-pong
+  demo), `ipc.h`/`caps.h` (Stage-2/3 host-tested protocols), `start.S`,
+  `trap.S`, `linker.ld`. Build via `make -C kernel` (stock clang, rv64imac).
+- `kernel/isabelle/` - session `V2`: `V2_A` (threads/scheduler),
+  `V2_B` (modes M/S/U, isolation, console, faults), `V2_C` (IPC integrity,
+  notifications), `V2_D` (capability authority confinement, spec),
+  `Qubes_A` (Qubes denial-of-service isolation). Built by
+  `isabelle build -D kernel/isabelle -v`.
+- `userspace/` - frozen v1 userspace features: `abi/` (standalone copy of the
+  v1 ABI headers: types, cap, cheri, iommu, vspace, linux_abi), `lib/`
+  (`moonlight.h` API), `libc/` (Linux-compatible freestanding rv64 C library)
+  + `example/hello`, `example/linux_demo`, `sh/moonsh`, `mem_server`,
+  `sched_server`, `vfs_server`, and the driver compartments (`uart`, `plic`,
+  `timer`, `rtc`, `power`, `block`, `vga`, `virtio_net`) validated against the
+  ABI headers. See `docs/BUILD.md` for the build gates.
+- `tests/` - host-sim unit tests; `tools/verify.sh` is the single verification
+  entry point (host unit tests, production gates, Isabelle, kernel build,
+  QEMU smoke).
+- `docs/` - `V2_DESIGN.md` (the live design + staged roadmap),
+  `ARCHITECTURE.md`, `BUILD.md`. The v1-era docs (`CAPABILITIES.md`, `LINUX.md`,
+  `PRODUCTION.md`, `REPRODUCIBLE.md`, `SECURITY.md`, `SYSCALLS.md`,
+  `THREAT_MODEL.md`, `USAGE.md`) describe the removed v1 M-mode kernel and are
+  kept as historical reference; their `kernel/src`/`kernel/include` paths no
+  longer exist.
 
-## Test
-`tests/test_cap.c`, `test_sched_realtime.c`, `test_revoke_process.c`, `host_emul.c`, `fuzz_syscall.c`, `bench_ipc.c`, `test_invoke_ops.c`, `test_mem/sched/vfs_server.c`, `test_vspace.c`, `test_virtio_net.c`, `test_net_queue.c`, `test_block.c`, `test_vga_drv.c`, `test_uart.c`, `test_plic.c`, `test_timer.c`, `test_rtc.c`, `test_power.c`, `test_libc.c`, `test_newlibc.c`, `test_linux.c`, `test_abi.c` - see `tools/verify.sh` (4 stages: host, Isabelle, CHERI/stock QEMU, 3s smoke; `test_vfs` now `FAIL` not `SKIP`)
+## What boots
+
+`tools/run_qemu.sh` boots OpenSBI → the v2 kernel → two U-mode threads:
+A SENDs "pn", B RECVs and prints it, B NOTIFYs A + SENDs "pg", A RECVs,
+prints, WAITs (takes the notify), both park; the scheduler then parks the
+hart. Transcript markers the smoke asserts: `satp Sv39 on`, `entering U-mode`,
+`B00pn`, `A10pg`, `W1`, `no runnable left; parking cpu`.
+
+## Verification (one door)
+
+`tools/verify.sh` runs 4 stages: host unit tests (ABI regression, sched/vfs/
+shell, driver host-sims, freestanding libc, v2 IPC/caps), production gates
+(linker layout, `user.c` rodata ban), the Isabelle `V2` session with an
+anti-vacuity gate, and the QEMU text smoke. CI (`verify.yml`, `cheri.yml`)
+calls it plus a dedicated Isabelle job.
 
 ## Docs
 
-- [Usage](docs/USAGE.md) - capabilities, TCB, VSpace, IPC, scheduling, full example
-- [Build](docs/BUILD.md) - host, CHERI, stock QEMU, QEMU, reproducible, troubleshooting
-- [Syscalls](docs/SYSCALLS.md) - 8 syscalls + 12 invoke ops
-- [Capabilities](docs/CAPABILITIES.md) - sealing, otype, attenuation, coloring
-- [Production](docs/PRODUCTION.md) - checklist, known gaps
-- [Linux personality](docs/LINUX.md) - rv64 syscall subset, flat files, brk/mmap arenas, EAGAIN contract
+- [v2 Design](docs/V2_DESIGN.md) - why v2, stage roadmap, BUILT entries
+- [Architecture](docs/ARCHITECTURE.md) - current reality: kernel, proofs, userspace
+- [Build](docs/BUILD.md) - host, kernel, userspace, verification, QEMU, troubleshooting

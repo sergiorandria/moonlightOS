@@ -11,8 +11,8 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "../../kernel/include/cheri.h"
-#include "../../kernel/include/cap.h"
+#include "../abi/cheri.h"
+#include "../abi/cap.h"
 
 /* 16550A register offsets (DLAB=0) */
 #define UART_RBR 0u /* RX (read) */

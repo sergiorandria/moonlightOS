@@ -1,5 +1,10 @@
 # Security Policy - MoonlightOS
 
+> **v1-era reference** (historical). This document describes the removed
+> v1 M-mode kernel. The v2 kernel is S-mode under OpenSBI with a
+> different isolation model; see `docs/ARCHITECTURE.md` and
+> `docs/V2_DESIGN.md`.
+
 ## Supported Hardware
 
 - **CHERI-RISC-V**: Morello (ARM), CHERI-RISC-V QEMU (`riscv64cheristd`), and FPGA prototypes with CC128, PMP, and IOMMU. See `docs/THREAT_MODEL.md` for assumptions (HW correctly implements CHERI, ROM immutable, CompCert correctness).

@@ -1,7 +1,9 @@
 # Moonlight v2 — Design: a verifiable RISC-V CHERI microkernel
 
-Status: DESIGN (no code). Every section ends with what must exist before the
-next begins. Nothing here is claimed as built.
+Status: DESIGN + Stages 0–2 built (see §9 for per-stage BUILT notes).
+Every section ends with what must exist before the next begins. Only §9
+stage entries marked BUILT are claimed as built. The v2/ tree was merged
+into the repo root on 2026-09-14: this repo is now the single codebase.
 
 ## 0. Why v2, and what v1 taught us
 
@@ -163,7 +165,7 @@ per-function where not).
 - **Stage 0 — Spec skeleton.** A-state, transitions for TCB/create/switch
   on one address space, CI Isabelle build, mutant tests for each invariant.
   *Demo:* `E` runs as a host simulator stepping two threads.
-  - BUILT 2026-09-09: `v2/isabelle/V2_A.thy` (session `V2`, `isabelle build`
+  - BUILT 2026-09-09: `kernel/isabelle/V2_A.thy` (session `V2`, `isabelle build`
     clean, 0 axioms, 0 `sorry`). State = thread list + `cur`; transitions
     `tcb_create/suspend/resume` + `sched_step` (lowest-Runnable; round-robin
     fairness is Stage-1 liveness work, noted in the theory). Invariants
@@ -173,7 +175,7 @@ per-function where not).
 - **Stage 1 — S-mode kernel + U-mode hello.** stvec/satp/PMP bring-up,
   preemptive round-robin, `Yield` + bring-up console flag only.
   *Theorem:* user isolation. *Demo:* two U-mode threads print via SBI.
-  - BUILT 2026-09-09: `v2/kernel/` (S-mode under OpenSBI, `-bios default`).
+  - BUILT 2026-09-09: `kernel/` (S-mode under OpenSBI, `-bios default`).
     `V2_B.thy`: modes M/S/U, `u_exec/timer_tick/s_ret`, preservation
     (`no_M`, `kw` stable), `console_correct`, `bad_traps`, concrete mutants,
     `eval` trace lemma. Implementation: Sv39 with U-bit split (2MB
@@ -197,9 +199,34 @@ per-function where not).
 - **Stage 2 — IPC.** Endpoints/notifications, user-copy both directions,
   blocking semantics. *Theorem:* IPC integrity. *Demo:* ping-pong between
   two U-mode processes in separate VSpaces.
+  - BUILT 2026-09-14: `kernel/isabelle/V2_C.thy` (session `V2`, `isabelle build`
+    clean, 0 axioms, 0 `sorry`): `c_send`/`c_recv` on one static endpoint
+    (bounded words, FIFO, blocking rendezvous), `c_notify`/`c_wait`
+    (OR-accumulate signal sets), `c_integrity` (deliveries ⊆ sends —
+    no forge), kernel-stamped senders, explicit overflow flag (no silent
+    cut), wait-kind-gated wake (notify never disturbs rendezvous);
+    preservation (valid/bounded/no-M/kw/queue-bounds/integrity/senders/
+    msg-bounds) across all four ops, executable ping-pong/trunc/notify/
+    FIFO demos pinned by `eval`, mutants (forged audit entry, oversize
+    msg, lying silent-truncation variant). Implementation: `kernel/`
+    static EP0 (`ipc.h` queues + U-range validation, host-tested by
+    `tests/test_v2ipc.c`: adversarial lengths, cross-region, unaligned,
+    queue-full, truncation), SUM-windowed `u_copy_in`/`u_copy_out`
+    (validate-then-copy; SEND needs R, RECV needs W), UABI
+    yield/putc/park/send/recv/notify/wait. Demo transcript: `B00pn`
+    (ping from stamped sender 0, no trunc), `A10pg`, `W1` (notify bits),
+    clean park. Gated in `verify.sh [1d/1e]` + v2 smoke + CI `isabelle` job.
+    REFINEMENTS vs this doc: (a) `Call`/`ReplyRecv` stay userspace-composed
+    from SEND+RECV until Stage 3 reply caps exist (no syscall yet);
+    (b) "separate VSpaces" is logical separation under one `satp`
+    (separate stacks, RX text, all bytes via kernel copies, no shared
+    writable memory) — per-process `satp` is Stage 3; (c) receiver capacity
+    is range-checked, not capped at 4 words (the copy loop is still bounded
+    by the stored message length; oversized spans fail closed).
 - **Stage 3 — Capabilities + memory.** Retype/mint/revoke (MDB), per-process
   VSpace, ELF loader that maps PT_LOAD (no validate-only stubs).
-  *Theorem:* authority confinement. *Demo:* mem_server in userspace owns
+  *Theorem:* authority confinement (`V2_D`, spec green 2026-09-14 — kernel
+  side pending). *Demo:* mem_server in userspace owns
   all allocation; kernel holds no heap.
 - **Stage 4 — Time + console.** Partitions/EDF enforcement, console server
   (owns UART Frame+IRQ), `moonsh` ported as its first client, bring-up

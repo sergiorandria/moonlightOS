@@ -9,7 +9,7 @@
 #define PURECAP
 #endif
 
-/* IPC message layout mirrors kernel ipc_msg_t (kernel/include/types.h).
+/* IPC message layout mirrors kernel ipc_msg_t (userspace/abi/types.h).
  * SYS_CALL/SYS_SEND take a user pointer to this struct; the kernel copies
  * label/length/caps + words/cap_ptrs after validating bounds. */
 #define MOONLIGHT_MSG_MAX 30
@@ -27,7 +27,7 @@ typedef struct {
     uint32_t cap_ptrs[MOONLIGHT_CAPS_MAX];
 } moonlight_msg_t;
 
-/* Syscall numbers mirror kernel/include/types.h (do not drift). */
+/* Syscall numbers mirror userspace/abi/types.h (do not drift). */
 #define MOONLIGHT_SYS_CALL 0
 #define MOONLIGHT_SYS_REPLY_RECV 1
 #define MOONLIGHT_SYS_SEND 2

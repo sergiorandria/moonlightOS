@@ -8,9 +8,9 @@
 #include <stdbool.h>
 #include <string.h>
 
-#include "../../kernel/include/cheri.h"
-#include "../../kernel/include/cap.h"
-#include "../../kernel/include/iommu.h"
+#include "../abi/cheri.h"
+#include "../abi/cap.h"
+#include "../abi/iommu.h"
 #include "virtio_mmio.h"
 
 typedef struct { uintptr_t mmio_base; size_t mmio_len; uint32_t irq; } drv_caps_t;

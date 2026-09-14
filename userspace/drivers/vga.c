@@ -1,6 +1,6 @@
-#include "../../kernel/include/cap.h"
-#include "../../kernel/include/cheri.h"
-#include "../../kernel/include/vspace.h"
+#include "../abi/cap.h"
+#include "../abi/cheri.h"
+#include "../abi/vspace.h"
 #include <stdint.h>
 #include <stddef.h>
 

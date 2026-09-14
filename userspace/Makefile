@@ -2,22 +2,24 @@
 # Same toolchain discipline as kernel/Makefile: clang resource dir only.
 # NOTE: plain `=` (not `?=`) - make's built-in CC=cc would otherwise win.
 CC = clang
+CLANG_INC := $(shell $(CC) --print-resource-dir)/include
 CFLAGS_U = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
            -O2 -ffreestanding -nostdlib -fno-builtin -mcmodel=medany -mno-relax \
-           -Wall -Wextra -I lib -I/usr/lib/clang/22/include \
+           -Wall -Wextra -I lib -I$(CLANG_INC) \
            -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
 LDFLAGS_U = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib -T user.ld
 
 LIB = lib/moonlight.c
 
 # Moonlight C library (Linux-compatible): freestanding rv64 objects +
-# standalone demo ELF. Same discipline as drivers; kernel headers supply
-# the syscall numbers (linux_abi.h, single source of truth).
+# standalone demo ELF. Same discipline as drivers; the frozen v1 userspace
+# ABI headers (userspace/abi) supply the syscall numbers (linux_abi.h,
+# single source of truth) and cap/CHERI types.
 LIBC_INC = libc/include
-LIBC_KINC = ../kernel/include
+LIBC_KINC = abi
 CFLAGS_LIBC = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
             -O2 -ffreestanding -nostdlib -fno-builtin -mcmodel=medany -mno-relax \
-            -Wall -Wextra -I $(LIBC_INC) -I $(LIBC_KINC) -I/usr/lib/clang/22/include \
+            -Wall -Wextra -I $(LIBC_INC) -I $(LIBC_KINC) -I$(CLANG_INC) \
             -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
 LIBC_SRCS = $(shell cat libc/SRCS)
 LIBC_OBJS = $(patsubst src/%.c,build/src/%.o,$(filter %.c,$(LIBC_SRCS))) \
@@ -34,7 +36,7 @@ DRV_OBJ = build/drivers/block.o build/drivers/virtio_net.o build/drivers/vga.o \
 # production defect (an OOB or sign bug here escapes the compartment).
 CFLAGS_DRV = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
             -O2 -ffreestanding -nostdlib -fno-builtin -mcmodel=medany -mno-relax \
-            -Wall -Wextra -Werror -I lib -I ../kernel/include -I/usr/lib/clang/22/include \
+            -Wall -Wextra -Werror -I lib -I libc/include -I abi -I$(CLANG_INC) \
             -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
 
 all: build/hello.elf build/moonsh.elf build/linux_demo.elf drivers libc

@@ -4,7 +4,7 @@
  */
 #pragma once
 
-/* Resolved via -I ../kernel/include (single source of truth). */
+/* Resolved via -I abi (frozen userspace ABI headers). */
 #include "linux_abi.h"
 
 #ifdef __riscv

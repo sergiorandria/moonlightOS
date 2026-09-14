@@ -1,5 +1,10 @@
 # MoonlightOS — Linux personality (rv64 syscall compat)
 
+> **v1-era reference** (historical). This document describes the removed
+> v1 Linux personality (`kernel/src/linux.c`, kernel ABI). The v2 kernel
+> does not include the Linux personality; the frozen v1 ABI and syscall
+> numbers survive in `userspace/abi/linux_abi.h`. See `docs/V2_DESIGN.md`.
+
 Run ordinary Linux-targeted C programs on the capability microkernel
 without porting them: the kernel translates a subset of rv64 Linux
 syscalls onto Moonlight primitives (console, `vfs_server`, static

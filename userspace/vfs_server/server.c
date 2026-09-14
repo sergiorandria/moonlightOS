@@ -15,7 +15,7 @@
  * Error convention: 0 ok, >0 fd/byte-count, -1 denied/failed (kerror_t
  * mapped at the IPC edge where it matters).
  */
-#include "../../kernel/include/types.h"
+#include "../abi/types.h"
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>

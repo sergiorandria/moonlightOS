@@ -1,6 +1,6 @@
-#include "../kernel/include/iommu.h"
 #include "../kernel/include/cap.h"
 #include "../kernel/include/cheri.h"
+#include "../kernel/include/iommu.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -8,7 +8,8 @@
 /* Pull driver implementation directly for host test */
 #include "../userspace/drivers/block.c"
 
-static cap_t mk_iocap(uintptr_t base, size_t len) {
+static cap_t mk_iocap(uintptr_t base, size_t len)
+{
     cap_t c = {0};
     c.type = CAP_IOMMU;
     c.is_valid = 1;
@@ -22,21 +23,59 @@ static cap_t mk_iocap(uintptr_t base, size_t len) {
     return c;
 }
 
-int main(void) {
+int main(void)
+{
     printf("=== block driver tests ===\n");
     static uint8_t pool[0x20000] __attribute__((aligned(4096)));
 
     /* init rejects bad MMIO */
     blk_caps_t bad = {0};
     assert(block_driver_init(bad, pool, sizeof(pool)) == false);
-    bad.mmio_base = 0x10003000; bad.mmio_len = 0x800;
+    bad.mmio_base = 0x10003000;
+    bad.mmio_len = 0x800;
     assert(block_driver_init(bad, pool, sizeof(pool)) == false);
     printf("PASS: rejects bad MMIO\n");
 
     blk_caps_t good = {0};
-    good.mmio_base = 0x10003000; good.mmio_len = 0x1000; good.irq = 4;
+    good.mmio_base = 0x10003000;
+    good.mmio_len = 0x1000;
+    good.irq = 4;
     assert(block_driver_init(good, pool, sizeof(pool)) == true);
     printf("PASS: init OK\n");
+
+    /* 256M disk image default (tools/run_qemu.sh), before any probing. */
+    assert(block_capacity() == 524288u);
+    assert(block_capacity() / 2048u == 256u);
+    printf("PASS: default capacity 256M (524288 sectors)\n");
+
+    /* Slot discovery: no ambient MMIO scan in the compartment (microkernel:
+     * the driver only validates mem_server-minted caps). block_probe
+     * reports the already-bound window; block_probe_slot validates one
+     * granted cap; block_probe_table scans a minted table. */
+    {
+        blk_caps_t found = {0};
+        blk_caps_t cand = {0};
+        assert(block_probe(NULL) == false);
+        assert(block_probe(&found) == true);
+        assert(found.mmio_base == good.mmio_base && found.irq == good.irq);
+        /* probe_slot: NULL-safe, rejects short windows, no MMIO on host. */
+        assert(block_probe_slot(NULL, &found) == false);
+        assert(block_probe_slot(&cand, NULL) == false);
+        assert(block_probe_slot(NULL, NULL) == false);
+        cand.mmio_base = 0x10003000;
+        cand.mmio_len = 0x800;
+        cand.irq = 4;
+        assert(block_probe_slot(&cand, &found) == false);
+        cand.mmio_len = 0x1000;
+        assert(block_probe_slot(&cand, &found) == false);
+        /* probe_table: NULL/empty-safe, no MMIO on host. */
+        assert(block_probe_table(NULL, 0, &found) == false);
+        assert(block_probe_table(NULL, 1, &found) == false);
+        assert(block_probe_table(&cand, 0, &found) == false);
+        assert(block_probe_table(&cand, 1, NULL) == false);
+        assert(block_probe_table(&cand, 1, &found) == false);
+        printf("PASS: probe reports bound window, no ambient scan\n");
+    }
 
     /* I/O without IOMMU must fail (no ambient DMA) */
     uint8_t *b0 = pool + 0x1000;
@@ -50,18 +89,20 @@ int main(void) {
     printf("PASS: IOMMU bind OK\n");
 
     /* bad iocap rejected */
-    cap_t wrong = ioc; wrong.type = CAP_FRAME;
+    cap_t wrong = ioc;
+    wrong.type = CAP_FRAME;
     assert(block_set_iommu(wrong, &iommu, 1, (uintptr_t)pool, sizeof(pool)) == false);
-    wrong = ioc; wrong.hw_cap.tag = 0;
+    wrong = ioc;
+    wrong.hw_cap.tag = 0;
     assert(block_set_iommu(wrong, &iommu, 1, (uintptr_t)pool, sizeof(pool)) == false);
     printf("PASS: rejects bad IOMMU caps\n");
 
     /* validation: length, alignment, capacity, pool bounds */
-    assert(block_read(0, b0, 100) == -1);          /* not sector multiple */
-    assert(block_read(0, b0, 0) == -1);            /* empty */
-    assert(block_read(0, b0, BLK_MAX_BYTES + 512) == -1); /* too big */
-    assert(block_read(block_capacity(), b0, 512) == -1);  /* past end */
-    assert(block_read(block_capacity() - 1, b0, 1024) == -1); /* wrap past end */
+    assert(block_read(0, b0, 100) == -1);                        /* not sector multiple */
+    assert(block_read(0, b0, 0) == -1);                          /* empty */
+    assert(block_read(0, b0, BLK_MAX_BYTES + 512) == -1);        /* too big */
+    assert(block_read(block_capacity(), b0, 512) == -1);         /* past end */
+    assert(block_read(block_capacity() - 1, b0, 1024) == -1);    /* wrap past end */
     assert(block_read(0, pool + sizeof(pool) - 256, 512) == -1); /* OOB pool */
     assert(block_read(0, NULL, 512) == -1);
     printf("PASS: validation rejects bad requests\n");
@@ -78,6 +119,7 @@ int main(void) {
     assert(st.reads == 1 && st.writes == 1);
     assert(st.read_bytes == 512 && st.write_bytes == 1024);
     assert(st.pending == 0 && st.errors == 0);
+    assert(host_blk_regs[VMM_ISTATUS / 4u] == 0); /* IRQ ACKed via IACK */
     printf("PASS: read/write enqueue + IRQ drain\n");
 
     /* device error counts */
@@ -90,8 +132,10 @@ int main(void) {
 
     /* queue full */
     int n = 0;
-    for (int i = 0; i < 64; i++) {
-        if (block_read((uint32_t)i, pool + ((size_t)i * 512 % (sizeof(pool) - 512)), 512) == 512) n++;
+    for (int i = 0; i < 64; i++)
+    {
+        if (block_read((uint32_t)i, pool + ((size_t)i * 512 % (sizeof(pool) - 512)), 512) == 512)
+            n++;
     }
     assert(n == 64);
     assert(block_read(0, b0, 512) == -1); /* full */
@@ -118,7 +162,7 @@ int main(void) {
     printf("PASS: revoked window -> error, no touch\n");
 
     /* micro-reboot clears everything */
-    block_driver_reboot();
+    assert(block_driver_reboot() == true);
     block_stats(&st);
     assert(st.pending == 0 && st.reads == 0 && st.writes == 0 && st.errors == 0);
     assert(block_dma_check((uintptr_t)pool, 512, false) == false);

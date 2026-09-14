@@ -13,8 +13,8 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "../../kernel/include/cheri.h"
-#include "../../kernel/include/cap.h"
+#include "../abi/cheri.h"
+#include "../abi/cap.h"
 
 #define CLINT_BASE_EXPECT 0x02000000u
 #define CLINT_MSIP_OFF    0x0000u

@@ -14,8 +14,8 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "../../kernel/include/cheri.h"
-#include "../../kernel/include/cap.h"
+#include "../abi/cheri.h"
+#include "../abi/cap.h"
 
 #define RTC_BASE_EXPECT 0x101000u
 #define RTC_TIME_LOW    0x00u

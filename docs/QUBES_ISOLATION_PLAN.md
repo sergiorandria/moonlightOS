@@ -185,7 +185,7 @@ usb         AdminVM     device.attach ask   "attach USB device?"
 - **S0 — Spec + policy model.** Isabelle: qube labels, allow/ask/deny
   semantics, confinement over labels (anti-vacuity rules from `V2_DESIGN.md`
   §6 apply). *Demo:* host simulator runs a 3-qube policy matrix.
-  - BUILT 2026-09-12: `v2/isabelle/Qubes_A.thy` (session `V2`,
+  - BUILT 2026-09-12: `kernel/isabelle/Qubes_A.thy` (session `V2`,
     `isabelle build` clean, 0 axioms, 0 `sorry`, 35 lemmas). State =
     qube-label list + policy table (first-match-wins, default-deny) +
     bounded pending-ask queue + append-only audit; transitions

@@ -14,8 +14,8 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "../../kernel/include/cheri.h"
-#include "../../kernel/include/cap.h"
+#include "../abi/cheri.h"
+#include "../abi/cap.h"
 
 #define PLIC_BASE_EXPECT 0x0c000000u
 #define PLIC_PRIO_OFF   0x000000u

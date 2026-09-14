@@ -1,83 +1,137 @@
-# MoonlightOS Architecture - Production Microkernel (Exceeding seL4)
+# MoonlightOS Architecture (v2)
 
 ## Overview
 
-Moonlight is a **pure microkernel**: 3.5k LOC TCB, 8 syscalls (6 core IPC + 2 debug console), 11 capability types, all drivers and services in userspace. Every cross-domain interaction is a capability-checked IPC. No ambient authority, no shared memory by default, no `mmap` or `ioctl` escape hatches.
+MoonlightOS is an S-mode microkernel for RISC-V 64-bit. The kernel runs in
+S-mode under OpenSBI (firmware owns M-mode + PMP). Userspace runs in U-mode.
+All drivers, servers and the shell are userspace compartments. The proof
+ground is the `V2` Isabelle/HOL session (`kernel/isabelle/`), built from an
+abstract spec (V2_A) through an executable spec (V2_B, V2_C) down toward a
+refined C implementation gated in CI (`tools/verify.sh`).
 
-```
-App (purecap) --IPC--> mem_server --Untyped--> Frame (IOMMU-colored)
-                \--> vfs_server --Frame--> Block driver --IOMMU window--> virtio_net (DMA confined)
-                \--> sched_server --SchedContext--> EDF admission
-```
+## Kernel
 
-All creation `Untyped -> Retype`, all access `CNode lookup + cheri_tag_get`.
+The kernel source lives in `kernel/` and builds with stock clang:
 
-## Threat Model
+| File | LOC | Role |
+|------|-----|------|
+| `start.S` | ~30 | S-mode entry: gp init, BSS clear, `stvec`, call `kboot` |
+| `trap.S` | ~140 | `s_trap_entry` (save all regs into `cur_ctx`), `u_enter` (noreturn switch to U-mode) |
+| `kboot.c` | ~485 | `kboot()` + trap dispatch + IPC + scheduling |
+| `user.c` | ~134 | U-mode ping-pong demo threads A and B |
+| `ipc.h` | ~180 | Endpoint queues (FIFO send/wait), user-range validation, host-testable |
+| `caps.h` | ~400 | Stage-3 capability model (mint/grant/map/unmap/revoke, W^X, ELF validation), host-testable |
+| `linker.ld` | ~25 | Kernel memory map |
 
-A1 compromised user component, A2 malicious DMA, A3 microarchitectural (cache/TLB/BTB/Spectre), A4 supply chain.
+### Boot and privilege model
 
-seL4 assumes A3 absent. Moonlight **proves** A3 absent: cache coloring (16 colors, `CacheColoring.thy: no_cache_interference`), `fence.i/sfence.vma + csrw 0x800` on every partition switch (`cheri.h:60`), no SMT, no speculation across privilege.
+1. **OpenSBI** sets up PMP, boots hart0 in S-mode, entry `_start` (`start.S`).
+2. `_start` clears `_bss`→`_bss_end`, installs `stvec = s_trap_entry`, calls
+   `kboot()`.
+3. `kboot()` initialises Sv39 page tables with U-bit split:
+   - `0x80200000`–`0x80400000` (kernel): text RX, data RW, no U.
+   - `0x80400000`–`0x80600000` (user text): RX, U=1.
+   - `0x80600000`–`0x80800000` (user data/stacks): RW, U=1.
+   - UART MMIO at `0x10000000`: RW (mapped into kernel page table for
+     SBI-forward via ecall to M-mode).
+4. Switches on `satp = (8<<60)|PPN(root_pt)`, arms SBI timer, enables
+   `STIE` + `SIE`, initialises two U-mode threads, enters thread A.
 
-## Principles
+### Scheduling
 
-POLA, complete mediation, least mechanism, fail-safe defaults, defense in depth, **verified down to CHERI ISA** (CompCert binary correctness planned, not yet pursued per `docs/PRODUCTION.md` checklist).
+Lowest-numbered-Runnable (mirrors the proven `V2_A.sched_step`). Timer
+preemption is the SBI timer interrupt (`scause=5`, 100ms @ 10MHz). Terminal
+state is `wfi` when no thread is Runnable (prints `no runnable left; parking cpu`).
 
-## Hardware Profile: RISC-V CHERI
-- Hybrid kernel (M-mode, DDC wide), purecap userspace (PCC/DDC per thread `tcb.h:15`)
-- CC128, 32-bit otype sealing (`cheri.h:50`)
-- PMP (kernel text/rodata RX, data RW, guard pages `hardening.c:18`), IOMMU 16 windows (`iommu.c:5`), cache coloring `partition*2 %16`
-- RV64 Sv39, `satp` per VSpace (`vspace.c:115`), `mtvec` direct + separate trap stack (`linker.ld:15`)
+### IPC (Stage 2)
 
-## Kernel Objects (11, No More)
+Blocking rendezvous on a static endpoint `EP0` with FIFO send/recv queues
+(mirrors `V2_C`):
 
-| Object | Cap Type | Purpose | File |
-|---|---|---|---|
-| Untyped | 0 | Bump + per-color free, `CHERI_PERM_SEAL` | `cap.c:21` `alloc.c:21` |
-| CNode | 1 | 256 slots, `guard/radix` decode (`cnode.c:13`), `cap_derive` attenuation | `cnode.c:4` |
-| TCB | 2 | `pc/sp/csp/pcc/cspace/vspace/asid` (`tcb.h:10`), `TCB_*` states | `tcb.c:4` |
-| VSpace | 3 | Sv39 3-level, `pte_t` 8B, `PTE_A|PTE_D`, `.pt_pool` 64 pages (`vspace.c:5`) | `vspace.c:22` |
-| Frame | 4 | 4K, `paddr>>12%16` color, `CHERI_PERM_LOAD|STORE` | `alloc.c:21` |
-| Endpoint | 5 | FIFO `queue[16]` + `queue_msgs[16]` per-slot, rendezvous + queued (`endpoint.c:4`) | `endpoint.c:4` |
-| Notification | 6 | Async 64-bit badge OR, `has_waiter` (`notification.c:4`) | `notification.c:1` |
-| IRQ | 7 | PLIC, `pending_mask`, `notification_bind` | `irq.c:4` |
-| IOMMU | 8 | Per-device window `dev_id/paddr/size/perms/color`, `sfence` | `iommu.c:5` |
-| SchedContext | 9 | `budget/period` EDF, `priority` | `sched.c:32` |
-| TimePartition | 10 | `offset/budget` 10ms major frame | `sched.c:11` |
+- `V2_SEND(ep, u_ptr, len)`: validate endpoint + range → SUM-window
+  `u_copy_in` → deliver to oldest waiter (resume sender, stamp sender id,
+  flag truncation) or queue + block.
+- `V2_RECV(ep, u_buf, cap)`: validate → deliver oldest queued sender or
+  park `(ptr, cap)` + block.
+- `V2_NOTIFY(target, bits)`: OR-accumulate into `notify`; wake only a
+  `WAIT`-blocked thread (rendezvous blocks untouched).
+- `V2_WAIT()`: take pending notify bits, or block until notified.
 
-All via `UntypedRetype` (`syscall.c:98`).
+Sender ids are **kernel-stamped** (never user-supplied). Truncation returns
+an explicit overflow flag (`ovf`), never silent cut. The copy discipline is
+validate-then-copy through a bounded loop with `SUM` toggled only for that
+loop.
 
-## Scheduling: Two-Level Verified
+### Memory isolation
 
-Major frame 10ms, 3 partitions `0:6000/1:2000/3, 1:2000/2` (`boot.c:46`), `sched_is_schedulable` fixed-point `sum(budget*100/period)<=99` (`sched.c:94`), `sched_tick` finds `new_part` by `offset`, `sched_pick_next` uses a 256-bit `ready_bits` fast path (set on bind/replenish, self-healing clear) with the legacy full scan as correctness floor — proven equivalent on 3000 randomized states (`tests/test_sched_bitmap.c`); full O(1) awaits TCB-state hooks in `tcb.c`/`endpoint.c`, `WCET 5us` `rdtime` (`sched.c:108`).
+Kernel text is `RX` (no W, no U); kernel data is `RW` (no U). User text is
+`RX` (no W, no kernel); user data/stacks are `RW` (no kernel). SUM is 0
+except during the bounded `u_copy_in`/`u_copy_out` window. No PMP changes
+(yet): firmware owns PMP. Stage 3 (per-thread VSpace) is spec-ready
+(`V2_D.thy`).
 
-Theorem `Sched_Verification.thy: partition_isolation_time`.
+### Fault containment
 
-## IPC: Copy-Only + Notifications
+Illegal instructions, page faults, and unknown interrupts park the offending
+thread and keep the rest running (`[fault] tcb=N cause=... parked; others
+continue`).
 
-- **Sync:** `Endpoint` rendezvous (`has_receiver`) else FIFO `q_len<16`. `endpoint_send` stores per-slot `queue_msgs`, `endpoint_recv` dequeues FIFO, `endpoint_call` is `send`+`recv` with `TCB_BLOCKED_REPLY`. All via `cheri_memcpy_capped` and `GRANT` check.
-- **Async:** `Notification` 64-bit badge OR, `signal` coalesces, `wait` returns `badge` or blocks `TCB_BLOCKED_RECV`, `bind` for `IRQ`.
-- Limits: `IPC_MSG_MAX 30` (120B) `IPC_CAPS_MAX 3`, cap transfer needs `endpoint` cap `GRANT` and per-cap `GRANT_REPLY`.
+## Capability model (Stage 3, spec green)
 
-`kernel/src/syscall.c:14` `syscall_handler` checks `cap_has_right`, `partition budget`, `WCET`.
+The host-tested model lives in `kernel/caps.h` (tests/test_v2caps.c). Frame
+pool (`V2_FRAMES_MAX=8`), per-thread cap slots (`V2_CAP_SLOTS=16`), and a
+linear mapping table (`V2_VPN_SLOTS=32`). Operations: `v2_mint` (attenuate
+own cap, root bit cleared on copy), `v2_grant` (cross-thread copy), `v2_map`
+(cap right + VPN → mapping, never X: W^X enforced), `v2_unmap`, `v2_revoke`
+(destroy all non-root caps to an object system-wide + drop all its mappings).
+Root caps survive revocation (the allocator/mem_server retains them).
 
-## Memory: Capabilities + Coloring + Paging
+ELF validation (`v2_elf_ok`): magic check, 1–4 segments, 1–512 pages each,
+never W+X. Data read/write: needs both a valid cap right AND mapping right
+(mirrors the spec `d_write`/`d_read`).
 
-`Untyped` -> `Frame` with `alloc_color_for_partition(pid*2%16)` (`alloc.c:12`), `vspace_map` checks `vcolor==paddr_color` (`vspace.c:39`), `PTE_U` only for user (`partition!=0`), `pt_pool` after `.trap_stack` (`linker.ld:20`).
+## Userspace (frozen v1 features)
 
-## Drivers: IOMMU-Isolated Userspace
+The v1 M-mode kernel was removed; the v1 userspace feature set survived via
+the frozen ABI headers in `userspace/abi/` (types, cap, cheri, iommu, vspace,
+linux_abi — self-contained, host-compilable). These provide the syscall
+numbers and structure definitions against which the drivers and servers
+compile. The freestanding C library lives in `userspace/libc/`. Driver and
+server code uses only `userspace/abi/` headers — never `kernel/` headers.
 
-`virtio_net.c` `mmio_base` is `Frame` cap bounded, DMA buffers are `Frame` caps mapped via `IOMMU` windows per `dev_id`, with TX/RX virtqueues (64 desc each, per-packet `iommu_check`, bounded 32-per-IRQ drain). `block.c` is the same pattern for virtio-blk (64-slot request queue, sector-capacity + direction-correct DMA checks, micro-reboot). `drivers/vga.c` is the userspace framebuffer text driver (bounded `Frame` cap, 100x37 cells, OOB-counting puts/clear). On target both virtio drivers probe the MMIO transport (magic/version/device-ID, `userspace/drivers/virtio_mmio.h` shared with the `kbd.c` pattern), negotiate features, program real split virtqueues (legacy v1 8K regions or modern pages, 3-desc blk chains / 2-desc net chains with 12B headers), and drain the hardware used ring with `ISTATUS` ACK — `init` refuses unvalidated devices. Platform drivers follow the same compartment discipline (MMIO Frame cap + IRQ, no DMA, no kernel access): `uart.c` (16550A: 8N1/divisor/FIFO init, 256B FIFOs, bounded pump/poll/IRQ), `plic.c` (priority/enable/threshold/claim-complete, IRQ→Notification bindings, bounded dispatch), `timer.c` (CLINT: slice arm, catch-up re-arm with no tick burst, monotonic ticks across micro-reboot), `rtc.c` (goldfish RTC: torn-read-safe wall clock, one-shot alarms, reboot re-arm with past-deadline clamp), `power.c` (SiFive finisher: arm-then-act shutdown/reboot so stray writes can't halt the machine). `irq.c` binds `IRQ` cap to `Notification`. No driver in kernel.
+Build gate: `make -C userspace` (freestanding rv64 ELFs) +
+`make -C userspace drivers` (freestanding rv64, `-Werror`, driver objects
+validates the ABI headers).
 
-Services: `mem_server` (Untyped), `sched_server` (EDF admission), `vfs_server` (`userspace/vfs_server/server.c`: per-client fd tables keyed by the kernel-authenticated sender (`ipc_msg_t.sender_tcb`, stamped by `endpoint_recv`), rights-checked create/open/read/write/close/unlink/stat, wrap-safe bounds, owner-only unlink, no unlink-while-open, `Frame` per file; verified in `kernel/isabelle/FS_Verification.thy`: fd isolation, rights confinement, bounds safety, ownership, wf preservation — no axioms/sorry), `drivers/virtio_net`, `example/hello` (`lib/moonlight.h` purecap ABI), `sh/moonsh` (interactive shell: `SYS_DEBUG_PUTC/GETC` console, `user_hello` threads in `boot.c`, shell on its own `.bss` stack; every `SYS_YIELD`/timer tick resumes via trap-frame snapshots (`sched_coop_switch`/`timer_handler` install the pick into the live frame and `mret` — traps never suspend, so trap frames can't overlap suspended C frames; legacy `sched_dispatch`/`sched_yield_back` stay for host tests only); timer preemption is live (CLINT MTIP, slice 100k ticks, per-thread snapshot + shell fairness every 8th pick); U-mode + ELF loading are the explicit next steps, NOT done).
+## Verification
 
-## Verification Stack
+`tools/verify.sh` is the single source of truth:
 
-Isabelle `Moonlight_A` (abstract) -> `Moonlight_E` (executable) -> `Refine` (A==E) -> `c_refinement` (AutoCorres+CompCert). `RISCV_CHERI` (monotonicity), `CacheColoring`, `IOMMU_Verification` (`dma_confinement`), `Sched_Verification`.
+1. **Host unit tests**: ABI regression (uintptr_t = 8), sched_server, vfs,
+   shell, driver host-sims (uart/plic/timer/rtc/power), freestanding libc
+   (test_libc + newlibc + batch4/5/6), v2 IPC + caps (host-compiled from
+   `ipc.h`/`caps.h`).
+2. **Production gates**: linker layout (no PROGBITS in `[_bss,_bss_end)`),
+   `user.c` rodata ban (immediates-only U-mode code).
+3. **Isabelle**: `isabelle build -D kernel/isabelle -v` (session V2 =
+   V2_A + V2_B + V2_C + V2_D + Qubes_A; anti-vacuity gate: no sorry,
+   no `≡ True` invariants).
+4. **Kernel build**: `make -C kernel` (clang, rv64imac, freestanding).
+5. **QEMU smoke**: boots OpenSBI → kernel, asserts `satp Sv39 on`,
+   `entering U-mode`, `B00pn`, `A10pg`, `W1`, `no runnable left; parking cpu`.
 
-Production: `tools/verify.sh` 4 stages, `cbmc` bounds, `isabelle build`, `qemu` smoke 3s.
+CI (`verify.yml`, `cheri.yml`): the host-tests job runs `verify.sh`; the
+isabelle job runs the proofs in the Isabelle container; the CHERI job
+confirms the kernel also compiles under `riscv64-unknown-elf-clang` (CHERI
+toolchain gate — the kernel remains `-march=rv64imac` today).
 
-## Boot
+## v1-era documents
 
-`start.S:1` `_start` hart0, `__global_pointer$`, clear `_bss`->`_kernel_end`, `mtvec`, `mscratch=_trap_stack_top`, `medeleg=0`, `mstatus`, `sfence`, `cheri_init_ddc` (purecap). `boot.c:20` UART, trap OK, DDC, EDF, CNode, Sv39 map kernel 2M + UART, `resolve` tests, `satp` switch, `ecall` test, `fence`, park `wfi`.
+The following `docs/` files describe the removed v1 (M-mode) kernel and are
+kept as historical reference. Their `kernel/src` and `kernel/include` paths
+no longer exist:
 
-`linker.ld:2` `ENTRY _start 0x80000000`, `.text.start`, `.rodata`, `.data`, `_bss`, `.stack` 32K, `.trap_stack` 32K, `.pt_pool` 64x4K, `_kernel_end`.
+- `CAPABILITIES.md`, `LINUX.md`, `PRODUCTION.md`, `REPRODUCIBLE.md`,
+  `SECURITY.md`, `SYSCALLS.md`, `THREAT_MODEL.md`, `USAGE.md`
+
+The live design document for the current codebase is `docs/V2_DESIGN.md`.

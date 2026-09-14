@@ -1,5 +1,5 @@
-#include "../kernel/include/cap.h"
-#include "../kernel/include/cheri.h"
+#include "../userspace/abi/cap.h"
+#include "../userspace/abi/cheri.h"
 #include <assert.h>
 #include <stdio.h>
 

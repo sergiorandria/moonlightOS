@@ -15,7 +15,7 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "../../kernel/include/types.h"
+#include "../abi/types.h"
 
 #define VMM_MAGIC      0x000u
 #define VMM_VERSION    0x004u

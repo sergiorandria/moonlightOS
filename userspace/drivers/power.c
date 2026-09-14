@@ -14,8 +14,8 @@
 #include <stddef.h>
 #include <string.h>
 
-#include "../../kernel/include/cheri.h"
-#include "../../kernel/include/cap.h"
+#include "../abi/cheri.h"
+#include "../abi/cap.h"
 
 #define POWER_BASE_EXPECT 0x100000u
 #define POWER_REG_OFF     0x0u

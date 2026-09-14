@@ -1,5 +1,10 @@
 # Reproducible Build + Attestation
 
+> **v1-era reference** (historical). This document describes the removed
+> v1 DICE measured boot (`kernel/src/dice.c`, `kernel/src/sha256.c`).
+> DICE is not present in the v2 kernel (`kernel/`). The v2 reproducibility
+> goal is a deterministic build gated in `tools/verify.sh`.
+
 ```
 make -C kernel clean && make -C kernel SOURCE_DATE_EPOCH=0
 sha256sum kernel/build/moonlight.elf > build.hash

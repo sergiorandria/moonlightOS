@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-# MoonlightOS QEMU runner - production grade, autodetects CHERI vs stock
+# MoonlightOS QEMU runner - v2 S-mode kernel under OpenSBI
 # Usage: tools/run_qemu.sh [elf] [--nographic|--gdb|--trace-int]
 # The flag may also be passed as $1 (elf defaults to kernel/build/moonlight.elf).
 if [[ "${1:-}" == --* ]]; then
@@ -30,21 +30,13 @@ if ! $QEMU -device help 2>&1 | grep -qE "bochs-display|ramfb"; then
   done
 fi
 if [ -z "$QEMU" ]; then
-  echo "qemu-system-riscv64 not found. Build CTSRD-CHERI/qemu: https://github.com/CTSRD-CHERI/qemu"
-  echo "  mkdir -p /tmp/qb2 && cd /tmp/qb2 && /path/to/qemu/configure --target-list=riscv64-softmmu,riscv64cheristd-softmmu && ninja"
+  echo "qemu-system-riscv64 not found. Install it via your distro (e.g. apt install qemu-system-misc, 8.x+ with OpenSBI)."
   exit 1
 fi
 
-# Detect CHERI support
-if $QEMU -M help 2>&1 | grep -q "virt" && $QEMU -cpu help 2>&1 | grep -q "cheri"; then
-  CHERI_ARGS="-M virt,cheri=on -cpu rv64,cheri=on"
-else
-  # Stock or cheristd (cheri implicit)
-  CHERI_ARGS="-M virt -cpu rv64"
-  if echo "$QEMU" | grep -q "cheristd"; then
-    echo "Using CHERI standard QEMU: $QEMU"
-  fi
-fi
+# The v2 kernel is a stock rv64imac S-mode build under OpenSBI; no CHERI
+# CPU flip is wired in yet. QEMU virt defaults suffice.
+CHERI_ARGS="-M virt"
 
 # Display handling: use a window if DISPLAY/WAYLAND_DISPLAY is set,
 # otherwise fall back to VNC so you can still SEE the framebuffer over
@@ -89,7 +81,43 @@ if [ "$DISP" != "-nographic" ]; then
   fi
 fi
 
-BIOS_ARGS="-bios none"
+# The v2 kernel is S-mode: OpenSBI loads it, so QEMU must ship firmware
+# (-bios default). -bios none was the v1 M-mode world and must not return.
+BIOS_ARGS="-bios default"
+
+# 256M virtio-blk virtual disk (raw). Microkernel separation: the kernel
+# never touches the disk. The disk is owned exclusively by the userspace
+# block compartment (userspace/drivers/block.c, 524288 sectors); mem_server
+# mints its MMIO Frame cap + IRQ binding and the driver validates the
+# slot via block_probe_slot() (no ambient MMIO scan, no kernel driver).
+# Pass --no-disk to boot diskless (driver keeps the diskless fallback).
+DISK="kernel/build/moonlight-disk.img"
+DISK_SIZE="256M"
+DISK_SECTORS=524288
+DISK_ARGS=""
+if [[ "$*" != *"--no-disk"* ]]; then
+  if [ ! -f "$DISK" ]; then
+    echo "Creating 256M virtual disk: $DISK"
+    mkdir -p "$(dirname "$DISK")"
+    if command -v qemu-img >/dev/null 2>&1; then
+      qemu-img create -f raw "$DISK" "$DISK_SIZE"
+    elif command -v truncate >/dev/null 2>&1; then
+      truncate -s "$DISK_SIZE" "$DISK"
+    else
+      dd if=/dev/zero of="$DISK" bs=1M count=256 status=none
+    fi
+  fi
+  if [ -f "$DISK" ]; then
+    SZ=$(stat -c%s "$DISK" 2>/dev/null || stat -f%z "$DISK" 2>/dev/null || echo 0)
+    if [ "$SZ" != "268435456" ]; then
+      echo "WARNING: $DISK is $SZ bytes, expected 268435456 (256M, $DISK_SECTORS sectors)."
+      echo "Recreate with: rm $DISK (it is re-created on next run)"
+    fi
+    DISK_ARGS="-drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0"
+  else
+    echo "WARNING: could not create $DISK - booting diskless."
+  fi
+fi
 
 # Logging: -d guest_errors only by default. The moonsh idle loop polls
 # SYS_DEBUG_GETC + SYS_YIELD via ecall at high frequency, so `-d int`
@@ -104,14 +132,21 @@ fi
 # GDB support
 if [[ "$*" == *"--gdb"* ]]; then
   echo "GDB on :1234 - connect with: riscv64-unknown-elf-gdb $ELF -ex 'target remote :1234'"
-  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $VGA_ARGS $KBD_ARGS -S -s -serial mon:stdio $LOG_ARGS -no-reboot
+  # shellcheck disable=SC2086
+  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $VGA_ARGS $KBD_ARGS $DISK_ARGS -S -s -serial mon:stdio $LOG_ARGS -no-reboot
 fi
 
-echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $KBD_ARGS $BIOS_ARGS -kernel $ELF -no-reboot $LOG_ARGS"
+echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS $BIOS_ARGS -kernel $ELF -no-reboot $LOG_ARGS"
+if [ -n "$DISK_ARGS" ]; then
+  echo "(virtio-blk disk: $DISK 256M raw, owned by the userspace block compartment; --no-disk boots diskless)"
+else
+  echo "(no virtio-blk disk: --no-disk given or image missing)"
+fi
 if [ "$DISP" = "-nographic" ]; then
   echo "(shell on serial; use a display for the window shell)"
 else
   echo "(shell in the QEMU window; serial keeps the boot log)"
 fi
 echo "(use --trace-int to re-enable -d int logging)"
-exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $DISP $VGA_ARGS $KBD_ARGS -serial mon:stdio $LOG_ARGS -no-reboot
+# shellcheck disable=SC2086
+exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS -serial mon:stdio $LOG_ARGS -no-reboot

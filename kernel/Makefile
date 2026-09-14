@@ -1,130 +1,35 @@
-CC ?= riscv64-unknown-elf-clang
-# Autodetect CHERI support (stock clang 22 lacks xcheri)
-CHERI_CC := $(shell which $(CC) 2>/dev/null || which clang 2>/dev/null || echo cc)
-CHERI_OK := $(shell echo | $(CHERI_CC) -march=rv64imacxcheri -E -dM - > /dev/null 2>&1 && echo yes || echo no)
-ifeq (,$(shell which $(CC) 2>/dev/null))
-  CC := clang
-  CFLAGS_CHERI_DETECT := --target=riscv64-unknown-elf
-else
-  CFLAGS_CHERI_DETECT :=
-endif
-ifeq ($(CHERI_OK),yes)
-  CFLAGS_CHERI = $(CFLAGS_CHERI_DETECT) -march=rv64imacxcheri -mabi=l64pc128d -cheri-bounds=conservative -mcmodel=medany -mno-relax
-  LDFLAGS =
-  LD = riscv64-unknown-elf-ld
-else
-  $(warning CHERI toolchain not found, falling back to stock QEMU hybrid sim - use tools/build_qemu.sh for full build)
-  CC := clang
-  # Freestanding: never pull host glibc headers (-I/usr/include) — it breaks
-  # uintptr_t via bits/wordsize.h (32-bit fallback under --target=riscv64).
-  # Clang resource dir provides correct freestanding <stdint.h>/<stddef.h>/<stdbool.h>.
-  # kernel/include/string.h provides freestanding memset/memcpy (host string.h not needed).
-  CFLAGS_CHERI = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -mcmodel=medany -mno-relax -I include -I/usr/lib/clang/22/include
-  LDFLAGS = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib
-  LD = ld.lld
-endif
-CFLAGS_BASE = -O2 -ffreestanding -nostdlib -Wall -Wextra -Werror \
-              -fno-builtin -mcmodel=medany -mno-relax \
-              -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
-              -Wimplicit-fallthrough -Wcast-align -Wshadow
-ifeq ($(CHERI_OK),yes)
-CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE)
-else
-CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE) -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-cast-align
-endif
-SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c src/flush.c src/elf.c src/vga.c src/kbd.c src/sha256.c src/dice.c src/linux.c ../userspace/sh/shell.c ../userspace/lib/moonlight.c ../userspace/vfs_server/server.c
-# Bundled C library + Linux demo thread (in-image): libc headers win over
-# kernel headers here (reversed -I order vs the kernel proper), and
-# __MOONLIGHT_KERNEL__ selects minilib's memcpy/memset/etc over libc's
-# (else the image would carry both and fail to link).
-KLIBC_SRCS = $(addprefix ../userspace/libc/,$(shell cat ../userspace/libc/SRCS)) ../userspace/example/linux_demo.c
-KLIBC_OBJS = $(KLIBC_SRCS:.c=.o)
-CFLAGS_KLIBC = -I ../userspace/libc/include $(CFLAGS) -D__MOONLIGHT_KERNEL__
-$(KLIBC_OBJS): %.o: %.c
-	$(CC) $(CFLAGS_KLIBC) -MMD -MP -c $< -o $@
-SRC += $(KLIBC_SRCS)
-ASM = src/start.S src/trap.S src/switch.S
-LINKER = linker.ld
+# Moonlight kernel: S-mode under OpenSBI (QEMU -bios default). Freestanding.
+# NOTE: plain `=` (not `?=`): make's built-in CC=cc would otherwise win.
+CC = clang
+CLANG_INC := $(shell $(CC) --print-resource-dir)/include
+CFLAGS_K = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
+           -O2 -ffreestanding -nostdlib -fno-builtin -mcmodel=medany -mno-relax \
+           -Wall -Wextra -Werror -I$(CLANG_INC) \
+           -fno-stack-protector \
+           -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
+# NOTE: -fno-stack-protector is explicit, not an omission. There is no libc
+# to host __stack_chk_fail, and the mechanisms are paging/CHERI instead.
+# A canary layer arrives with the Stage-3 C library; until then any
+# -fstack-protector in these flags is a build break by design.
+LDFLAGS_K = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib -T linker.ld
 
-ISABELLE = isabelle
-OBJ = $(SRC:.c=.o) $(ASM:.S=.o)
-TARGET = build/moonlight.elf
-TARGET_QEMU = build/moonlight.qemu.elf
+SRC_C = kboot.c user.c
+SRC_S = start.S trap.S
 
-all: $(TARGET)
+all: build/moonlight.elf
 
-# DICE expected-hash slot: generated object linked into .dice_expected.
-# Created as zeros if absent (measure-only boot); `provision-dice` fills it
-# with the real measurement. Kept across `clean` like a .config - use
-# `dice-unprovision` to reset to measure-only.
-# (NOTE: this block must stay AFTER `all:` - make treats the first rule as
-# the default goal.)
-DICE_EXPECTED_SRC = build/expected_hash.c
-DICE_EXPECTED_OBJ = build/expected_hash.o
-
-$(DICE_EXPECTED_SRC):
+build/moonlight.elf: $(SRC_C) $(SRC_S) linker.ld
 	@mkdir -p build
-	@if [ ! -f $@ ]; then printf '#include <stdint.h>\n__attribute__((section(".dice_expected"))) const uint8_t expected_kernel_hash[32] = {0};\n' > $@; echo "DICE: unprovisioned slot (measure-only). Run 'make provision-dice'."; fi
+	$(CC) $(CFLAGS_K) $(LDFLAGS_K) -o $@ $(SRC_C) $(SRC_S) -Wl,--no-undefined
+	ls -lh $@
 
-$(DICE_EXPECTED_OBJ): $(DICE_EXPECTED_SRC)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-provision-dice: $(TARGET)
-	@DIGEST=$$(python3 ../tools/measure_dice.py --digest $(TARGET)); \
-	python3 ../tools/measure_dice.py $(TARGET) > $(DICE_EXPECTED_SRC); \
-	rm -f $(DICE_EXPECTED_OBJ); \
-	$(MAKE) $(TARGET); \
-	python3 ../tools/measure_dice.py --expect $$DIGEST $(TARGET)
-
-dice-unprovision:
-	@rm -f $(DICE_EXPECTED_SRC) $(DICE_EXPECTED_OBJ)
-	@echo "DICE: slot removed; next build is measure-only."
-
-$(TARGET): $(OBJ) $(DICE_EXPECTED_OBJ) $(LINKER)
-	@mkdir -p build
-	$(CC) $(CFLAGS) $(LDFLAGS) -T $(LINKER) -o $@ $(OBJ) $(DICE_EXPECTED_OBJ)
-
-qemu: $(TARGET_QEMU)
-
-$(TARGET_QEMU): $(SRC) $(ASM) $(LINKER)
-	@mkdir -p build
-	@echo "Building stock QEMU fallback (hybrid sim)..."
-	@../tools/build_qemu.sh
-	@cp /tmp/moonlight_trap.elf $@ 2>/dev/null || cp /tmp/moonlight_qemu.elf $@ 2>/dev/null || true
-	@ls -lh $@
-
-%.o: %.c
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-%.o: %.S
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-
-# Header tracking: without this, editing a header (e.g. tcb.h layout)
-# silently links mixed-layout objects (ps showed prio 0 + garbled rows).
--include $(SRC:.c=.d) $(ASM:.S=.d)
+clean:
+	rm -rf build
 
 isabelle:
-	$(ISABELLE) build -D isabelle -v
+	isabelle build -D isabelle -v
 
 verify:
 	@../tools/verify.sh
 
-cbmc:
-	@if command -v cbmc >/dev/null 2>&1; then \
-		echo "CBMC: bounds/div/pointer for endpoint/vspace/sched"; \
-		cbmc --bounds-check --pointer-check --div-by-zero-check --unwind 10 cbmc_harness.c 2>&1 | head -n 20; \
-	else echo "SKIP: cbmc not found (pacman -S cbmc)"; fi
-	@cbmc --bounds-check --pointer-check --div-by-zero-check src/cap.c src/cnode.c --unwind 10 2>&1 | head -n 20 || true
-
-compcert:
-	@if command -v ccomp >/dev/null 2>&1; then \
-		echo "CompCert: ccomp -march rv64imacxcheri"; \
-		ccomp -march rv64imacxcheri -c src/cap.c -o /tmp/cap.compcert.o && echo "CompCert OK"; \
-	else echo "SKIP: ccomp not found (https://compcert.org)"; fi
-
-clean:
-	rm -f build/moonlight.elf build/moonlight.qemu.elf build/expected_hash.o src/*.o src/*.d ../userspace/sh/shell.o ../userspace/sh/shell.d ../userspace/lib/moonlight.o ../userspace/lib/moonlight.d ../userspace/vfs_server/server.o ../userspace/vfs_server/server.d $(KLIBC_OBJS) $(KLIBC_SRCS:.c=.d)
-	@rmdir --ignore-fail-on-non-empty build 2>/dev/null || true
-	# NOTE: build/expected_hash.c is deliberately kept (provisioning config).
-
-.PHONY: all qemu isabelle verify cbmc clean provision-dice dice-unprovision
+.PHONY: all clean isabelle verify

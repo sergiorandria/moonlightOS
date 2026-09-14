@@ -37,7 +37,7 @@ int main(void) {
     uint32_t pid2;
     assert(process_create(&tcbs, &alloc, &sched, &mdb, &args, &pid2)==ERR_INVALID_ARG);
     printf("PASS: admission control rejects over-util\n");
-    assert(process_destroy(&tcbs, &sched, &mdb, pid)==ERR_OK);
+    assert(process_destroy(&tcbs, &alloc, &sched, &mdb, pid)==ERR_OK);
     /* Now it should admit */
     assert(process_create(&tcbs, &alloc, &sched, &mdb, &args, &pid2)==ERR_OK);
     printf("PASS: create after destroy\n");

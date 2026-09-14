@@ -1,11 +1,7 @@
-session Moonlight = "HOL-Library" +
-  options [document = pdf, document_output = "output"]
+session V2 = HOL +
   theories
-    RISCV_CHERI
-    CacheColoring
-    IOMMU_Verification
-    Moonlight_A
-    Moonlight_E
-    Sched_Verification
-    FS_Verification
-    Refine
+    V2_A
+    V2_B
+    V2_C
+    V2_D
+    Qubes_A

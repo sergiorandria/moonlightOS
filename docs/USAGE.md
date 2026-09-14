@@ -1,5 +1,9 @@
 # MoonlightOS Usage Guide (Production)
 
+> **v1-era reference** (historical). This document describes the removed
+> v1 M-mode kernel's usage model. The v2 kernel runs in S-mode under
+> OpenSBI with a smaller UABI; see `docs/V2_DESIGN.md` and `kernel/kboot.c`.
+
 This guide shows how to use the kernel from userspace. All userspace is purecap on CHERI HW, hybrid sim on host.
 
 ## 1. Capability Model (POLA)
