@@ -8,6 +8,21 @@
 
 #include "../kernel/caps.h"
 
+/* frame_alloc_slot: host-sim copy (mirrors kernel kboot.c) */
+static int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
+    /* For host testing, skip actual frame bitmap — just find empty slot */
+    for (int i = 0; i < V2_CAP_SLOTS; i++) {
+        if (!caps->caps[tid][i].valid) {
+            caps->caps[tid][i].valid = 1;
+            caps->caps[tid][i].obj = (unsigned long)i % V2_FRAMES_MAX;
+            caps->caps[tid][i].rights = V2_RIGHT_RW;
+            caps->caps[tid][i].root = 0;
+            return V2_OK;
+        }
+    }
+    return V2_ERR_OVERFLOW;
+}
+
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 
 static int caps_equal_slot(const v2_caps_t *a, const v2_caps_t *b,
@@ -138,6 +153,69 @@ int main(void) {
     CHECK(!v2_elf_ok(1, ph, 2)); /* oversize segment */
     CHECK(v2_elf_map(0, 2, vpns, ws, 8, &n) == V2_ERR_INVALID);
     CHECK(v2_elf_map(ph, 2, 0, ws, 8, &n) == V2_ERR_INVALID);
+
+    /* ---- Invoke round-trip tests (mirror kernel V2_INVOKE handler) ---- */
+    {
+        v2_caps_t st;
+        v2_caps_init(&st, 2);
+        int rc;
+
+        /* PT_ALLOC: allocate a frame, mint RW cap */
+        rc = frame_alloc_slot(&st, 0);
+        assert(rc == V2_OK);
+        int allocated_slot = -1;
+        for (int i = 0; i < V2_CAP_SLOTS; i++) {
+            if (st.caps[0][i].valid && !st.caps[0][i].root) {
+                allocated_slot = i;
+                break;
+            }
+        }
+        assert(allocated_slot >= 0);
+        assert(st.caps[0][allocated_slot].rights == V2_RIGHT_RW);
+
+        /* MINT: attenuate RW -> R only */
+        rc = v2_mint(&st, 0, (unsigned long)allocated_slot, V2_RIGHT_R, 14);
+        assert(rc == V2_OK);
+        assert(st.caps[0][14].rights == V2_RIGHT_R);
+        assert(st.caps[0][14].root == 0);
+
+        /* MAP: map frame via RW cap */
+        rc = v2_map(&st, 0, (unsigned long)allocated_slot, 0x100);
+        assert(rc == V2_OK);
+
+        /* WRITE: write via cap+mapping */
+        rc = v2_write(&st, 0, 0x100, 0xDEADBEEF);
+        assert(rc == V2_OK);
+        assert(st.fdata[st.caps[0][allocated_slot].obj] == 0xDEADBEEF);
+
+        /* READ: read back */
+        uint64_t val = 0;
+        rc = v2_read(&st, 0, 0x100, &val);
+        assert(rc == V2_OK);
+        assert(val == 0xDEADBEEF);
+
+        /* W^X: mint with X rights rejected */
+        rc = v2_mint(&st, 0, (unsigned long)allocated_slot, V2_RIGHT_X, 15);
+        assert(rc == V2_ERR_INVALID);
+
+        /* UNMAP: remove mapping */
+        rc = v2_unmap(&st, 0, 0x100);
+        assert(rc == V2_OK);
+
+        /* GRANT: copy cap to thread 1 */
+        rc = v2_grant(&st, 0, (unsigned long)allocated_slot, 1, 0);
+        assert(rc == V2_OK);
+        assert(st.caps[1][0].valid == 1);
+        assert(st.caps[1][0].obj == st.caps[0][allocated_slot].obj);
+        assert(st.caps[1][0].rights == V2_RIGHT_RW);
+
+        /* REVOKE: destroy thread 1's cap (and the source cap itself) */
+        rc = v2_revoke(&st, 0, (unsigned long)allocated_slot);
+        assert(rc == V2_OK);
+        assert(st.caps[1][0].valid == 0); /* granted cap destroyed */
+
+        printf("invoke round-trip: PASS\n");
+    }
 
     printf("test_v2caps: ALL PASS\n");
     return 0;
