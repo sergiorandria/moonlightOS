@@ -37,7 +37,7 @@ CFLAGS_DRV = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
             -Wall -Wextra -Werror -I lib -I ../kernel/include -I/usr/lib/clang/22/include \
             -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
 
-all: build/hello.elf build/moonsh.elf drivers libc
+all: build/hello.elf build/moonsh.elf build/linux_demo.elf drivers libc
 
 build/hello.elf: example/hello.c $(LIB) lib/start.S user.ld
 	@mkdir -p build
@@ -69,6 +69,11 @@ build/src/%.o: libc/src/%.c
 build/src/%.o: libc/src/%.S
 	@mkdir -p build/src
 	$(CC) $(CFLAGS_LIBC) -c $< -o $@
+
+build/linux_demo.elf: example/linux_demo.c $(LIBC_OBJS) libc/start.S user.ld
+	@mkdir -p build
+	$(CC) $(CFLAGS_LIBC) $(LDFLAGS_U) -Wl,-e,_start -o $@ example/linux_demo.c $(LIBC_OBJS) libc/start.S
+	ls -lh $@
 
 # Host-sim objects for unit tests (shell logic runs on the build machine).
 host-test-objs:

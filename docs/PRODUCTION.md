@@ -17,6 +17,7 @@
 - [x] `hardening.h:1` `STACK_CANARY`, `GUARD_PAGE`, `is_canonical_addr`, `panic`, `HARDENING_ASSERT`, `fstack-protector`
 - [x] `alloc.c:21` color-aware `alloc_frame`, `hw_cap` sealed, per-color free
 - [x] `dice.c` DICE measured boot wired: freestanding `sha256.c`, slot-excluding two-range measurement, `.dice_expected` 32B slot, `provision-dice` fixed-point gate, `kernel_boot()` enforces-if-provisioned (halts pre-scheduler on mismatch), CDI derived, never logged — `tests/test_dice.c`, QEMU smoke asserts `[DICE]` lines
+- [x] `linux.c` Linux rv64 personality wired: `a7 > SYS_MAX` dispatches in `syscall.c` (admission WCET gate, `-EAGAIN` means not-executed — see `docs/LINUX.md` §6), flat VFS files + static brk/mmap arenas + console fds + CLINT time, `userspace/libc/` + `example/linux_demo.c` (in-kernel thread + standalone ELF) — `tests/test_linux.c` + `tests/test_libc.c`, QEMU smoke asserts `[LINUX-DEMO] ALL PASS`
 
 ## Verification
 

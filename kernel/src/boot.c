@@ -42,6 +42,7 @@ static void uart_hexbytes(const uint8_t *p, unsigned n){
 #define HALT() __asm__ volatile("wfi")
 
 void shell_main(void); /* userspace/sh/shell.c - interactive shell, own stack below */
+void linux_demo_main(void); /* userspace/example/linux_demo.c - Linux app thread */
 
 /* Shell stack lives in .bss (identity-mapped), NOT the alloc pool: boot thread
  * stacks at 0x80500000+ were never mapped in the kernel vspace, so running a
@@ -391,6 +392,28 @@ void kernel_boot(void) {
         if(process_create(&g_tcbs, &g_alloc, &g_sched, &g_mdb, &args, &pid)==ERR_OK){
             tcb_resume(&g_tcbs.threads[pid]);
             uart_puts("[BOOT] vfs_server spawned pid "); uart_hex(pid);
+        }
+    }
+    // linux_demo in partition 0: a real Linux-compatible C program on the
+    // Linux personality + bundled libc (stdio/heap/files/mmap). Markers
+    // [LINUX-DEMO] in the log; exit() parks the thread when done.
+    // Budget 2000/5000 (part0 total 85<=99): the demo is bursty - dozens
+    // of gated syscalls between timer charges - and a starved budget
+    // surfaces as -EAGAIN everywhere (libc retries, but headroom first).
+    {
+        process_create_args_t args = {0};
+        args.pc = (uintptr_t)linux_demo_main;
+        args.sp_top = 0; /* derived from carved frame */
+        args.name = "linux_demo";
+        args.stack_size = 8192;
+        args.partition_id = 0;
+        args.priority = 5;
+        args.budget_us = 2000;
+        args.period_us = 5000;
+        uint32_t pid;
+        if(process_create(&g_tcbs, &g_alloc, &g_sched, &g_mdb, &args, &pid)==ERR_OK){
+            tcb_resume(&g_tcbs.threads[pid]);
+            uart_puts("[BOOT] linux_demo spawned pid "); uart_hex(pid);
         }
     }
 

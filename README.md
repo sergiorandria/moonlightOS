@@ -29,7 +29,7 @@ tools/run_qemu.sh --gdb   # GDB :1234
 - Paging: Sv39 3-level PT walk, `PTE_A|PTE_D`, `alloc_frame` per-color 64 pages (was bump `.pt_pool`), `satp` switch
 
 ## Test
-`tests/test_cap.c`, `test_sched_realtime.c`, `test_revoke_process.c`, `host_emul.c`, `fuzz_syscall.c`, `bench_ipc.c`, `test_invoke_ops.c`, `test_mem/sched/vfs_server.c`, `test_vspace.c`, `test_virtio_net.c`, `test_abi.c` - see `tools/verify.sh` (4 stages: host, Isabelle, CHERI/stock QEMU, 3s smoke; `test_vfs` now `FAIL` not `SKIP`)
+`tests/test_cap.c`, `test_sched_realtime.c`, `test_revoke_process.c`, `host_emul.c`, `fuzz_syscall.c`, `bench_ipc.c`, `test_invoke_ops.c`, `test_mem/sched/vfs_server.c`, `test_vspace.c`, `test_virtio_net.c`, `test_net_queue.c`, `test_block.c`, `test_vga_drv.c`, `test_uart.c`, `test_plic.c`, `test_timer.c`, `test_rtc.c`, `test_power.c`, `test_libc.c`, `test_newlibc.c`, `test_linux.c`, `test_abi.c` - see `tools/verify.sh` (4 stages: host, Isabelle, CHERI/stock QEMU, 3s smoke; `test_vfs` now `FAIL` not `SKIP`)
 
 ## Docs
 
@@ -38,3 +38,4 @@ tools/run_qemu.sh --gdb   # GDB :1234
 - [Syscalls](docs/SYSCALLS.md) - 8 syscalls + 12 invoke ops
 - [Capabilities](docs/CAPABILITIES.md) - sealing, otype, attenuation, coloring
 - [Production](docs/PRODUCTION.md) - checklist, known gaps
+- [Linux personality](docs/LINUX.md) - rv64 syscall subset, flat files, brk/mmap arenas, EAGAIN contract

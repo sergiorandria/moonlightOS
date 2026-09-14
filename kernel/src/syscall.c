@@ -8,6 +8,7 @@
 #include "../include/flush.h"
 #include "../include/console.h"
 #include "../include/kbd.h"
+#include "../include/linux.h"
 
 extern tcb_table_t g_tcbs;
 extern endpoint_t g_endpoints[MAX_ENDPOINTS];
@@ -62,7 +63,32 @@ kerror_t syscall_handler(trap_frame_t *frame, uint32_t cur_tcb) {
     uintptr_t arg1 = frame->a1;
     uintptr_t arg2 = frame->a2;
 
-    /* Bounds check syscall number - proven exhaustive */
+    /* Bounds check syscall number - proven exhaustive.
+     * Above the native range runs the Linux personality (rv64 numbers):
+     * result in a0 as -errno; exit/yield recycle the frame (live == 0)
+     * so it must not be touched afterwards (same rule as SYS_YIELD).
+     *
+     * EAGAIN contract (see docs/LINUX.md): -EAGAIN always means "NOT
+     * executed, safe to retry" - libc's __ml_call6 retries it up to 8x.
+     * So the WCET gate here is an ADMISSION check, taken BEFORE the
+     * personality runs. A post-execution clobber would lie: the VFS/heap
+     * side effects are already committed, and the retry would execute
+     * them twice (duplicated write bytes, leaked second fd blocking a
+     * later unlink - both observed as QEMU flakes). The frame is still
+     * the caller's at this point (nothing parked yet), so writing a0
+     * is always safe here. Overruns of the Linux op itself are delivered
+     * with the real result: WCET is advisory for the personality. */
+    if ((long)sys > (long)SYS_MAX) {
+        long lrc = 0;
+        int live;
+        if (!wcet_check(entry_us)) {
+            frame->a0 = (uintptr_t)(long)-LX_EAGAIN;
+            return ERR_WCET_EXCEEDED;
+        }
+        live = linux_syscall_frame(frame, cur_tcb, &lrc);
+        if (live) frame->a0 = (uintptr_t)lrc;
+        return ERR_OK;
+    }
     if (sys > SYS_MAX) return ERR_INVALID_ARG;
 
     /* Debug console: no cap needed (moves behind a console server later).

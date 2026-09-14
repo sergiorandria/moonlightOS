@@ -32,7 +32,17 @@ CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE)
 else
 CFLAGS ?= $(CFLAGS_CHERI) $(CFLAGS_BASE) -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-cast-align
 endif
-SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c src/flush.c src/elf.c src/vga.c src/kbd.c src/sha256.c src/dice.c ../userspace/sh/shell.c ../userspace/lib/moonlight.c ../userspace/vfs_server/server.c
+SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c src/notification.c src/minilib.c src/flush.c src/elf.c src/vga.c src/kbd.c src/sha256.c src/dice.c src/linux.c ../userspace/sh/shell.c ../userspace/lib/moonlight.c ../userspace/vfs_server/server.c
+# Bundled C library + Linux demo thread (in-image): libc headers win over
+# kernel headers here (reversed -I order vs the kernel proper), and
+# __MOONLIGHT_KERNEL__ selects minilib's memcpy/memset/etc over libc's
+# (else the image would carry both and fail to link).
+KLIBC_SRCS = $(addprefix ../userspace/libc/,$(shell cat ../userspace/libc/SRCS)) ../userspace/example/linux_demo.c
+KLIBC_OBJS = $(KLIBC_SRCS:.c=.o)
+CFLAGS_KLIBC = -I ../userspace/libc/include $(CFLAGS) -D__MOONLIGHT_KERNEL__
+$(KLIBC_OBJS): %.o: %.c
+	$(CC) $(CFLAGS_KLIBC) -MMD -MP -c $< -o $@
+SRC += $(KLIBC_SRCS)
 ASM = src/start.S src/trap.S src/switch.S
 LINKER = linker.ld
 
@@ -113,7 +123,7 @@ compcert:
 	else echo "SKIP: ccomp not found (https://compcert.org)"; fi
 
 clean:
-	rm -f build/moonlight.elf build/moonlight.qemu.elf build/expected_hash.o src/*.o src/*.d ../userspace/sh/shell.o ../userspace/sh/shell.d ../userspace/lib/moonlight.o ../userspace/lib/moonlight.d ../userspace/vfs_server/server.o ../userspace/vfs_server/server.d
+	rm -f build/moonlight.elf build/moonlight.qemu.elf build/expected_hash.o src/*.o src/*.d ../userspace/sh/shell.o ../userspace/sh/shell.d ../userspace/lib/moonlight.o ../userspace/lib/moonlight.d ../userspace/vfs_server/server.o ../userspace/vfs_server/server.d $(KLIBC_OBJS) $(KLIBC_SRCS:.c=.d)
 	@rmdir --ignore-fail-on-non-empty build 2>/dev/null || true
 	# NOTE: build/expected_hash.c is deliberately kept (provisioning config).
 

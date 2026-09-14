@@ -12,6 +12,21 @@ void *memcpy(void *d, const void *s, size_t n){
     while(n--) *dd++ = *ss++;
     return d;
 }
+/* Declared in kernel/include/string.h like the rest, but never defined
+ * until now (any user was a latent link error). Overlap-safe, byte-wise:
+ * no alignment assumptions, safe under -fno-builtin. */
+void *memmove(void *d, const void *s, size_t n){
+    unsigned char *dd = d;
+    const unsigned char *ss = s;
+    if (dd == ss || n == 0) return d;
+    if (dd < ss) {
+        while(n--) *dd++ = *ss++;
+    } else {
+        dd += n; ss += n;
+        while(n--) *--dd = *--ss;
+    }
+    return d;
+}
 int memcmp(const void *a, const void *b, size_t n){
     const unsigned char *aa=a, *bb=b;
     while(n--) if(*aa!=*bb) return *aa-*bb; else {aa++;bb++;}
