@@ -7,6 +7,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run full verification (single source of truth)
         run: tools/verify.sh
+  # NOTE (PLAN 1.4): host-tests is the single source of truth — do not
+  # re-implement its test list here. The isabelle job below is a matrix
+  # extension, not a duplicate: verify.sh SKIPs proofs when Isabelle is
+  # absent, and this container provides it.
   isabelle:
     runs-on: ubuntu-latest
     container:

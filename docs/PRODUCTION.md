@@ -21,7 +21,7 @@
 
 ## Verification
 
-- [x] `tools/verify.sh` 4 stages: host unit (cap/sched/revoke/host_emul/bench/fuzz + `test_abi` 8-byte `uintptr_t` cross-check, hardening/vspace/virtio_net, `test_invoke_ops` 12/12 ops, `test_mem/sched/vfs_server`, Isabelle, CHERI/stock QEMU + 3s smoke) — `kernel/include/types.h:7` `_Static_assert(sizeof(uintptr_t)==8)` fails build if reintroduced; `test_vfs` now `FAIL` not `SKIP` on real failure
+- [x] `tools/verify.sh` 4 stages: host unit (cap/sched/revoke/host_emul/bench/fuzz + `test_abi` 8-byte `uintptr_t` cross-check, hardening/vspace/virtio_net/net_queue/block/vga_drv/uart/plic/timer/rtc/power/dice/libc/linux, `test_invoke_ops` 12/12 ops, `test_mem/sched/vfs_server`, Isabelle, CHERI/stock QEMU + 3s smoke) — `kernel/include/types.h:7` `_Static_assert(sizeof(uintptr_t)==8)` fails build if reintroduced; `test_vfs` now `FAIL` not `SKIP` on real failure
 - [x] `kernel/isabelle` 7 theories build (Isabelle2025-2, no `quick_and_dirty`): 11 proved, 3 axiomatized as known open gaps (see below)
   - `RISCV_CHERI`: `cheri_mono_perms` proved, `cheri_mono_bounds` proved (added `cheri_is_valid` hyp)
   - `CacheColoring`: `color_disjoint` proved (added `part<8` bound), `no_cache_interference` proved
