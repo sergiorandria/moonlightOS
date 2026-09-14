@@ -703,9 +703,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (!v2_range_ok((uintptr_t)a2, 1,
-                                 (uintptr_t)V2_U_TEXT_BASE,
-                                 (uintptr_t)V2_U_END)) {
+                if (!v2_send_range_ok((uintptr_t)a2, 1)) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
@@ -731,9 +729,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (!v2_range_ok((uintptr_t)a2, 1,
-                                 (uintptr_t)V2_U_DATA_BASE,
-                                 (uintptr_t)V2_U_END)) {
+                if (!v2_recv_range_ok((uintptr_t)a2, 1)) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
