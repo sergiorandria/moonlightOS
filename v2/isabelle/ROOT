@@ -2,3 +2,4 @@ session V2 = HOL +
   theories
     V2_A
     V2_B
+    Qubes_A

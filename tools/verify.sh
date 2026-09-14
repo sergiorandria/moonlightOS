@@ -103,7 +103,7 @@ if command -v isabelle &>/dev/null; then
     ISABELLE_STATUS="FAIL"
     echo "FAIL: isabelle build failed"
   fi
-  echo "[2b/4] v2 spec (Stage 0: TCB + scheduler, mutant-tested invariants)"
+  echo "[2b/4] v2 spec (TCB + scheduler + qubes policy, mutant-tested invariants)"
   if isabelle build -D v2/isabelle -v; then
     echo "v2 spec: PASS"
   else
