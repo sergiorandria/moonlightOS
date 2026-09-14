@@ -111,6 +111,7 @@ typedef struct {
     uint64_t ipc_cap;
     uint64_t notify;   /* pending signal bits (OR-accumulate) */
     int wait_kind;     /* V2_WK_* : what this thread is blocked in */
+    uint64_t vspace_root_ppn; /* PPN of thread's root page table */
 } uctx_t;
 
 #define NTHREADS 2
@@ -192,6 +193,9 @@ static int pick_next(void) {
 static void enter_thread(int id) {
     cur = id;
     cur_ctx = &threads[id];
+    /* Per-thread VSpace: switch satp before entering U-mode */
+    asm volatile("csrw satp, %0" :: "r"(threads[id].vspace_root_ppn) : "memory");
+    asm volatile("sfence.vma" ::: "memory");
     u_enter(&threads[id]);
     __builtin_unreachable();
 }
@@ -450,6 +454,7 @@ void kboot(void) {
     asm volatile("csrc sstatus, %0" :: "r"((1UL << 18) | (1UL << 19)) : "memory");
     kputs("v2: satp Sv39 on, U-bit split (k U=0 / u U=1), SUM=0\n");
 
+    uint64_t initial_vspace = (8UL << 60) | (((uintptr_t)root_pt >> 12) & 0xFFFFFFFFFFFUL);
     for (int i = 0; i < NTHREADS; i++) {
         for (int r = 0; r < 32; r++)
             threads[i].regs[r] = 0;
@@ -459,6 +464,7 @@ void kboot(void) {
         threads[i].ipc_cap = 0;
         threads[i].notify = 0;
         threads[i].wait_kind = V2_WK_NONE;
+        threads[i].vspace_root_ppn = initial_vspace;
     }
     /* A valid trap target must exist BEFORE interrupts are enabled: a stale
      * firmware timer can pend and fire at SIE-enable, while cur_ctx is still
