@@ -40,6 +40,19 @@ if attestation isn't ready, remove the "DICE measured boot" claim from
 `README.md`/`docs/REPRODUCIBLE.md` until it is. Right now the docs describe a
 feature that doesn't exist in the running kernel.
 
+**Status 2026-09-12: FIXED via (a), with one design change.** `boot/dice.c`
+moved to `kernel/src/dice.c` (+ new `sha256.h`/`sha256.c`/`dice.h`), both in
+`SRC`, `boot_measure_and_attest()` called from `kernel_boot()` with halt-on-
+mismatch. The `PROVIDE(expected_hash)` part was replaced: PROVIDE can only
+supply an address, not 32 data bytes, so the slot is a generated object
+(`kernel/build/expected_hash.c` -> `.dice_expected`, KEEP, 32B) filled by
+`tools/measure_dice.py` via `make provision-dice`, which ends in a
+re-measure MATCH gate. Measurement excludes the slot itself (two sha256
+updates), so provisioning is a single-rebuild fixed point. `REPRODUCIBLE.md`
+documents the change; `tests/test_dice.c` (KATs incl. hashlib-differential
+0..200 + streaming, slot invariance, fail-closed) runs in `verify.sh [1b]`
+and the QEMU smoke asserts the `[DICE]` boot lines.
+
 ### 1.2 — HIGH: dead x86_64 code throughout `kernel/src/boot.c`
 `boot.c` still has full `#ifdef __x86_64__` branches (UART port I/O via
 `inb`/`outb`, IDT/`sidt` check, x86_64 CET capability sim, PML4 vs Sv39
@@ -53,6 +66,10 @@ cleaned up when the project committed to RISC-V-only.
 RISC-V-only boot path. This also removes a class of "looks tested, isn't"
 risk — a change to the RISC-V path could silently break inside dead x86_64
 code without anyone noticing.
+
+**Status 2026-09-14: FIXED.** `kernel/src/boot.c` contains zero
+`__x86_64__`/`x86` references (verified by grep); single RISC-V-only boot
+path with the `HALT()` x86 branch gone.
 
 ### 1.3 — MEDIUM: `tests/test_hardening.c` referenced but doesn't exist
 `tools/verify.sh` stage `[1b]` runs:
@@ -70,6 +87,11 @@ detection, guard-page violation, `is_canonical_addr` edge cases (top/bottom
 of address space, mid-range canonical break for the current VA width), and
 wire it into `verify.sh`'s existing (currently dead) invocation.
 
+**Status 2026-09-14: FIXED.** `tests/test_hardening.c` exists and covers
+canary rejection, guard-page init (pattern fill on RISC-V), and
+`is_canonical_addr` at 0x0 / all-ones / Sv39 break points; `verify.sh [1b]`
+compiles and runs it (PASS, no SKIP).
+
 ### 1.4 — MEDIUM: `verify.yml` and `verify.sh` have drifted apart
 `.github/workflows/verify.yml` re-implements a subset of `tools/verify.sh`'s
 test list as individual `run:` steps instead of calling `tools/verify.sh`.
@@ -86,6 +108,11 @@ Consequences:
 but as one source of truth) so CI and the documented local workflow can't
 diverge again.
 
+**Status 2026-09-14: FIXED.** `verify.yml`'s `host-tests` job is a single
+`run: tools/verify.sh`. The separate `isabelle` container job is a deliberate
+matrix extension (verify.sh SKIPs proofs without Isabelle) with a comment in
+the yml marking the relationship, not a re-implementation of the test list.
+
 ### 1.5 — MEDIUM: `sched_pick_next` is an unbounded-looking linear scan under a 5µs WCET budget
 `ARCHITECTURE.md` itself flags this ("`sched_pick_next` scans `prio 0..255`
 (bitmap TODO)"). The implementation in `kernel/src/sched.c` is a nested loop:
@@ -100,6 +127,12 @@ connected. `Sched_Verification.thy`'s `wcet_bound` proof covers the *model*
 compile-time bound tying `MAX_SCHED_CONTEXTS` to a value provably safe under
 the 5µs budget at the current clock rate, with a comment explaining the
 arithmetic.
+
+**Status 2026-09-14: FIXED via bitmap + bound.** `sched.c` has a bitmap fast
+path (≤4 words + ≤64 contexts at one prio) over the legacy full scan kept as
+the correctness floor; `tests/test_sched_bitmap.c` proves bitmap == full scan
+on 3000 randomized states; `_Static_assert(MAX_SCHED_CONTEXTS <= 64)` forces
+WCET re-analysis if the bound ever grows.
 
 ### 1.6 — LOW: build artifacts committed to git despite `.gitignore`
 `kernel/build/moonlight.elf` and `kernel/src/*.o` are present in the working
@@ -116,6 +149,11 @@ tracked, remove from history-forward (`git rm --cached`) and verify a clean
 `make -C kernel clean && make -C kernel` reproduces byte-identical output per
 `REPRODUCIBLE.md`'s own recipe.
 
+**Status 2026-09-14: VERIFIED CLEAN, nothing to do.** `git ls-files` shows no
+tracked `.o`/`.elf`/`build/` paths; all are git-ignored. Stray in-source
+`userspace/libc/src/string.{o,d}` leftovers (build goes to `build/`) were
+deleted.
+
 ### 1.7 — LOW: verification-chain claims outrun what's actually run
 `ARCHITECTURE.md` says "verified down to CHERI ISA + CompCert" and
 `docs/PRODUCTION.md`'s own checklist marks both CBMC and CompCert as
@@ -129,6 +167,11 @@ what's aspirational/manual.
 to match `PRODUCTION.md`'s honest checklist (CompCert not pursued, CBMC
 manual-only, not in CI), or actually get a CompCert CHERI-RISC-V license and
 wire `cbmc` into `.github/workflows/verify.yml`.
+
+**Status 2026-09-14: FIXED via softening.** `ARCHITECTURE.md` now reads
+"verified down to CHERI ISA (CompCert binary correctness planned, not yet
+pursued per `docs/PRODUCTION.md` checklist)"; `PRODUCTION.md` keeps CBMC and
+CompCert as explicit unchecked boxes with reasons (no license / manual-only).
 
 ## 2. Suggested order of work
 
