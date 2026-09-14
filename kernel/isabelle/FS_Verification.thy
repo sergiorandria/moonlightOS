@@ -113,6 +113,22 @@ definition fs_write :: "fs_state \<Rightarrow> nat \<Rightarrow> nat \<Rightarro
                              fs_fds := (fs_fds s)(cli := (fs_fds s cli)(fd := Some (e\<lparr>fdf_off := fdf_off e + n'\<rparr>))) \<rparr>, n'))
     else None)"
 
+(* Seek: reposition an open fd anywhere in [0, size] (holes read as zero
+   once written; the C zero-fills the gap on the extending write, which is
+   size-invisible so the write theorems are untouched). No rights needed,
+   like Linux lseek. wh 0/1/2 = SET/CUR/END. *)
+definition fs_seek :: "fs_state \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> int \<Rightarrow> nat \<Rightarrow> fs_state option" where
+  "fs_seek s cli fd off wh =
+   (if cli < FS_MAX_CLIENTS \<and> fd < FS_FDS_PER_CLIENT \<and> wh \<le> 2 then
+      case fs_fds s cli fd of None \<Rightarrow> None
+      | Some e \<Rightarrow> (case fs_files s (fdf_file e) of None \<Rightarrow> None
+         | Some f \<Rightarrow> let base = (if wh = 0 then 0 else if wh = 1 then int (fdf_off e) else int (ff_used f));
+                        new = base + off
+                    in if 0 \<le> new \<and> new \<le> int (ff_size f)
+                       then Some (s\<lparr>fs_fds := (fs_fds s)(cli := (fs_fds s cli)(fd := Some (e\<lparr>fdf_off := nat new\<rparr>))) \<rparr>)
+                       else None)
+    else None)"
+
 definition fs_close :: "fs_state \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> fs_state option" where
   "fs_close s cli fd =
    (if cli < FS_MAX_CLIENTS \<and> fd < FS_FDS_PER_CLIENT then
@@ -173,6 +189,10 @@ theorem unlink_other_fds:
 theorem unlink_fds_kept:
   "fs_unlink s B F = Some s' \<Longrightarrow> \<forall>c fd. fs_fds s' c fd = fs_fds s c fd"
   unfolding fs_unlink_def by (auto split: if_splits option.splits)
+
+theorem seek_other_fds:
+  "fs_seek s B fd off wh = Some s' \<Longrightarrow> A \<noteq> B \<Longrightarrow> fs_fds s' A = fs_fds s A"
+  unfolding fs_seek_def by (auto split: if_splits option.splits simp: Let_def)
 
 (* ---- rights confinement ---- *)
 
@@ -241,6 +261,13 @@ theorem write_bounded:
    \<exists>e f. fs_fds s cli fd = Some e \<and> fs_files s (fdf_file e) = Some f \<and>
      n' = min n (ff_size f - fdf_off e) \<and> fdf_off e + n' \<le> ff_size f"
   unfolding fs_write_def
+  by (auto split: if_splits option.splits simp: Let_def)
+
+theorem seek_bounded:
+  "fs_seek s cli fd off wh = Some s' \<Longrightarrow>
+   \<exists>e f noff. fs_fds s cli fd = Some e \<and> fs_files s (fdf_file e) = Some f \<and>
+     fs_fds s' cli fd = Some (e\<lparr>fdf_off := noff\<rparr>) \<and> noff \<le> ff_size f"
+  unfolding fs_seek_def
   by (auto split: if_splits option.splits simp: Let_def)
 
 (* ---- ownership ---- *)
@@ -388,6 +415,47 @@ proof -
       "\<forall>F f'. F < FS_MAX_FILES \<and> fs_files s' F = Some f' \<longrightarrow> ff_used f' \<le> ff_size f'"
     unfolding FS_MAX_FILES_def
     by auto
+qed
+
+(* Bridge for seek arithmetic: the model checks bounds on ints, the state
+   stores nats. Closed once by arith, used as an intro rule. *)
+lemma nat_le_of_int: "0 \<le> (x::int) \<Longrightarrow> x \<le> int n \<Longrightarrow> nat x \<le> n"
+  by arith
+
+theorem wf_seek:
+  "fs_wf s \<Longrightarrow> fs_seek s cli fd off wh = Some s' \<Longrightarrow> fs_wf s'"
+proof -
+  assume wf: "fs_wf s" and h: "fs_seek s cli fd off wh = Some s'"
+  from h have G: "cli < FS_MAX_CLIENTS \<and> fd < FS_FDS_PER_CLIENT \<and> wh \<le> 2"
+    unfolding fs_seek_def by (auto split: if_splits option.splits simp: Let_def)
+  from h G obtain e0 where old: "fs_fds s cli fd = Some e0"
+    unfolding fs_seek_def by (auto split: if_splits option.splits simp: Let_def)
+  from h G old obtain f0 where
+      file0: "fs_files s (fdf_file e0) = Some f0"
+    unfolding fs_seek_def by (auto split: if_splits option.splits simp: Let_def)
+  (* Syntactic extraction only (no arithmetic in the conclusions): the new
+     offset is `nat new` for a branch-provided int `new` with its bounds. *)
+  from h G old file0 obtain nw new where
+      seq: "s' = s\<lparr>fs_fds := (fs_fds s)(cli := (fs_fds s cli)(fd := Some (e0\<lparr>fdf_off := nw\<rparr>)))\<rparr>"
+      and nwdef: "nw = nat new"
+      and nonneg: "(0::int) \<le> new"
+      and bnd: "new \<le> int (ff_size f0)"
+    unfolding fs_seek_def by (auto split: if_splits option.splits simp: Let_def)
+  from nat_le_of_int[OF nonneg bnd] have le: "nw \<le> ff_size f0"
+    unfolding nwdef by simp
+  from wf have U1: "\<And>c fd e. \<lbrakk>c < FS_MAX_CLIENTS; fd < FS_FDS_PER_CLIENT;
+      fs_fds s c fd = Some e\<rbrakk> \<Longrightarrow>
+      fdf_file e < FS_MAX_FILES \<and> (\<exists>f. fs_files s (fdf_file e) = Some f \<and> fdf_off e \<le> ff_size f)"
+    unfolding fs_wf_def FS_MAX_CLIENTS_def FS_FDS_PER_CLIENT_def FS_MAX_FILES_def
+    by blast
+  from wf have U2: "\<And>Fa f. \<lbrakk>Fa < FS_MAX_FILES; fs_files s Fa = Some f\<rbrakk> \<Longrightarrow>
+      ff_used f \<le> ff_size f \<and> ff_size f \<le> FS_MAX_SIZE \<and>
+      (\<forall>x \<in> ff_omode f. x = FR \<or> x = FW) \<and> ff_owner f < FS_MAX_CLIENTS"
+    unfolding fs_wf_def FS_MAX_FILES_def FS_MAX_SIZE_def FS_MAX_CLIENTS_def
+    by blast
+  from U1 U2 seq old file0 G le show "fs_wf s'"
+    unfolding seq fs_wf_def
+    by (auto dest: U1 U2)
 qed
 
 theorem wf_close:

@@ -53,7 +53,7 @@
 #define VFS_OP_STAT 7
 
 typedef struct {
-    uint32_t cap; /* Frame cap naming the file data */
+    uint32_t cap; /* Frame cap naming the file data (REG only) */
     uint32_t size;
     uint32_t used;
     uint16_t color;
@@ -61,12 +61,17 @@ typedef struct {
     uint32_t owner; /* creating client id */
     char name[VFS_NAME_LEN + 1];
     bool valid;
+    uint8_t kind; /* 0 reg, 1 dir, 2 symlink, 3 fifo */
+    uint32_t nlink; /* hardlink count (REG only) */
+    char target[VFS_NAME_LEN + 1]; /* symlink target basename */
+    uint64_t mtime; /* ticks at last mutation (100ns units) */
 } vfs_file_t;
 
 typedef struct {
     uint32_t file_id;
     uint32_t offset;
     uint32_t rights;
+    bool append; /* O_APPEND: every write first snaps offset to EOF */
     bool valid;
 } vfs_fd_t;
 
@@ -80,6 +85,15 @@ extern int moonlight_recv(uint32_t ep, ipc_msg_t *msg);
 static bool caller_ok(uint32_t caller) {
     return caller < VFS_MAX_CLIENTS && caller != VFS_UNKNOWN_CLIENT;
 }
+
+/* Forward declarations (namespace ops call across sections). */
+int vfs_unlink_at(uint32_t caller, const char *name, bool dir_only);
+int vfs_list_full(int *cursor, char *name_out, uint32_t *size_out,
+                  uint32_t *used_out, uint8_t *kind_out,
+                  uint64_t *mtime_out);
+int vfs_stat_full(uint32_t caller, const char *name, uint32_t *size_out,
+                  uint32_t *used_out, uint8_t *kind_out, uint32_t *nlink_out,
+                  uint64_t *mtime_out);
 
 static bool frame_cap_is_valid(uint32_t cptr, size_t len) {
 #ifdef __CHERI_PURE_CAPABILITY__
@@ -138,8 +152,19 @@ static bool vfs_msg_name(const ipc_msg_t *msg, char *out) {
     return vfs_name_ok(out);
 }
 
+static uint64_t vfs_now(void) {
+#ifdef __riscv
+    uint64_t t = *(volatile uint64_t *)0x200BFF8u;
+    __asm__ volatile("fence iorw,iorw" ::: "memory");
+    return t;
+#else
+    return 0;
+#endif
+}
+
 int vfs_create(uint32_t caller, const char *name, uint32_t cap, uint32_t size,
                uint16_t color, uint16_t omode) {
+    uint64_t now;
     if (!caller_ok(caller)) return -1;
     if (!vfs_name_ok(name)) return -1;
     if (size == 0 || size > VFS_MAX_FILE_SIZE) return -1;
@@ -158,17 +183,152 @@ int vfs_create(uint32_t caller, const char *name, uint32_t cap, uint32_t size,
         strncpy(files[i].name, name, VFS_NAME_LEN);
         files[i].name[VFS_NAME_LEN] = '\0';
         files[i].valid = true;
+        files[i].kind = 0;
+        files[i].nlink = 1;
+        files[i].target[0] = '\0';
+        now = vfs_now();
+        files[i].mtime = now;
         return 0;
     }
     return -1; /* table full: fail closed, no eviction */
 }
 
-int vfs_open(uint32_t caller, const char *name, uint32_t rights) {
+/* ---- namespace nodes: dirs, symlinks, fifos, hardlinks ---- */
+
+static int vfs_node_alloc(uint32_t caller, const char *name, uint8_t kind) {
+    uint64_t now = vfs_now();
+    int i;
+    if (!caller_ok(caller)) return -1;
+    if (!vfs_name_ok(name)) return -1;
+    if (kind > 3) return -1;
+    if (vfs_find(name) >= 0) return -1;
+    for (i = 0; i < VFS_MAX_FILES; i++) {
+        if (files[i].valid) continue;
+        memset(&files[i], 0, sizeof(files[i]));
+        strncpy(files[i].name, name, VFS_NAME_LEN);
+        files[i].name[VFS_NAME_LEN] = '\0';
+        files[i].valid = true;
+        files[i].kind = kind;
+        files[i].nlink = 1;
+        files[i].owner = caller;
+        files[i].omode = VFS_RW;
+        files[i].mtime = now;
+        return 0;
+    }
+    return -1;
+}
+
+int vfs_mkdir(uint32_t caller, const char *name) {
+    return vfs_node_alloc(caller, name, 1);
+}
+
+int vfs_mkfifo(uint32_t caller, const char *name) {
+    return vfs_node_alloc(caller, name, 3);
+}
+
+int vfs_symlink(uint32_t caller, const char *target, const char *name) {
+    size_t n = 0;
+    int rc;
+    if (!target) return -1;
+    while (target[n] != '\0') {
+        n++;
+        if (n > VFS_NAME_LEN) return -1;
+    }
+    if (n == 0) return -1;
+    rc = vfs_node_alloc(caller, name, 2);
+    if (rc != 0) return rc;
+    {
+        int id = vfs_find(name);
+        const char *base = target;
+        size_t i, start = 0;
+        if (id < 0) return -1;
+        /* Store the basename (flat namespace). */
+        for (i = 0; target[i] != '\0'; i++)
+            if (target[i] == '/') start = i + 1;
+        strncpy(files[id].target, target + start, VFS_NAME_LEN);
+        files[id].target[VFS_NAME_LEN] = '\0';
+        (void)base;
+    }
+    return 0;
+}
+
+int vfs_link(uint32_t caller, const char *oldp, const char *newp) {
+    int id;
+    if (!caller_ok(caller)) return -1;
+    if (!vfs_name_ok(oldp) || !vfs_name_ok(newp)) return -1;
+    if (vfs_find(newp) >= 0) return -1;
+    id = vfs_find(oldp);
+    if (id < 0) return -1;
+    if (files[id].kind == 1) return -1; /* no dir hardlinks */
+    if (files[id].owner != caller) return -1; /* owner only, like unlink */
+    if (files[id].nlink >= 8) return -1;
+    for (int i = 0; i < VFS_MAX_FILES; i++) {
+        if (files[i].valid) continue;
+        files[i] = files[id];
+        strncpy(files[i].name, newp, VFS_NAME_LEN);
+        files[i].name[VFS_NAME_LEN] = '\0';
+        files[id].nlink++;
+        files[i].nlink = files[id].nlink;
+        return 0;
+    }
+    return -1;
+}
+
+/* Resolve symlinks (bounded: at most 8 hops, ELOOP beyond). Follows only
+ * when follow is true. Returns file id or -1. */
+static int vfs_resolve_name(const char *name, bool follow) {
+    char cur[VFS_NAME_LEN + 1];
+    int hops = 0;
+    strncpy(cur, name, VFS_NAME_LEN);
+    cur[VFS_NAME_LEN] = '\0';
+    for (;;) {
+        int id = vfs_find(cur);
+        if (id < 0) return -1;
+        if (files[id].kind != 2 || !follow) return id;
+        if (++hops > 8) return -2; /* ELOOP */
+        strncpy(cur, files[id].target, VFS_NAME_LEN);
+        cur[VFS_NAME_LEN] = '\0';
+    }
+}
+
+int vfs_readlink(uint32_t caller, const char *name, char *out, size_t cap) {
+    int id;
+    size_t n;
+    if (!caller_ok(caller)) return -1;
+    if (!vfs_name_ok(name) || !out || cap == 0) return -1;
+    id = vfs_find(name);
+    if (id < 0) return -1;
+    if (files[id].kind != 2) return -1;
+    n = strlen(files[id].target);
+    if (n >= cap) n = cap - 1;
+    memcpy(out, files[id].target, n);
+    out[n] = '\0';
+    return (int)strlen(files[id].target);
+}
+
+int vfs_kind(uint32_t caller, const char *name) {
     int id;
     if (!caller_ok(caller)) return -1;
     if (!vfs_name_ok(name)) return -1;
-    if (rights == 0 || (rights & ~VFS_RW) != 0) return -1;
     id = vfs_find(name);
+    if (id < 0) return -1;
+    return files[id].kind;
+}
+
+int vfs_open(uint32_t caller, const char *name, uint32_t rights) {
+    int id;
+    char base[VFS_NAME_LEN + 1];
+    size_t i, start = 0;
+    if (!caller_ok(caller)) return -1;
+    if (!vfs_name_ok(name)) return -1;
+    if (rights == 0 || (rights & ~VFS_RW) != 0) return -1;
+    /* Symlinks resolve transparently on open (like Linux, no NOFOLLOW). */
+    for (i = 0; name[i] != '\0'; i++)
+        if (name[i] == '/') start = i + 1;
+    strncpy(base, name + start, VFS_NAME_LEN);
+    base[VFS_NAME_LEN] = '\0';
+    id = vfs_resolve_name(base, true);
+    if (id < -1) return -1; /* ELOOP counts as denied */
     if (id < 0) return -1;
     /* Allowed rights: owner always RW, others the file's omode. Requesting
      * more than allowed is denied (no silent downgrade: fail closed). */
@@ -182,6 +342,7 @@ int vfs_open(uint32_t caller, const char *name, uint32_t rights) {
         fds[caller][fd].file_id = (uint32_t)id;
         fds[caller][fd].offset = 0;
         fds[caller][fd].rights = rights;
+        fds[caller][fd].append = false;
         fds[caller][fd].valid = true;
         return fd;
     }
@@ -238,6 +399,17 @@ int vfs_write(uint32_t caller, int fd, const void *buf, size_t len) {
     if (!f) return -1;
     if (len == 0) return 0;
     if (!buf) return -1;
+    /* O_APPEND: snap to EOF first (Linux: every write appends atomically;
+     * single-hart M-mode makes the snap+write one critical section). */
+    if (slot->append) slot->offset = f->used;
+    /* Sparse-safe: seeking past EOF then writing must not expose stale
+     * frame bytes in the hole (Linux holes read as zero). Zero-fill the
+     * gap before extending used. */
+    if (slot->offset > f->used) {
+        uint32_t gap = slot->offset - f->used;
+        if (!frame_cap_is_valid(f->cap, slot->offset)) return -1;
+        memset((void *)(uintptr_t)f->cap + f->used, 0, gap);
+    }
     if (slot->offset > f->size) return -1; /* invariant break: deny */
     avail = f->size - slot->offset;
     if ((uint64_t)len > avail) len = avail; /* truncate, never wrap/fail */
@@ -254,6 +426,7 @@ int vfs_write(uint32_t caller, int fd, const void *buf, size_t len) {
     end = slot->offset + (uint32_t)len;
     slot->offset = end;
     if (end > f->used) f->used = end;
+    f->mtime = vfs_now();
     return (int)len;
 }
 
@@ -265,17 +438,87 @@ int vfs_close(uint32_t caller, int fd) {
     fds[caller][fd].file_id = 0;
     fds[caller][fd].offset = 0;
     fds[caller][fd].rights = 0;
+    fds[caller][fd].append = false;
     return 0;
 }
 
+/* Seek codes mirror SEEK_SET/CUR/END (linux_abi.h); kept local so the
+ * server never includes OS-personality headers. */
+#define VFS_SEEK_SET 0
+#define VFS_SEEK_CUR 1
+#define VFS_SEEK_END 2
+
+/* Reposition an open fd. Any open fd may seek (no rights needed, like
+ * Linux lseek). Range is [0, size]: seeking past EOF is allowed (holes
+ * read as zero once written, see vfs_write zero-fill), seeking past the
+ * fixed capacity or below zero is EINVAL territory (caller maps to it).
+ * Offset stays wellformed (<= size) by construction. */
+int vfs_seek(uint32_t caller, int fd, int64_t off, int whence,
+             uint32_t *new_off) {
+    vfs_fd_t *slot;
+    vfs_file_t *f = vfs_resolve(caller, fd, 0, &slot);
+    int64_t base, n;
+    if (!f) return -1;
+    if (whence == VFS_SEEK_SET) base = 0;
+    else if (whence == VFS_SEEK_CUR) base = (int64_t)slot->offset;
+    else if (whence == VFS_SEEK_END) base = (int64_t)f->used;
+    else return -1;
+    n = base + off; /* int64 + int64: no wrap */
+    if (n < 0 || n > (int64_t)f->size) return -1;
+    slot->offset = (uint32_t)n;
+    if (new_off) *new_off = (uint32_t)n;
+    return 0;
+}
+
+/* Truncate an open-for-write file to len (O_TRUNC, ftruncate). Shrinking
+ * only moves used/offset; bytes past used are unreadable by construction.
+ * Growing is rejected (no zero-fill obligation without a write). */
+int vfs_truncate_fd(uint32_t caller, int fd, uint32_t len) {
+    vfs_fd_t *slot;
+    vfs_file_t *f = vfs_resolve(caller, fd, VFS_WRITE, &slot);
+    if (!f) return -1;
+    if (len > f->size) return -1;
+    if (len > f->used) return -1;
+    f->used = len;
+    if (slot->offset > len) slot->offset = len;
+    return 0;
+}
+
+/* O_APPEND flag for an open fd (set once at open time by the Linux layer). */
+int vfs_set_append(uint32_t caller, int fd, bool on) {
+    vfs_fd_t *slot;
+    vfs_file_t *f = vfs_resolve(caller, fd, 0, &slot);
+    if (!f) return -1;
+    slot->append = on;
+    return 0;
+}
+
+/* Unlink with dir-awareness: rmdir only removes dirs, plain unlink only
+ * removes non-dirs. Hardlinked regs drop one link until the last name. */
 int vfs_unlink(uint32_t caller, const char *name) {
+    return vfs_unlink_at(caller, name, false);
+}
+
+int vfs_unlink_at(uint32_t caller, const char *name, bool dir_only) {
     int id;
     if (!caller_ok(caller)) return -1;
     if (!vfs_name_ok(name)) return -1;
     id = vfs_find(name);
     if (id < 0) return -1;
+    if (dir_only && files[id].kind != 1) return -2; /* ENOTDIR */
+    if (!dir_only && files[id].kind == 1) return -3; /* EISDIR */
     if (files[id].owner != caller) return -1; /* owner only */
     if (vfs_is_open(id)) return -1; /* no unlink-while-open */
+    if (files[id].kind == 0 && files[id].nlink > 1) {
+        /* Drop one link: decrement the shared count on every alias. */
+        for (int i = 0; i < VFS_MAX_FILES; i++)
+            if (files[i].valid && files[i].kind == 0 &&
+                files[i].cap == files[id].cap && files[i].size == files[id].size &&
+                files[i].owner == files[id].owner && files[i].nlink > 1)
+                files[i].nlink--;
+        memset(&files[id], 0, sizeof(files[id]));
+        return 0;
+    }
     memset(&files[id], 0, sizeof(files[id]));
     return 0;
 }
@@ -292,9 +535,44 @@ int vfs_stat(uint32_t caller, const char *name, uint32_t *size_out,
     return 0;
 }
 
+/* Full stat: kind, nlink, mtime for statx/dirents/timestamps. */
+int vfs_stat_full(uint32_t caller, const char *name, uint32_t *size_out,
+                  uint32_t *used_out, uint8_t *kind_out, uint32_t *nlink_out,
+                  uint64_t *mtime_out) {
+    int id;
+    if (!caller_ok(caller)) return -1;
+    if (!vfs_name_ok(name)) return -1;
+    id = vfs_find(name);
+    if (id < 0) return -1;
+    if (size_out) *size_out = files[id].size;
+    if (used_out) *used_out = files[id].used;
+    if (kind_out) *kind_out = files[id].kind;
+    if (nlink_out) *nlink_out = files[id].nlink;
+    if (mtime_out) *mtime_out = files[id].mtime;
+    return 0;
+}
+
+int vfs_set_mtime(uint32_t caller, const char *name, uint64_t ticks) {
+    int id;
+    if (!caller_ok(caller)) return -1;
+    if (!vfs_name_ok(name)) return -1;
+    id = vfs_find(name);
+    if (id < 0) return -1;
+    if (files[id].owner != caller) return -1;
+    files[id].mtime = ticks;
+    return 0;
+}
+
 /* First valid file at/after *cursor (for `ls` iteration). */
 int vfs_list(int *cursor, char *name_out, uint32_t *size_out,
              uint32_t *used_out) {
+    return vfs_list_full(cursor, name_out, size_out, used_out, 0, 0);
+}
+
+/* Full listing with kind + mtime for getdents64. */
+int vfs_list_full(int *cursor, char *name_out, uint32_t *size_out,
+                  uint32_t *used_out, uint8_t *kind_out,
+                  uint64_t *mtime_out) {
     int i;
     if (!cursor || !name_out) return -1;
     for (i = *cursor; i < VFS_MAX_FILES; i++) {
@@ -303,6 +581,8 @@ int vfs_list(int *cursor, char *name_out, uint32_t *size_out,
         name_out[VFS_NAME_LEN] = '\0';
         if (size_out) *size_out = files[i].size;
         if (used_out) *used_out = files[i].used;
+        if (kind_out) *kind_out = files[i].kind;
+        if (mtime_out) *mtime_out = files[i].mtime;
         *cursor = i + 1;
         return 0;
     }
