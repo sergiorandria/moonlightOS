@@ -162,7 +162,7 @@ typedef struct {
     uint64_t vspace_root_ppn; /* PPN of thread's root page table */
 } uctx_t;
 
-#define NTHREADS 2
+#define NTHREADS 3
 #define T_RUNNABLE 0
 #define T_PARKED 1
 #define T_BLOCKED 2
@@ -182,6 +182,7 @@ static uint8_t trap_stack[4096] __attribute__((aligned(16)));
 
 void user_a_main(void);
 void user_b_main(void);
+void mem_server_main(void);
 void user_stacks_init(void);
 extern uintptr_t ustack_a_top, ustack_b_top;
 __attribute__((noreturn)) void u_enter(uctx_t *ctx);
@@ -603,6 +604,9 @@ void kboot(void) {
     threads[1].regs[2] = u_sp[1];
     threads[1].sepc = (uint64_t)user_b_main;
     threads[1].state = T_RUNNABLE;
-    kputs("v2: entering U-mode thread A\n");
+    threads[2].regs[2] = 0; /* mem_server uses its own stack (will be allocated) */
+    threads[2].sepc = (uint64_t)mem_server_main;
+    threads[2].state = T_RUNNABLE;
+    kputs("v2: entering U-mode mem_server\n");
     enter_thread(0);
 }

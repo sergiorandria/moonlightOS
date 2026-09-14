@@ -122,6 +122,15 @@ __attribute__((section(".utext"), noinline)) void user_b_main(void) {
     upark();
 }
 
+/* mem_server_main: receives root caps at boot, handles frame allocation
+ * IPC. Stub for now — will be fleshed out in Task 6. */
+__attribute__((section(".utext"), noinline)) void mem_server_main(void) {
+    uputc('M'); uputc('\n');
+    /* TODO: wait for allocation requests via SEND/RECV on EP0,
+     * respond with frame caps via GRANT. For now, park. */
+    upark();
+}
+
 static uint8_t ustack_a[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_b[4096] __attribute__((section(".ustack"), aligned(16)));
 
