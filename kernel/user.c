@@ -46,6 +46,19 @@ static long u_ecall3(long sys, long a0, long a1, long a2) {
     return r_a0;
 }
 
+static long __attribute__((unused)) u_ecall4(long sys, long a0, long a1, long a2, long a3) {
+    register long r_a0 asm("a0") = a0;
+    register long r_a1 asm("a1") = a1;
+    register long r_a2 asm("a2") = a2;
+    register long r_a3 asm("a3") = a3;
+    register long r_a7 asm("a7") = sys;
+    asm volatile("ecall"
+                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
+                 : "r"(r_a7)
+                 : "memory");
+    return r_a0;
+}
+
 static void uputc(char c) {
     u_ecall3(V2_PUTC, (long)(unsigned char)c, 0, 0);
 }
@@ -88,6 +101,10 @@ static long uwait(void) {
 static long u_invoke(long op, long a1, long a2, long a3) {
     (void)a3;
     return u_ecall3(V2_INVOKE, op, a1, a2);
+}
+
+static long __attribute__((unused)) u_invoke4(long op, long a1, long a2, long a3) {
+    return u_ecall4(V2_INVOKE, op, a1, a2, a3);
 }
 
 /* Print low bytes of w[0..n): immediates only, no literals. */

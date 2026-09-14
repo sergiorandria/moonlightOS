@@ -127,9 +127,9 @@ static void frame_free(int f) {
         frame_bitmap[f] = 1;
 }
 
-/* PT_ALLOC: allocate a zeroed frame and mint a cap to it. Returns frame id
- * in a0, or V2_ERR_OVERFLOW if no frames available. */
-static __attribute__((unused)) int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
+/* PT_ALLOC: allocate a zeroed frame and mint a cap to it. Returns cap slot
+ * index in a0, or V2_ERR_OVERFLOW if no frames available. */
+static int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
     int f = frame_alloc();
     if (f < 0)
         return V2_ERR_OVERFLOW;
@@ -140,7 +140,7 @@ static __attribute__((unused)) int frame_alloc_slot(v2_caps_t *caps, unsigned lo
             caps->caps[tid][i].obj = (unsigned long)f;
             caps->caps[tid][i].rights = V2_RIGHT_RW;
             caps->caps[tid][i].root = 0;
-            return V2_OK;
+            return i;  /* return cap slot index, not V2_OK */
         }
     }
     frame_free(f);
@@ -513,9 +513,14 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 uint64_t val = 0;
                 rc = v2_read(&caps, (unsigned long)cur, a1, &val);
                 if (rc == V2_OK) {
-                    sum_on();
-                    *(volatile uint64_t *)a2 = val;
-                    sum_off();
+                    /* Validate user pointer before writing with SUM */
+                    if (a2 < 0x80400000UL || a2 + sizeof(uint64_t) > 0x80800000UL) {
+                        rc = V2_ERR_INVALID;
+                    } else {
+                        sum_on();
+                        *(volatile uint64_t *)a2 = val;
+                        sum_off();
+                    }
                 }
                 break;
             }
