@@ -21,6 +21,11 @@ gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_virtio_net tests/test_v
 gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_net_queue tests/test_net_queue.c tests/stub_globals.c kernel/src/iommu.c kernel/src/cheri.c kernel/src/alloc.c 2>&1 && /tmp/test_net_queue || echo "FAIL: test_net_queue"
 gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_block tests/test_block.c tests/stub_globals.c kernel/src/iommu.c kernel/src/cheri.c 2>&1 && /tmp/test_block || echo "FAIL: test_block"
 gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_vga_drv tests/test_vga_drv.c kernel/src/cheri.c 2>&1 && /tmp/test_vga_drv || echo "FAIL: test_vga_drv"
+gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_uart tests/test_uart.c 2>&1 && /tmp/test_uart || echo "FAIL: test_uart"
+gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_plic tests/test_plic.c 2>&1 && /tmp/test_plic || echo "FAIL: test_plic"
+gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_timer tests/test_timer.c 2>&1 && /tmp/test_timer || echo "FAIL: test_timer"
+gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_rtc tests/test_rtc.c 2>&1 && /tmp/test_rtc || echo "FAIL: test_rtc"
+gcc -Wall -Wextra -Werror -I kernel/include -o /tmp/test_power tests/test_power.c 2>&1 && /tmp/test_power || echo "FAIL: test_power"
 gcc -I userspace/libc/include -I kernel/include -o /tmp/test_libc tests/test_libc.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/ctype.c userspace/libc/src/time.c userspace/libc/src/errno.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/signal.c userspace/libc/src/fenv.c userspace/libc/src/locale.c userspace/libc/src/scanf.c userspace/libc/src/getopt.c userspace/libc/src/env.c userspace/libc/src/strings.c userspace/libc/src/spawn.c userspace/libc/src/proc.c 2>&1 && /tmp/test_libc || echo "FAIL: test_libc"
 gcc -I userspace/libc/include -I kernel/include -o /tmp/test_newlibc tests/test_newlibc.c userspace/libc/src/complex.c userspace/libc/src/monetary.c userspace/libc/src/langinfo.c userspace/libc/src/iconv.c userspace/libc/src/locale.c userspace/libc/src/math.c userspace/libc/src/nltypes.c userspace/libc/src/threads.c userspace/libc/src/stdlib.c userspace/libc/src/string.c userspace/libc/src/errno.c -lm 2>&1 && /tmp/test_newlibc || echo "FAIL: test_newlibc"
 gcc -I userspace/libc/include -I kernel/include -o /tmp/test_batch4 tests/test_batch4.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/errno.c userspace/libc/src/time.c userspace/libc/src/file.c userspace/libc/src/unistd.c userspace/libc/src/proc.c userspace/libc/src/fcntl.c userspace/libc/src/signal.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/locale.c -lm 2>&1 && /tmp/test_batch4 || echo "FAIL: test_batch4"
@@ -39,6 +44,7 @@ gcc -Wall -Wextra -I kernel/include -o /tmp/test_console tests/test_console.c ke
 gcc -Wall -Wextra -I kernel/include -o /tmp/test_info tests/test_info.c tests/stub_globals.c kernel/src/sched.c kernel/src/tcb.c kernel/src/process.c kernel/src/alloc.c kernel/src/revoke.c kernel/src/cheri.c kernel/src/cnode.c kernel/src/cap.c 2>&1 && /tmp/test_info || echo "FAIL: test_info"
 if command -v clang &>/dev/null; then
   make -C userspace 2>&1 | tail -n 2 || echo "FAIL: userspace ELFs"
+  make -C userspace drivers 2>&1 | tail -n 3 || echo "FAIL: userspace drivers (freestanding rv64 -Werror)"
 else
   echo "SKIP: userspace ELFs (clang not found)"
 fi

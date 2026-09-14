@@ -23,8 +23,21 @@ LIBC_SRCS = $(shell cat libc/SRCS)
 LIBC_OBJS = $(patsubst src/%.c,build/src/%.o,$(filter %.c,$(LIBC_SRCS))) \
             $(patsubst src/%.S,build/src/%.o,$(filter %.S,$(LIBC_SRCS)))
 
+DRIVERS = drivers/block.c drivers/virtio_net.c drivers/vga.c \
+          drivers/uart.c drivers/plic.c drivers/timer.c \
+          drivers/rtc.c drivers/power.c
+DRV_OBJ = build/drivers/block.o build/drivers/virtio_net.o build/drivers/vga.o \
+          build/drivers/uart.o build/drivers/plic.o build/drivers/timer.o \
+          build/drivers/rtc.o build/drivers/power.o
+# Drivers are freestanding compartments: same discipline as ELFs, plus the
+# kernel headers they validate caps against. -Werror: a driver warning is a
+# production defect (an OOB or sign bug here escapes the compartment).
+CFLAGS_DRV = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
+            -O2 -ffreestanding -nostdlib -fno-builtin -mcmodel=medany -mno-relax \
+            -Wall -Wextra -Werror -I lib -I ../kernel/include -I/usr/lib/clang/22/include \
+            -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
 
-all: build/hello.elf build/moonsh.elf libc
+all: build/hello.elf build/moonsh.elf drivers libc
 
 build/hello.elf: example/hello.c $(LIB) lib/start.S user.ld
 	@mkdir -p build
@@ -34,6 +47,16 @@ build/hello.elf: example/hello.c $(LIB) lib/start.S user.ld
 build/moonsh.elf: sh/shell.c $(LIB) lib/start.S user.ld
 	@mkdir -p build
 	$(CC) $(CFLAGS_U) $(LDFLAGS_U) -o $@ sh/shell.c $(LIB) lib/start.S
+	ls -lh $@
+
+# Driver compile gate: every driver must build freestanding rv64 warning-free.
+# (Linking happens at compartment load; here we prove target-compilability,
+# including the __riscv transport paths host tests never execute.)
+drivers: $(DRV_OBJ)
+
+build/drivers/%.o: drivers/%.c drivers/virtio_mmio.h
+	@mkdir -p build/drivers
+	$(CC) $(CFLAGS_DRV) -c $< -o $@
 	ls -lh $@
 
 # libc objects (freestanding rv64) + standalone Linux demo ELF (_start).
@@ -54,4 +77,4 @@ host-test-objs:
 clean:
 	rm -rf build
 
-.PHONY: all clean libc host-test-objs
+.PHONY: all clean drivers libc host-test-objs
