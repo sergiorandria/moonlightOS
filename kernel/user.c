@@ -19,6 +19,19 @@
 #define V2_RECV 4
 #define V2_NOTIFY 5
 #define V2_WAIT 6
+#define V2_INVOKE 7
+
+/* mem_server IPC protocol */
+#define REQ_ALLOC 1
+#define REQ_MAP 2
+#define REQ_UNMAP 3
+#define RESP_OK 0
+#define RESP_ERR -1
+
+/* V2_INVOKE sub-operations (must match kernel kboot.c) */
+#define V2_INV_PT_ALLOC 6
+#define V2_INV_MAP 3
+#define V2_INV_UNMAP 4
 
 static long u_ecall3(long sys, long a0, long a1, long a2) {
     register long r_a0 asm("a0") = a0;
@@ -69,6 +82,11 @@ static long unotify(unsigned long t, unsigned long bits) {
 
 static long uwait(void) {
     return u_ecall3(V2_WAIT, 0, 0, 0);
+}
+
+static long u_invoke(long op, long a1, long a2, long a3) {
+    (void)a3;
+    return u_ecall3(V2_INVOKE, op, a1, a2);
 }
 
 /* Print low bytes of w[0..n): immediates only, no literals. */
@@ -123,12 +141,56 @@ __attribute__((section(".utext"), noinline)) void user_b_main(void) {
 }
 
 /* mem_server_main: receives root caps at boot, handles frame allocation
- * IPC. Stub for now — will be fleshed out in Task 6. */
+ * IPC. Main loop: wait for requests, handle them, reply. */
 __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
-    uputc('M'); uputc('\n');
-    /* TODO: wait for allocation requests via SEND/RECV on EP0,
-     * respond with frame caps via GRANT. For now, park. */
-    upark();
+    uint64_t buf[4];
+    unsigned long snd;
+    unsigned long ovf;
+    long n;
+
+    uputc('M'); uputc('E'); uputc('M'); uputc('\n');
+
+    /* Main loop: wait for requests, handle them, reply */
+    for (;;) {
+        n = urecv(0, buf, 4, &snd, &ovf);
+        if (n < 1) {
+            /* Empty or invalid: reply error */
+            uint64_t resp[1] = { (uint64_t)RESP_ERR };
+            usend(0, resp, 1);
+            continue;
+        }
+
+        long req = (long)buf[0];
+        long rc = RESP_ERR;
+
+        switch (req) {
+        case REQ_ALLOC: {
+            /* Allocate a frame: kernel V2_INV_PT_ALLOC does the work */
+            rc = (long)u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
+            break;
+        }
+        case REQ_MAP: {
+            /* Map: args = cap_slot, vpn */
+            if (n >= 3) {
+                rc = (long)u_invoke(V2_INV_MAP, buf[1], buf[2], 0);
+            }
+            break;
+        }
+        case REQ_UNMAP: {
+            /* Unmap: args = vpn */
+            if (n >= 2) {
+                rc = (long)u_invoke(V2_INV_UNMAP, buf[1], 0, 0);
+            }
+            break;
+        }
+        default:
+            rc = RESP_ERR;
+            break;
+        }
+
+        uint64_t resp[1] = { (uint64_t)rc };
+        usend(0, resp, 1);
+    }
 }
 
 static uint8_t ustack_a[4096] __attribute__((section(".ustack"), aligned(16)));
