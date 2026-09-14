@@ -107,7 +107,7 @@ static uint8_t frame_bitmap[V2_FRAME_TOTAL]; /* 1=free, 0=used */
 static void frame_pool_init(void) {
     /* All frames start free except frame 0 (kernel's own page tables live
      * there — keep it used). Frames 1..7 available for allocation. */
-    for (int i = 0; i < V2_FRAME_TOTAL; i++)
+    for (int i = 0; i < V2_FRAME_TOTAL; i++) /* bound: V2_FRAME_TOTAL */
         frame_bitmap[i] = 1;
     frame_bitmap[0] = 0; /* frame 0: kernel PT (in use) */
 }
@@ -171,6 +171,7 @@ static uctx_t threads[NTHREADS];
 static int cur = 0;
 static unsigned long tick = 0;
 static v2_ep_t ep0;
+static v2_caps_t caps;
 
 uctx_t *cur_ctx; /* read by trap.S */
 uintptr_t trap_stack_top;
@@ -195,6 +196,16 @@ static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
 #define V2_RECV 4 /* (ep, u_buf, cap): copy OUT, block unless queued; a0 = words, a1 = sender, a2 = ovf */
 #define V2_NOTIFY 5 /* (target, bits): OR-accumulate + wake waiters only; a0 = 0 / -ERR */
 #define V2_WAIT 6 /* (): take pending bits (a0) or block; a0 = bits */
+#define V2_INVOKE 7
+#define V2_INV_MINT 1
+#define V2_INV_GRANT 2
+#define V2_INV_MAP 3
+#define V2_INV_UNMAP 4
+#define V2_INV_REVOKE 5
+#define V2_INV_PT_ALLOC 6
+#define V2_INV_ELF_CHECK 7
+#define V2_INV_WRITE 8
+#define V2_INV_READ 9
 
 /* ---- User copy (both directions, V2_DESIGN Sec.4): validate-then-copy.
  * S runs with SUM=0; the window is opened only for the bounded copy loop
@@ -464,6 +475,61 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             if (n < 0)
                 halt_no_runnable();
             enter_thread(n);
+        } else if (sys == V2_INVOKE) {
+            uint64_t op = threads[cur].regs[10]; /* a0 */
+            uint64_t a1 = threads[cur].regs[11];
+            uint64_t a2 = threads[cur].regs[12];
+            uint64_t a3 = threads[cur].regs[13];
+            threads[cur].sepc += 4;
+            int rc = V2_ERR_INVALID;
+            switch (op) {
+            case V2_INV_MINT:
+                rc = v2_mint(&caps, (unsigned long)cur, a1, a2, a3);
+                break;
+            case V2_INV_GRANT:
+                rc = v2_grant(&caps, (unsigned long)cur, a1, a2, a3);
+                break;
+            case V2_INV_MAP:
+                rc = v2_map(&caps, (unsigned long)cur, a1, a2);
+                break;
+            case V2_INV_UNMAP:
+                rc = v2_unmap(&caps, (unsigned long)cur, a1);
+                break;
+            case V2_INV_REVOKE:
+                rc = v2_revoke(&caps, (unsigned long)cur, a1);
+                break;
+            case V2_INV_PT_ALLOC:
+                rc = frame_alloc_slot(&caps, (unsigned long)cur);
+                break;
+            case V2_INV_ELF_CHECK:
+                rc = v2_elf_ok((int)a1, (const v2_phdr_t *)a2, a3) ? V2_OK : V2_ERR_INVALID;
+                break;
+            case V2_INV_WRITE:
+                rc = v2_write(&caps, (unsigned long)cur, a1, a2);
+                break;
+            case V2_INV_READ: {
+                uint64_t val = 0;
+                rc = v2_read(&caps, (unsigned long)cur, a1, &val);
+                if (rc == V2_OK) {
+                    sum_on();
+                    *(volatile uint64_t *)a2 = val;
+                    sum_off();
+                }
+                break;
+            }
+            default:
+                rc = V2_ERR_INVALID;
+                break;
+            }
+            threads[cur].regs[10] = (uint64_t)rc;
+            kputs("[invoke] tcb=");
+            sbi_putchar('0' + cur);
+            kputs(" op=");
+            kputdec(op);
+            kputs(" rc=");
+            kputdec((unsigned long)rc);
+            sbi_putchar('\n');
+            return;
         }
         threads[cur].sepc += 4;
         return;
@@ -492,6 +558,8 @@ void kboot(void) {
     kputs("v2 stage2: S-mode entry (OpenSBI)\n");
     v2_ep_init(&ep0);
     frame_pool_init();
+    v2_caps_init(&caps, NTHREADS);
+    kputs("[caps] init: thread 0 has root caps to all frames\n");
     user_stacks_init(); /* pre-MMU: U stacks need no SUM games */
     u_sp[0] = (uint64_t)ustack_a_top;
     u_sp[1] = (uint64_t)ustack_b_top;
