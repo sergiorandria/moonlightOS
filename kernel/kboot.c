@@ -68,10 +68,16 @@ static void kputdec(unsigned long v) {
 #define PTE_A (1UL << 6)
 #define PTE_D (1UL << 7)
 
+/* Real physical backing for v2 frames: QEMU virt 256M RAM (base 0x80000000),
+ * free region above the image (< 0x80800000). S-only identity map via
+ * l0_frames, wired at l1_k[8] (VPN[1] of 0x81000000). */
+#define V2_FRAME_PHYS_BASE 0x81000000UL
+
 static uint64_t root_pt[512] __attribute__((aligned(4096)));
 static uint64_t l1_k[512] __attribute__((aligned(4096)));
 static uint64_t l1_m[512] __attribute__((aligned(4096)));
 static uint64_t l0_k[512] __attribute__((aligned(4096)));
+static uint64_t l0_frames[512] __attribute__((aligned(4096)));
 
 static uint64_t pte_leaf(uint64_t paddr, uint64_t flags) {
     return ((paddr >> 12) << 10) | flags | PTE_V;
@@ -93,6 +99,10 @@ static void pagetable_init(void) {
         l0_k[i] = pte_leaf(pa, f);
     }
     l1_k[1] = pte_table(l0_k);
+    for (int i = 0; i < 512; i++) /* bound: 512 */
+        l0_frames[i] = pte_leaf(V2_FRAME_PHYS_BASE + (uintptr_t)i * 4096,
+                                PTE_R | PTE_W | PTE_A | PTE_D);
+    l1_k[8] = pte_table(l0_frames);
     l1_k[2] = pte_leaf(0x80400000UL, PTE_R | PTE_X | PTE_U | PTE_A);
     l1_k[3] = pte_leaf(0x80600000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     l1_m[128] = pte_leaf(0x10000000UL, PTE_R | PTE_W | PTE_A | PTE_D);
@@ -105,11 +115,12 @@ static void pagetable_init(void) {
 static uint8_t frame_bitmap[V2_FRAME_TOTAL]; /* 1=free, 0=used */
 
 static void frame_pool_init(void) {
-    /* All frames start free except frame 0 (kernel's own page tables live
-     * there — keep it used). Frames 1..7 available for allocation. */
+    /* Frame 0 stays reserved for the kernel (its page tables live in the
+     * kernel's own RAM, not in the v2 frame region). Frames 1..7 map to
+     * real physical pages at V2_FRAME_PHYS_BASE + f*4096. */
     for (int i = 0; i < V2_FRAME_TOTAL; i++) /* bound: V2_FRAME_TOTAL */
         frame_bitmap[i] = 1;
-    frame_bitmap[0] = 0; /* frame 0: kernel PT (in use) */
+    frame_bitmap[0] = 0; /* frame 0: reserved for the kernel */
 }
 
 static int frame_alloc(void) {
@@ -127,12 +138,24 @@ static void frame_free(int f) {
         frame_bitmap[f] = 1;
 }
 
+/* Zero the 4096-byte real physical page backing frame f. Runs in S-mode
+ * with Sv39 on: the write hits VA == PA 0x81000000.. via the S-only
+ * l0_frames identity map (l1_k[8]); volatile so the memset is never
+ * optimized away. */
+static void frame_zero(int f) {
+    volatile uint64_t *p =
+        (volatile uint64_t *)(V2_FRAME_PHYS_BASE + (uintptr_t)f * 4096);
+    for (int i = 0; i < 512; i++) /* bound: 4096/8 */
+        p[i] = 0;
+}
+
 /* PT_ALLOC: allocate a zeroed frame and mint a cap to it. Returns cap slot
  * index in a0, or V2_ERR_OVERFLOW if no frames available. */
 static int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
     int f = frame_alloc();
     if (f < 0)
         return V2_ERR_OVERFLOW;
+    frame_zero(f);
     /* Find an empty cap slot and mint a RW cap to the frame */
     for (int i = 0; i < V2_CAP_SLOTS; i++) { /* bound: V2_CAP_SLOTS */
         if (!caps->caps[tid][i].valid) {
