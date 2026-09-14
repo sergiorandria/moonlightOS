@@ -161,6 +161,52 @@ static void frame_zero(int f) {
         p[i] = 0;
 }
 
+/* ---- PTE install/clear for the per-thread frame window ----
+ * l0_u_t[t][vpn] is thread t's level-0 entry for the frame window at
+ * user VA 0x80800000 + vpn*4096 (l1_t[t][4] -> l0_u_t[t], VPN[1]=4).
+ * These are kernel-enforcement helpers: they run ONLY after the caps.h
+ * model op returned V2_OK, so they never make a PTE state change on a
+ * rejected op (fail closed). W^X: no PTE_X is ever set. */
+
+/* bound: t < V2_CAP_THREADS && vpn < V2_VPN_SLOTS — defensive guard: a
+ * miss here means an internal invariant has been broken, fail silently. */
+static void v2_pte_install(unsigned long t, unsigned long vpn,
+                           unsigned long frame, unsigned long rights)
+{
+    uint64_t flags;
+    if (t >= (unsigned long)V2_CAP_THREADS ||
+        vpn >= (unsigned long)V2_VPN_SLOTS)
+        return;
+    flags = PTE_U | PTE_A |
+            ((rights & V2_RIGHT_W) ? (PTE_W | PTE_D) : 0) |
+            ((rights & V2_RIGHT_R) ? PTE_R : 0);
+    l0_u_t[t][vpn] = pte_leaf(V2_FRAME_PHYS_BASE + frame * 4096UL, flags);
+}
+
+/* bound: t < V2_CAP_THREADS && vpn < V2_VPN_SLOTS (see v2_pte_install) */
+static void v2_pte_clear(unsigned long t, unsigned long vpn)
+{
+    if (t >= (unsigned long)V2_CAP_THREADS ||
+        vpn >= (unsigned long)V2_VPN_SLOTS)
+        return;
+    l0_u_t[t][vpn] = 0;
+}
+
+static void v2_sfence_all(void)
+{
+    asm volatile("sfence.vma" ::: "memory");
+}
+
+/* REVOKE capture buffer: one (thread, vpn) pair per possible mapping
+ * (V2_CAP_THREADS threads x V2_VPN_SLOTS slots). The scan that fills it
+ * and the drain loop that clears from it are both hard-bounded to this
+ * size, so it can never overflow. */
+typedef struct {
+    unsigned long t;
+    unsigned long vpn;
+} v2_revoke_pair_t;
+static v2_revoke_pair_t v2_revoke_pairs[V2_CAP_THREADS * V2_VPN_SLOTS];
+
 /* PT_ALLOC: allocate a zeroed frame and mint a cap to it. Returns cap slot
  * index in a0, or V2_ERR_OVERFLOW if no frames available. */
 static int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
@@ -525,15 +571,75 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             case V2_INV_GRANT:
                 rc = v2_grant(&caps, (unsigned long)cur, a1, a2, a3);
                 break;
-            case V2_INV_MAP:
-                rc = v2_map(&caps, (unsigned long)cur, a1, a2);
+            case V2_INV_MAP: {
+                /* vpn must index a real l0_u_t[t][vpn] slot: guard before
+                 * the model call so rc stays V2_ERR_INVALID for vpn >=
+                 * V2_VPN_SLOTS (the model itself does not bound vpn). The
+                 * model call stays authoritative: on V2_OK the mapping is
+                 * recorded in caps.vm, then we install the real leaf PTE. */
+                int m; /* bound: vpn < V2_VPN_SLOTS (checked below) */
+                if (a2 < (uint64_t)V2_VPN_SLOTS)
+                    rc = v2_map(&caps, (unsigned long)cur, a1, a2);
+                if (rc == V2_OK) {
+                    m = v2_vm_find(&caps, (unsigned long)cur, a2);
+                    if (m >= 0) { /* model recorded it: must be findable */
+                        v2_pte_install((unsigned long)cur, a2,
+                                       caps.vm[cur][m].frame,
+                                       caps.vm[cur][m].rights);
+                        v2_sfence_all();
+                    }
+                }
                 break;
+            }
             case V2_INV_UNMAP:
                 rc = v2_unmap(&caps, (unsigned long)cur, a1);
+                if (rc == V2_OK) { /* model validated the mapping exists */
+                    v2_pte_clear((unsigned long)cur, a1);
+                    v2_sfence_all();
+                }
                 break;
-            case V2_INV_REVOKE:
+            case V2_INV_REVOKE: {
+                /* Revoke drops every mapping to the frame system-wide; the
+                 * model clears caps.vm but not hardware PTEs. Capture the
+                 * affected (t, vpn) pairs BEFORE the model destroys them,
+                 * clear them only if the model approves (fail closed). */
+                unsigned long f = 0;
+                unsigned long npair = 0;
+                int have_f = 0;
+                if (a1 < (uint64_t)V2_CAP_SLOTS &&
+                    caps.caps[cur][a1].valid) {
+                    f = caps.caps[cur][a1].obj;
+                    have_f = 1;
+                }
+                if (have_f) {
+                    for (unsigned long u = 0; u < caps.nthreads; u++)
+                        /* bound: V2_CAP_THREADS */
+                        for (int i = 0; i < V2_VPN_SLOTS; i++) {
+                            /* bound: V2_VPN_SLOTS */
+                            if (caps.vm[u][i].valid &&
+                                caps.vm[u][i].frame == f &&
+                                npair < (unsigned long)(V2_CAP_THREADS *
+                                                        V2_VPN_SLOTS)) {
+                                v2_revoke_pairs[npair].t = u;
+                                v2_revoke_pairs[npair].vpn =
+                                    caps.vm[u][i].vpn;
+                                npair++;
+                            }
+                        }
+                }
                 rc = v2_revoke(&caps, (unsigned long)cur, a1);
+                if (rc == V2_OK) {
+                    for (unsigned long i = 0; i < npair; i++) {
+                        /* bound: V2_CAP_THREADS * V2_VPN_SLOTS */
+                        if (v2_revoke_pairs[i].t <
+                            (unsigned long)NTHREADS)
+                            v2_pte_clear(v2_revoke_pairs[i].t,
+                                         v2_revoke_pairs[i].vpn);
+                    }
+                    v2_sfence_all();
+                }
                 break;
+            }
             case V2_INV_PT_ALLOC:
                 rc = frame_alloc_slot(&caps, (unsigned long)cur);
                 break;
