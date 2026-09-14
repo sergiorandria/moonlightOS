@@ -114,6 +114,17 @@ static void uputs_n(const uint64_t *w, long n) {
     uputc('\n');
 }
 
+/* Decimal print (immediates only, no literals). */
+__attribute__((section(".utext"), noinline)) static void uputdec(long v) {
+    if (v < 0) {
+        uputc('-');
+        v = -v;
+    }
+    if (v >= 10)
+        uputdec(v / 10);
+    uputc((char)('0' + (v % 10)));
+}
+
 /* Thread A: ping -> recv pong -> wait notify -> park. */
 __attribute__((section(".utext"), noinline)) void user_a_main(void) {
     uint64_t ping[2];
@@ -211,9 +222,15 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
     }
 }
 
-/* test_cap_thread: exercises capability system end-to-end
- * PT_ALLOC → MAP → WRITE → READ */
+/* test_cap_thread: exercises the capability system end-to-end
+ * PT_ALLOC → MAP → WRITE (real frame) → DIRECT read of the mapped VA
+ * (no syscall) → READ invoke → CAP OK. vpn 0 maps VA 0x80800000 (the
+ * frame window base, kernel/ipc.h V2_U_FRAME_BASE). Pattern bytes are
+ * built from a runtime variable: a 64-bit literal loaded by U-mode code
+ * would pull a literal pool into kernel .rodata (U=0) and fault. */
 __attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
+    long i;
+    int n_ok;
     uputc('C'); uputc('A'); uputc('P'); uputc('\n');
 
     /* Step 1: PT_ALLOC — allocate a frame, get a cap in our table */
@@ -223,26 +240,69 @@ __attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
         upark();
     }
 
-    /* Step 2: MAP — map the frame at VPN 0x200 */
-    rc = u_invoke(V2_INV_MAP, 0, 0x200, 0);
+    /* Step 2: MAP — map the frame at VPN 0. (vpn 0x200 >= V2_VPN_SLOTS
+     * is now correctly rejected by the kernel since Task 3.) */
+    rc = u_invoke(V2_INV_MAP, 0, 0, 0);
     if (rc != 0) {
         uputc('F'); uputc('A'); uputc('I'); uputc('L');
         upark();
     }
 
-    /* Step 3: WRITE — write 0xDEADBEEF via V2_INVOKE */
-    rc = u_invoke(V2_INV_WRITE, 0x200, 0xDEADBEEF, 0);
+    /* Step 3: WRITE — the invoke copies this 8-byte pattern word (two
+     * 0xcafebeef uint32 lanes) into the REAL frame backing vpn 0. The
+     * pattern bytes are built from a runtime value x: the compiler would
+     * otherwise constant-fold past the FAIL/PARK branches (rc is provably
+     * 0 there) and pool the 8-byte pattern into kernel .text, where U-mode
+     * cannot read it (load page fault). Feeding the stack address of pat
+     * into x makes the value genuinely runtime and defeats the fold. */
+    uint64_t pat = 0;
+    uint32_t x = 0xcafebeefUL ^ (uint32_t)(uintptr_t)&pat;
+    volatile uint8_t *pb = (volatile uint8_t *)&pat;
+    for (i = 0; i < 8; i++) /* bound: 8 (pattern bytes) */
+        pb[i] = (uint8_t)(x >> (((uint32_t)i & 3) * 8));
+    rc = u_invoke4(V2_INV_WRITE, 0, (long)&pat, 0);
     if (rc != 0) {
         uputc('F'); uputc('A'); uputc('I'); uputc('L');
         upark();
     }
 
-    /* Step 4: READ — read back and verify */
-    uint64_t rd_val = 0;
-    rc = u_invoke(V2_INV_READ, 0x200, (long)&rd_val, 0);
-    if (rc != 0 || rd_val != 0xDEADBEEF) {
+    /* Step 4: DIRECT read of the mapped VA 0x80800000 (vpn 0) — no
+     * syscall. The CPU walks the real leaf PTE installed by MAP, so the
+     * 2 matching uint32 lanes prove the mapping is real hardware. */
+    volatile uint32_t *va = (volatile uint32_t *)0x80800000UL;
+    n_ok = 0;
+    for (i = 0; i < 2; i++) /* bound: 2 (pattern uint32 lanes) */
+        if (va[i] == x)
+            n_ok++;
+    if (n_ok != 2) {
         uputc('F'); uputc('A'); uputc('I'); uputc('L');
         upark();
+    }
+    /* DU marker: every word matched through the real leaf PTE */
+    uputc('D'); uputc('U'); uputc(':'); uputc(' ');
+    uputc('v'); uputc('p'); uputc('n'); uputc('0');
+    uputc(' '); uputc('m'); uputc('i'); uputc('r'); uputc('r');
+    uputc('o'); uputc('r'); uputc('e'); uputc('d');
+    uputc(' ');
+    uputdec(n_ok);
+    uputc('/'); uputc('2');
+    uputc('\n');
+
+    /* Step 5: READ — the invoke copies the 8-byte word back from the real
+     * frame into the user buffer; the pattern bytes must still match. */
+    uint64_t rb = 0;
+    rc = u_invoke4(V2_INV_READ, 0, (long)&rb, 0);
+    if (rc != 0) {
+        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+        upark();
+    }
+    {
+        const volatile uint8_t *rbb = (const volatile uint8_t *)&rb;
+        for (i = 0; i < 8; i++) /* bound: 8 (read-back bytes) */
+            if (rbb[i] != (uint8_t)(x >> (((uint32_t)i & 3) * 8))) {
+                uputc('F'); uputc('A'); uputc('I'); uputc('L');
+                upark();
+            }
     }
 
     uputc('O'); uputc('K'); uputc('\n');

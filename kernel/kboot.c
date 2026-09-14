@@ -74,6 +74,14 @@ static void kputdec(unsigned long v) {
 #define V2_FRAME_PHYS_BASE 0x81000000UL
 #define NTHREADS 4 /* bound for all thread loops (<= V2_CAP_THREADS) */
 
+/* V2_INV_WRITE/READ move exactly one 64-bit word: the caps.h model is
+ * word-per-frame (fdata[f] = val), so the real store/load mirrors exactly
+ * what the model records and fdata can never diverge from the
+ * real frame (Write-Through Mirror). This bounds every new copy loop and
+ * keeps every frame access within the 8-frame region (frame <
+ * V2_FRAMES_MAX, max offset 7*4096 + V2_WORD_BYTES <= 32768). */
+#define V2_WORD_BYTES 8 /* bound: bytes per WRITE/READ invoke (one word) */
+
 /* Per-thread Sv39 VSpaces. root_pt_t = root (index VPN[2]), l1_t = level-1
  * (index VPN[1]), l0_u_t = per-thread frame window (VPN[1] of 0x80800000).
  * l1_m (UART), l0_k (kernel image) and l0_frames (frame region) are shared
@@ -166,7 +174,12 @@ static void frame_zero(int f) {
  * user VA 0x80800000 + vpn*4096 (l1_t[t][4] -> l0_u_t[t], VPN[1]=4).
  * These are kernel-enforcement helpers: they run ONLY after the caps.h
  * model op returned V2_OK, so they never make a PTE state change on a
- * rejected op (fail closed). W^X: no PTE_X is ever set. */
+ * rejected op (fail closed). W^X: no PTE_X is ever set.
+ *
+ * A 0-rights mapping is skipped (the slot stays 0 = unmapped), the
+ * faithful hardware image of "no access": a leaf PTE with V=1 and
+ * R=W=X=0 is a reserved table-pointer encoding that at level 0 can
+ * never resolve and always faults (carried review finding, T3). */
 
 /* bound: t < V2_CAP_THREADS && vpn < V2_VPN_SLOTS — defensive guard: a
  * miss here means an internal invariant has been broken, fail silently. */
@@ -177,6 +190,8 @@ static void v2_pte_install(unsigned long t, unsigned long vpn,
     if (t >= (unsigned long)V2_CAP_THREADS ||
         vpn >= (unsigned long)V2_VPN_SLOTS)
         return;
+    if (rights == 0)
+        return; /* R=W=X=0 leaf is the reserved table-pointer encoding */
     flags = PTE_U | PTE_A |
             ((rights & V2_RIGHT_W) ? (PTE_W | PTE_D) : 0) |
             ((rights & V2_RIGHT_R) ? PTE_R : 0);
@@ -195,6 +210,35 @@ static void v2_pte_clear(unsigned long t, unsigned long vpn)
 static void v2_sfence_all(void)
 {
     asm volatile("sfence.vma" ::: "memory");
+}
+
+/* ---- Real frame backing copy (Write-Through Mirror) ----
+ * WRITE/READ drive the real 4096-byte frame page at PA
+ * V2_FRAME_PHYS_BASE + frame*4096, identity-mapped S-only via l0_frames
+ * (l1_t[t][8]). fdata stays the caps.h model shadow: v2_write/v2_read
+ * still update it first, so host-side coherence holds. These helpers run
+ * ONLY after the model op returned V2_OK (fail closed), never cross the
+ * 8-frame region (frame < V2_FRAMES_MAX; len <= V2_WORD_BYTES <= 4096),
+ * and are byte-accurate through volatile pointers so the copy is never
+ * optimized away. */
+static void v2_real_write(unsigned long frame, const uint8_t *src, size_t len)
+{
+    volatile uint8_t *dst;
+    if (frame >= (unsigned long)V2_FRAMES_MAX || !src)
+        return;
+    dst = (volatile uint8_t *)(V2_FRAME_PHYS_BASE + frame * 4096UL);
+    for (size_t i = 0; i < len; i++) /* bound: V2_WORD_BYTES */
+        dst[i] = src[i];
+}
+
+static void v2_real_read(unsigned long frame, uint8_t *dst, size_t len)
+{
+    const volatile uint8_t *src;
+    if (frame >= (unsigned long)V2_FRAMES_MAX || !dst)
+        return;
+    src = (const volatile uint8_t *)(V2_FRAME_PHYS_BASE + frame * 4096UL);
+    for (size_t i = 0; i < len; i++) /* bound: V2_WORD_BYTES */
+        dst[i] = src[i];
 }
 
 /* REVOKE capture buffer: one (thread, vpn) pair per possible mapping
@@ -646,21 +690,63 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             case V2_INV_ELF_CHECK:
                 rc = v2_elf_ok((int)a1, (const v2_phdr_t *)a2, a3) ? V2_OK : V2_ERR_INVALID;
                 break;
-            case V2_INV_WRITE:
-                rc = v2_write(&caps, (unsigned long)cur, a1, a2);
-                break;
-            case V2_INV_READ: {
-                uint64_t val = 0;
-                rc = v2_read(&caps, (unsigned long)cur, a1, &val);
+            case V2_INV_WRITE: {
+                /* WRITE (a1=vpn, a2=u_src): one 8-byte word. Range-check +
+                 * copy the user word into a kernel temp, run the model
+                 * write on fdata (rights gate + shadow), then — only on
+                 * V2_OK — store that same word into the real frame PA
+                 * (Write-Through Mirror: real memory and fdata stay
+                 * identical). FAIL CLOSED: real memory is never touched
+                 * on model error. */
+                uint64_t kbuf[1];
+                if (a1 >= (uint64_t)V2_VPN_SLOTS) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                if (!v2_range_ok((uintptr_t)a2, 1,
+                                 (uintptr_t)V2_U_TEXT_BASE,
+                                 (uintptr_t)V2_U_END)) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                u_copy_in(kbuf, (uintptr_t)a2, 1);
+                rc = v2_write(&caps, (unsigned long)cur, a1, kbuf[0]);
                 if (rc == V2_OK) {
-                    /* Validate user pointer before writing with SUM */
-                    if (a2 < 0x80400000UL || a2 + sizeof(uint64_t) > 0x80800000UL) {
+                    int m = v2_vm_find(&caps, (unsigned long)cur, a1);
+                    if (m >= 0) /* model wrote it: mapping must be findable */
+                        v2_real_write(caps.vm[cur][m].frame,
+                                      (const uint8_t *)kbuf, V2_WORD_BYTES);
+                }
+                break;
+            }
+            case V2_INV_READ: {
+                /* READ (a1=vpn, a2=u_dst): mirror of WRITE. Run the model
+                 * read first (rights gate + shadow), then — only on V2_OK —
+                 * load the real 8-byte word from the frame PA into a kernel
+                 * temp and copy it out to the validated user destination.
+                 * FAIL CLOSED: the user destination is touched only on
+                 * model + range success. */
+                uint64_t kbuf[1];
+                if (a1 >= (uint64_t)V2_VPN_SLOTS) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                if (!v2_range_ok((uintptr_t)a2, 1,
+                                 (uintptr_t)V2_U_DATA_BASE,
+                                 (uintptr_t)V2_U_END)) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                rc = v2_read(&caps, (unsigned long)cur, a1, &kbuf[0]);
+                if (rc == V2_OK) {
+                    int m = v2_vm_find(&caps, (unsigned long)cur, a1);
+                    if (m < 0) { /* model read succeeded: must be findable */
                         rc = V2_ERR_INVALID;
-                    } else {
-                        sum_on();
-                        *(volatile uint64_t *)a2 = val;
-                        sum_off();
+                        break;
                     }
+                    v2_real_read(caps.vm[cur][m].frame, (uint8_t *)kbuf,
+                                 V2_WORD_BYTES);
+                    u_copy_out((uintptr_t)a2, kbuf, 1);
                 }
                 break;
             }
