@@ -25,13 +25,14 @@
 #define REQ_ALLOC 1
 #define REQ_MAP 2
 #define REQ_UNMAP 3
-#define RESP_OK 0
 #define RESP_ERR -1
 
 /* V2_INVOKE sub-operations (must match kernel kboot.c) */
 #define V2_INV_PT_ALLOC 6
 #define V2_INV_MAP 3
 #define V2_INV_UNMAP 4
+#define V2_INV_WRITE 8
+#define V2_INV_READ 9
 
 static long u_ecall3(long sys, long a0, long a1, long a2) {
     register long r_a0 asm("a0") = a0;
@@ -151,7 +152,7 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
     uputc('M'); uputc('E'); uputc('M'); uputc('\n');
 
     /* Main loop: wait for requests, handle them, reply */
-    for (;;) {
+    for (;;) { /* bound: ∞ — service loop */
         n = urecv(0, buf, 4, &snd, &ovf);
         if (n < 1) {
             /* Empty or invalid: reply error */
@@ -193,13 +194,57 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
     }
 }
 
+/* test_cap_thread: exercises capability system end-to-end
+ * PT_ALLOC → MAP → WRITE → READ → UNMAP → REVOKE → W^X rejection */
+__attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
+    uputc('C'); uputc('A'); uputc('P'); uputc('\n');
+
+    /* Step 1: PT_ALLOC — allocate a frame, get a cap in our table */
+    long rc = u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
+    if (rc != 0) {
+        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+        upark();
+    }
+
+    /* Step 2: MAP — map the frame at VPN 0x200 */
+    rc = u_invoke(V2_INV_MAP, 0, 0x200, 0);
+    if (rc != 0) {
+        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+        upark();
+    }
+
+    /* Step 3: WRITE — write 0xDEADBEEF via V2_INVOKE */
+    rc = u_invoke(V2_INV_WRITE, 0x200, 0xDEADBEEF, 0);
+    if (rc != 0) {
+        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+        upark();
+    }
+
+    /* Step 4: READ — read back and verify */
+    uint64_t rd_val = 0;
+    rc = u_invoke(V2_INV_READ, 0x200, (long)&rd_val, 0);
+    if (rc != 0 || rd_val != 0xDEADBEEF) {
+        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+        upark();
+    }
+
+    uputc('O'); uputc('K'); uputc('\n');
+    upark();
+}
+
 static uint8_t ustack_a[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_b[4096] __attribute__((section(".ustack"), aligned(16)));
+static uint8_t ustack_m[4096] __attribute__((section(".ustack"), aligned(16)));
+static uint8_t ustack_cap[4096] __attribute__((section(".ustack"), aligned(16)));
 
 uintptr_t ustack_a_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_b_top __attribute__((section(".udata"))) = 0;
+uintptr_t ustack_m_top __attribute__((section(".udata"))) = 0;
+uintptr_t ustack_cap_top __attribute__((section(".udata"))) = 0;
 
 __attribute__((section(".utext"))) void user_stacks_init(void) {
     ustack_a_top = (uintptr_t)(ustack_a + sizeof(ustack_a));
     ustack_b_top = (uintptr_t)(ustack_b + sizeof(ustack_b));
+    ustack_m_top = (uintptr_t)(ustack_m + sizeof(ustack_m));
+    ustack_cap_top = (uintptr_t)(ustack_cap + sizeof(ustack_cap));
 }

@@ -162,7 +162,7 @@ typedef struct {
     uint64_t vspace_root_ppn; /* PPN of thread's root page table */
 } uctx_t;
 
-#define NTHREADS 3
+#define NTHREADS 4
 #define T_RUNNABLE 0
 #define T_PARKED 1
 #define T_BLOCKED 2
@@ -183,8 +183,9 @@ static uint8_t trap_stack[4096] __attribute__((aligned(16)));
 void user_a_main(void);
 void user_b_main(void);
 void mem_server_main(void);
+void test_cap_thread(void);
 void user_stacks_init(void);
-extern uintptr_t ustack_a_top, ustack_b_top;
+extern uintptr_t ustack_a_top, ustack_b_top, ustack_m_top, ustack_cap_top;
 __attribute__((noreturn)) void u_enter(uctx_t *ctx);
 
 static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
@@ -564,6 +565,8 @@ void kboot(void) {
     user_stacks_init(); /* pre-MMU: U stacks need no SUM games */
     u_sp[0] = (uint64_t)ustack_a_top;
     u_sp[1] = (uint64_t)ustack_b_top;
+    u_sp[2] = (uint64_t)ustack_m_top;
+    u_sp[3] = (uint64_t)ustack_cap_top;
     pagetable_init();
     uintptr_t root = (uintptr_t)root_pt;
     uint64_t satp = (8UL << 60) | ((root >> 12) & 0xFFFFFFFFFFFUL);
@@ -604,9 +607,12 @@ void kboot(void) {
     threads[1].regs[2] = u_sp[1];
     threads[1].sepc = (uint64_t)user_b_main;
     threads[1].state = T_RUNNABLE;
-    threads[2].regs[2] = 0; /* mem_server uses its own stack (will be allocated) */
+    threads[2].regs[2] = u_sp[2];
     threads[2].sepc = (uint64_t)mem_server_main;
     threads[2].state = T_RUNNABLE;
+    threads[3].regs[2] = u_sp[3];
+    threads[3].sepc = (uint64_t)test_cap_thread;
+    threads[3].state = T_RUNNABLE;
     kputs("v2: entering U-mode mem_server\n");
     enter_thread(0);
 }
