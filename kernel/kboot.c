@@ -7,6 +7,7 @@
  * otherwise: stacks filled pre-MMU, console via SBI-forward). */
 #include <stdint.h>
 #include "ipc.h"
+#include "caps.h"
 
 /* ---- SBI (legacy EIDs; OpenSBI serves M-mode) ---- */
 #define SBI_SET_TIMER 0
@@ -97,6 +98,53 @@ static void pagetable_init(void) {
     l1_m[128] = pte_leaf(0x10000000UL, PTE_R | PTE_W | PTE_A | PTE_D);
     root_pt[2] = pte_table(l1_k);
     root_pt[0] = pte_table(l1_m);
+}
+
+/* ---- Frame pool (bitmap, 1=free, 0=in-use) ---- */
+#define V2_FRAME_TOTAL (V2_FRAMES_MAX)
+static uint8_t frame_bitmap[V2_FRAME_TOTAL]; /* 1=free, 0=used */
+
+static void frame_pool_init(void) {
+    /* All frames start free except frame 0 (kernel's own page tables live
+     * there — keep it used). Frames 1..7 available for allocation. */
+    for (int i = 0; i < V2_FRAME_TOTAL; i++)
+        frame_bitmap[i] = 1;
+    frame_bitmap[0] = 0; /* frame 0: kernel PT (in use) */
+}
+
+static int frame_alloc(void) {
+    for (int i = 0; i < V2_FRAME_TOTAL; i++) { /* bound: V2_FRAME_TOTAL */
+        if (frame_bitmap[i]) {
+            frame_bitmap[i] = 0;
+            return i;
+        }
+    }
+    return -1; /* all frames used */
+}
+
+static void frame_free(int f) {
+    if (f >= 0 && f < V2_FRAME_TOTAL)
+        frame_bitmap[f] = 1;
+}
+
+/* PT_ALLOC: allocate a zeroed frame and mint a cap to it. Returns frame id
+ * in a0, or V2_ERR_OVERFLOW if no frames available. */
+static __attribute__((unused)) int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
+    int f = frame_alloc();
+    if (f < 0)
+        return V2_ERR_OVERFLOW;
+    /* Find an empty cap slot and mint a RW cap to the frame */
+    for (int i = 0; i < V2_CAP_SLOTS; i++) { /* bound: V2_CAP_SLOTS */
+        if (!caps->caps[tid][i].valid) {
+            caps->caps[tid][i].valid = 1;
+            caps->caps[tid][i].obj = (unsigned long)f;
+            caps->caps[tid][i].rights = V2_RIGHT_RW;
+            caps->caps[tid][i].root = 0;
+            return V2_OK;
+        }
+    }
+    frame_free(f);
+    return V2_ERR_OVERFLOW;
 }
 
 /* ---- Threads (mirrors V2_A: lowest-numbered Runnable wins) ---- */
@@ -443,6 +491,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
 void kboot(void) {
     kputs("v2 stage2: S-mode entry (OpenSBI)\n");
     v2_ep_init(&ep0);
+    frame_pool_init();
     user_stacks_init(); /* pre-MMU: U stacks need no SUM games */
     u_sp[0] = (uint64_t)ustack_a_top;
     u_sp[1] = (uint64_t)ustack_b_top;
