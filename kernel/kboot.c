@@ -70,11 +70,17 @@ static void kputdec(unsigned long v) {
 
 /* Real physical backing for v2 frames: QEMU virt 256M RAM (base 0x80000000),
  * free region above the image (< 0x80800000). S-only identity map via
- * l0_frames, wired at l1_k[8] (VPN[1] of 0x81000000). */
+ * l0_frames, wired at l1_t[t][8] (VPN[1] of 0x81000000) in every VSpace. */
 #define V2_FRAME_PHYS_BASE 0x81000000UL
+#define NTHREADS 4 /* bound for all thread loops (<= V2_CAP_THREADS) */
 
-static uint64_t root_pt[512] __attribute__((aligned(4096)));
-static uint64_t l1_k[512] __attribute__((aligned(4096)));
+/* Per-thread Sv39 VSpaces. root_pt_t = root (index VPN[2]), l1_t = level-1
+ * (index VPN[1]), l0_u_t = per-thread frame window (VPN[1] of 0x80800000).
+ * l1_m (UART), l0_k (kernel image) and l0_frames (frame region) are shared
+ * and referenced by every thread's tables. */
+static uint64_t root_pt_t[V2_CAP_THREADS][512] __attribute__((aligned(4096)));
+static uint64_t l1_t[V2_CAP_THREADS][512] __attribute__((aligned(4096)));
+static uint64_t l0_u_t[V2_CAP_THREADS][512] __attribute__((aligned(4096)));
 static uint64_t l1_m[512] __attribute__((aligned(4096)));
 static uint64_t l0_k[512] __attribute__((aligned(4096)));
 static uint64_t l0_frames[512] __attribute__((aligned(4096)));
@@ -98,16 +104,22 @@ static void pagetable_init(void) {
             f = PTE_R | PTE_X | PTE_A;
         l0_k[i] = pte_leaf(pa, f);
     }
-    l1_k[1] = pte_table(l0_k);
     for (int i = 0; i < 512; i++) /* bound: 512 */
         l0_frames[i] = pte_leaf(V2_FRAME_PHYS_BASE + (uintptr_t)i * 4096,
                                 PTE_R | PTE_W | PTE_A | PTE_D);
-    l1_k[8] = pte_table(l0_frames);
-    l1_k[2] = pte_leaf(0x80400000UL, PTE_R | PTE_X | PTE_U | PTE_A);
-    l1_k[3] = pte_leaf(0x80600000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     l1_m[128] = pte_leaf(0x10000000UL, PTE_R | PTE_W | PTE_A | PTE_D);
-    root_pt[2] = pte_table(l1_k);
-    root_pt[0] = pte_table(l1_m);
+    /* Per-thread VSpaces: shared kernel/leaf/frame/UART regions are wired
+     * through each thread's own l1_t; the per-thread frame window
+     * (l0_u_t) stays zero until Task 3 maps frames. */
+    for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+        l1_t[t][1] = pte_table(l0_k);
+        l1_t[t][2] = pte_leaf(0x80400000UL, PTE_R | PTE_X | PTE_U | PTE_A);
+        l1_t[t][3] = pte_leaf(0x80600000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+        l1_t[t][4] = pte_table(l0_u_t[t]);
+        l1_t[t][8] = pte_table(l0_frames);
+        root_pt_t[t][0] = pte_table(l1_m);
+        root_pt_t[t][2] = pte_table(l1_t[t]);
+    }
 }
 
 /* ---- Frame pool (bitmap, 1=free, 0=in-use) ---- */
@@ -140,7 +152,7 @@ static void frame_free(int f) {
 
 /* Zero the 4096-byte real physical page backing frame f. Runs in S-mode
  * with Sv39 on: the write hits VA == PA 0x81000000.. via the S-only
- * l0_frames identity map (l1_k[8]); volatile so the memset is never
+ * l0_frames identity map (l1_t[t][8]); volatile so the memset is never
  * optimized away. */
 static void frame_zero(int f) {
     volatile uint64_t *p =
@@ -185,7 +197,6 @@ typedef struct {
     uint64_t vspace_root_ppn; /* PPN of thread's root page table */
 } uctx_t;
 
-#define NTHREADS 4
 #define T_RUNNABLE 0
 #define T_PARKED 1
 #define T_BLOCKED 2
@@ -596,15 +607,14 @@ void kboot(void) {
     u_sp[2] = (uint64_t)ustack_m_top;
     u_sp[3] = (uint64_t)ustack_cap_top;
     pagetable_init();
-    uintptr_t root = (uintptr_t)root_pt;
+    uintptr_t root = (uintptr_t)root_pt_t[0];
     uint64_t satp = (8UL << 60) | ((root >> 12) & 0xFFFFFFFFFFFUL);
     asm volatile("csrw satp, %0" :: "r"(satp) : "memory");
     asm volatile("sfence.vma" ::: "memory");
     asm volatile("csrc sstatus, %0" :: "r"((1UL << 18) | (1UL << 19)) : "memory");
     kputs("v2: satp Sv39 on, U-bit split (k U=0 / u U=1), SUM=0\n");
 
-    uint64_t initial_vspace = (8UL << 60) | (((uintptr_t)root_pt >> 12) & 0xFFFFFFFFFFFUL);
-    for (int i = 0; i < NTHREADS; i++) {
+    for (int i = 0; i < NTHREADS; i++) { /* bound: NTHREADS */
         for (int r = 0; r < 32; r++)
             threads[i].regs[r] = 0;
         threads[i].sepc = 0;
@@ -613,7 +623,8 @@ void kboot(void) {
         threads[i].ipc_cap = 0;
         threads[i].notify = 0;
         threads[i].wait_kind = V2_WK_NONE;
-        threads[i].vspace_root_ppn = initial_vspace;
+        threads[i].vspace_root_ppn =
+            (8UL << 60) | (((uintptr_t)root_pt_t[i] >> 12) & 0xFFFFFFFFFFFUL);
     }
     /* A valid trap target must exist BEFORE interrupts are enabled: a stale
      * firmware timer can pend and fire at SIE-enable, while cur_ctx is still
