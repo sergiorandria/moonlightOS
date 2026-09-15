@@ -390,6 +390,13 @@ static void enter_thread(int id) {
  * which requires a runnable peer. (No timeout yet: Stage 4 time.) */
 static void halt_no_runnable(void) {
     kputs("no runnable left; parking cpu\n");
+    /* Park-timer hygiene: the periodic tick is still armed, so a pending
+     * timer would wake WFI, print "[tick ...]" spam after the marker, and
+     * re-arm (repeating forever). Push stimecmp to the end of time and
+     * clear STIE BEFORE the loop so the marker prints exactly once and
+     * the CPU truly parks. */
+    sbi_set_timer(~0UL);
+    asm volatile("csrc sie, %0" :: "r"(1UL << 5) : "memory"); /* clear STIE */
     for (;;)
         asm volatile("wfi");
     __builtin_unreachable();
