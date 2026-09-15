@@ -46,7 +46,7 @@ static long u_ecall3(long sys, long a0, long a1, long a2) {
     return r_a0;
 }
 
-static long __attribute__((unused)) u_ecall4(long sys, long a0, long a1, long a2, long a3) {
+static long u_ecall4(long sys, long a0, long a1, long a2, long a3) {
     register long r_a0 asm("a0") = a0;
     register long r_a1 asm("a1") = a1;
     register long r_a2 asm("a2") = a2;
@@ -98,12 +98,9 @@ static long uwait(void) {
     return u_ecall3(V2_WAIT, 0, 0, 0);
 }
 
+/* Single invoke path: all four args forwarded (a3 reaches the kernel;
+ * MINT/GRANT/ELF_CHECK-style dst args are no longer dropped). */
 static long u_invoke(long op, long a1, long a2, long a3) {
-    (void)a3;
-    return u_ecall3(V2_INVOKE, op, a1, a2);
-}
-
-static long __attribute__((unused)) u_invoke4(long op, long a1, long a2, long a3) {
     return u_ecall4(V2_INVOKE, op, a1, a2, a3);
 }
 
@@ -260,7 +257,7 @@ __attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
     volatile uint8_t *pb = (volatile uint8_t *)&pat;
     for (i = 0; i < 8; i++) /* bound: 8 (pattern bytes) */
         pb[i] = (uint8_t)(x >> (((uint32_t)i & 3) * 8));
-    rc = u_invoke4(V2_INV_WRITE, 0, (long)&pat, 0);
+    rc = u_invoke(V2_INV_WRITE, 0, (long)&pat, 0);
     if (rc != 0) {
         uputc('F'); uputc('A'); uputc('I'); uputc('L');
         upark();
@@ -291,7 +288,7 @@ __attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
     /* Step 5: READ — the invoke copies the 8-byte word back from the real
      * frame into the user buffer; the pattern bytes must still match. */
     uint64_t rb = 0;
-    rc = u_invoke4(V2_INV_READ, 0, (long)&rb, 0);
+    rc = u_invoke(V2_INV_READ, 0, (long)&rb, 0);
     if (rc != 0) {
         uputc('F'); uputc('A'); uputc('I'); uputc('L');
         upark();
