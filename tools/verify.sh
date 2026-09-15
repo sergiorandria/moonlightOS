@@ -130,6 +130,11 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "B00pn" && echo "v2 smoke: ping 0->1 intact" || echo "v2 smoke: FAIL (no B00pn)"
     echo "$V2LOG" | grep -q "A10pg" && echo "v2 smoke: pong 1->0 intact" || echo "v2 smoke: FAIL (no A10pg)"
     echo "$V2LOG" | grep -q "W1" && echo "v2 smoke: notify delivered" || echo "v2 smoke: FAIL (no W1)"
+    echo "$V2LOG" | grep -q "MEM" && echo "v2 smoke: MEM frame init" || echo "v2 smoke: FAIL (no MEM)"
+    echo "$V2LOG" | grep -q "CAP" && echo "v2 smoke: CAP report" || echo "v2 smoke: FAIL (no CAP)"
+    echo "$V2LOG" | grep -q "OK" && echo "v2 smoke: OK invoke success" || echo "v2 smoke: FAIL (no OK)"
+    echo "$V2LOG" | grep -q "DU: vpn0 mirrored" && echo "v2 smoke: DU real-frame proof" || echo "v2 smoke: FAIL (no DU)"
+    echo "$V2LOG" | grep -q "NP" && echo "v2 smoke: NP negative-passed" || echo "v2 smoke: FAIL (no NP)"
     echo "$V2LOG" | grep -q "no runnable left; parking cpu" && echo "v2 smoke: clean park" || echo "v2 smoke: FAIL (no clean park)"
     QEMU_STATUS="PASS"
   else
