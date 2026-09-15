@@ -154,6 +154,39 @@ int main(void) {
     CHECK(v2_elf_map(0, 2, vpns, ws, 8, &n) == V2_ERR_INVALID);
     CHECK(v2_elf_map(ph, 2, 0, ws, 8, &n) == V2_ERR_INVALID);
 
+    /* ---- Negative / fail-closed tests (Task 8) ---- */
+    v2_caps_init(&st, 2);
+    CHECK(v2_grant(&st, 0, 0, 1, 0) == V2_OK);
+    CHECK(v2_map(&st, 1, 0, 9) == V2_OK);
+
+    /* bad thread: tid > nthreads (nthreads=2, tid=2 is out of range) */
+    CHECK(v2_has_cap(&st, 2, 0) == 0);  /* fail-closed: beyond live count */
+    CHECK(v2_write(&st, 2, 9, 42) == V2_ERR_INVALID);
+    CHECK(v2_read(&st, 2, 9, &v) == V2_ERR_INVALID);
+
+    /* slot OOB: slot V2_CAP_SLOTS = 16 (beyond valid range) */
+    CHECK(v2_has_cap(&st, 0, V2_CAP_SLOTS) == 0);
+    CHECK(v2_map(&st, 1, V2_CAP_SLOTS, 0) == V2_ERR_INVALID);
+
+    /* rights-with-X: mint with X right rejected (W^X) */
+    CHECK(v2_mint(&st, 1, 0, V2_RIGHT_X, 1) == V2_ERR_INVALID);
+    CHECK(v2_mint(&st, 1, 0, V2_RIGHT_R | V2_RIGHT_X, 1) == V2_ERR_INVALID);
+
+    /* write / read / unmap unmapped vpn */
+    CHECK(v2_write(&st, 1, 31, 42) == V2_ERR_INVALID); /* vpn 31 has no mapping */
+    CHECK(v2_read(&st, 1, 31, &v) == V2_ERR_INVALID);
+    CHECK(v2_unmap(&st, 1, 31) == V2_ERR_INVALID);
+
+    /* map with no cap in slot (empty slot) */
+    CHECK(v2_map(&st, 1, 3, 0) == V2_ERR_INVALID); /* slot 3 is empty */
+
+    /* unmap-then-IO: unmap vpn 9, then write/read must fail */
+    CHECK(v2_unmap(&st, 1, 9) == V2_OK);
+    CHECK(v2_write(&st, 1, 9, 7) == V2_ERR_INVALID);
+    CHECK(v2_read(&st, 1, 9, &v) == V2_ERR_INVALID);
+
+    printf("negative tests: PASS\n");
+
     /* ---- Invoke round-trip tests (mirror kernel V2_INVOKE handler) ---- */
     {
         v2_caps_t st;

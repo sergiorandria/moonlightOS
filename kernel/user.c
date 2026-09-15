@@ -303,6 +303,36 @@ __attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
     }
 
     uputc('O'); uputc('K'); uputc('\n');
+
+    /* ---- Negative tests: prove fail-closed behavior (Task 8) ----
+     * Each test expects rc<0. A 'P' is printed on each success. */
+
+    /* 1. MAP bad slot: slot V2_CAP_SLOTS (out of bounds) must be rejected. */
+    rc = u_invoke(V2_INV_MAP, 0, 0, 0x200);
+    if (rc >= 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    uputc('P');
+
+    /* 2. READ to a pointer inside the text region (0x80400000..0x80600000)
+     *    must fail the data-range check (hardening proof). */
+    volatile uint64_t *text_ptr = (volatile uint64_t *)0x80400000UL;
+    rc = u_invoke(V2_INV_READ, 0, (long)text_ptr, 0);
+    if (rc >= 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    uputc('P');
+
+    /* 3. UNMAP vpn 0, then READ must fail (mapping gone). */
+    rc = u_invoke(V2_INV_UNMAP, 0, 0, 0);
+    if (rc != 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    rc = u_invoke(V2_INV_READ, 0, (long)&rb, 0);
+    if (rc >= 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    uputc('P');
+
+    /* 4. READ to a pointer past the data region (0x80800000+) must fail. */
+    volatile uint64_t *oob_ptr = (volatile uint64_t *)0x80800000UL;
+    rc = u_invoke(V2_INV_READ, 0, (long)oob_ptr, 0);
+    if (rc >= 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    uputc('P');
+
+    uputc('N'); uputc('P'); uputc('\n'); /* negative-passed */
     upark();
 }
 
