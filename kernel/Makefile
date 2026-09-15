@@ -13,7 +13,7 @@ CFLAGS_K = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
 # -fstack-protector in these flags is a build break by design.
 LDFLAGS_K = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib -T linker.ld
 
-SRC_C = kboot.c user.c
+SRC_C = kboot.c user.c elf.c
 SRC_S = start.S trap.S
 
 all: build/moonlight.elf

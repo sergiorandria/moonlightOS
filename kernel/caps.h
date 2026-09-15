@@ -423,4 +423,7 @@ static inline int v2_elf_map(const v2_phdr_t *ph, unsigned long n,
     return V2_OK;
 }
 
+/* Frame pool allocator (called from ELF loader). Mirrors kernel frame_pool_init. */
+int frame_alloc_slot(v2_caps_t *caps, unsigned long tid);
+
 #endif /* V2_CAPS_H */

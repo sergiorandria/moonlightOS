@@ -9,7 +9,7 @@
 #include "../kernel/caps.h"
 
 /* frame_alloc_slot: host-sim copy (mirrors kernel kboot.c) */
-static int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
+int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
     /* For host testing, skip actual frame bitmap — just find empty slot */
     for (int i = 0; i < V2_CAP_SLOTS; i++) {
         if (!caps->caps[tid][i].valid) {

@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include "ipc.h"
 #include "caps.h"
+#include "elf.h"
 
 /* ---- SBI (legacy EIDs; OpenSBI serves M-mode) ---- */
 #define SBI_SET_TIMER 0
@@ -253,7 +254,7 @@ static v2_revoke_pair_t v2_revoke_pairs[V2_CAP_THREADS * V2_VPN_SLOTS];
 
 /* PT_ALLOC: allocate a zeroed frame and mint a cap to it. Returns cap slot
  * index in a0, or V2_ERR_OVERFLOW if no frames available. */
-static int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
+int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
     int f = frame_alloc();
     if (f < 0)
         return V2_ERR_OVERFLOW;
@@ -330,8 +331,9 @@ static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
 #define V2_INV_REVOKE 5
 #define V2_INV_PT_ALLOC 6
 #define V2_INV_ELF_CHECK 7
-#define V2_INV_WRITE 8
-#define V2_INV_READ 9
+#define V2_INV_ELF_MAP 8
+#define V2_INV_WRITE 9
+#define V2_INV_READ 10
 
 /* ---- User copy (both directions, V2_DESIGN Sec.4): validate-then-copy.
  * S runs with SUM=0; the window is opened only for the bounded copy loop
@@ -697,6 +699,32 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             case V2_INV_ELF_CHECK:
                 rc = v2_elf_ok((int)a1, (const v2_phdr_t *)a2, a3) ? V2_OK : V2_ERR_INVALID;
                 break;
+            case V2_INV_ELF_MAP: {
+                /* ELF_MAP (a1=frame_src, a2=phdrs_ptr, a3=phdr_count):
+                 * Load ELF from frame pool (initrd) into current VSpace.
+                 * a1 = source frame id (from initrd frame pool)
+                 * a2 = user pointer to program headers (validated)
+                 * a3 = phdr count (validated)
+                 * Returns entry point in rc (a0 on return).
+                 * FAIL CLOSED: any validation error -> V2_ERR_INVALID. */
+                uint64_t entry, brk = 0;
+                if (a1 >= (uint64_t)V2_FRAMES_MAX) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                if (!v2_recv_range_ok((uintptr_t)a2, a3)) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                /* Source frame is in the initrd frame pool (read-only for this op) */
+                const uint8_t *elf_data = (const uint8_t *)(V2_FRAME_PHYS_BASE + a1 * 4096UL);
+                size_t elf_size = 4096; /* assume one frame for now */
+                rc = v2_elf_load(elf_data, elf_size, &caps, (unsigned long)cur, &entry, &brk);
+                if (rc == V2_OK) {
+                    rc = (int)entry; /* return entry point as rc */
+                }
+                break;
+            }
             case V2_INV_WRITE: {
                 /* WRITE (a1=vpn, a2=u_src): one 8-byte word. Range-check +
                  * copy the user word into a kernel temp, run the model

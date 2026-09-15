@@ -29,10 +29,14 @@
 
 /* V2_INVOKE sub-operations (must match kernel kboot.c) */
 #define V2_INV_PT_ALLOC 6
+#define V2_INV_ELF_CHECK 7
+#define V2_INV_ELF_MAP 8
+#define V2_INV_WRITE 9
+#define V2_INV_READ 10
+
 #define V2_INV_MAP 3
 #define V2_INV_UNMAP 4
-#define V2_INV_WRITE 8
-#define V2_INV_READ 9
+#define V2_INV_REVOKE 5
 
 static long u_ecall3(long sys, long a0, long a1, long a2) {
     register long r_a0 asm("a0") = a0;
