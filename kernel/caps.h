@@ -14,9 +14,11 @@
  * - Failure codes: spec's False becomes V2_ERR_INVALID, except table-full
  *   which is V2_ERR_OVERFLOW. Guards are checked actor-first, in spec
  *   order; anything failing any step is fail-closed (no partial update).
- * - W^X: X (V2_RIGHT_X) is rejected in mint rights; caps and mappings can
- *   therefore never carry X (grant/map only copy). v2_vm_noexec() pins the
- *   invariant (mirrors noexec_vm). ELF rejects W+X segments (elf_ok).
+ * - W^X: X (V2_RIGHT_X) is allowed for ELF code caps/mappings; W+X together
+ *   is rejected in mint/map. v2_vm_noexec() pins the W^X invariant (no
+ *   mapping may carry both W and X). v2_vm_install_rights() computes
+ *   Sv39 PTE flags (R/W/X) from rights, enforcing W^X in hardware PTEs.
+ *   ELF rejects W+X segments (elf_ok).
  * - Data is one abstract word per frame (mirrors fdata); read/write need
  *   cap right AND mapping right (mirrors d_write/d_read).
  */
@@ -47,7 +49,7 @@
 typedef struct {
     int valid;
     unsigned long obj;    /* frame id (< V2_FRAMES_MAX) */
-    unsigned long rights; /* subset of {R,W}; X never stored */
+    unsigned long rights; /* subset of {R,W,X}; W^X enforced */
     int root;             /* single-level lineage: init roots only */
 } v2_capslot_t;
 
@@ -55,7 +57,7 @@ typedef struct {
     int valid;
     unsigned long vpn;
     unsigned long frame;
-    unsigned long rights; /* copied from the mapping cap (never X) */
+    unsigned long rights; /* copied from the mapping cap (X allowed, W^X enforced) */
 } v2_mapslot_t;
 
 typedef struct {
@@ -75,13 +77,15 @@ typedef struct {
 #define V2_PHDRS_MAX 4
 #define V2_SEG_LEN_MAX 512
 
-/* Cap is well-formed: object in range, rights R/W only (mirrors cap_ok). */
+/* Cap is well-formed: object in range, rights subset of {R,W,X}, W^X enforced. */
 static inline int v2_cap_ok(unsigned long obj, unsigned long rights)
 {
     if (obj >= (unsigned long)V2_FRAMES_MAX)
         return 0;
-    if (rights & ~(V2_RIGHT_R | V2_RIGHT_W))
+    if (rights & ~(V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X))
         return 0;
+    if ((rights & V2_RIGHT_W) && (rights & V2_RIGHT_X))
+        return 0; /* W^X: never both write and execute */
     return 1;
 }
 
@@ -151,7 +155,8 @@ static inline void v2_caps_init(v2_caps_t *st, unsigned long nthreads)
 }
 
 /* MINT t src rights dst: attenuate own cap into an empty slot of the same
- * table. Copies never inherit the root bit. Mirrors d_mint. */
+ * table. Copies never inherit the root bit. Mirrors d_mint.
+ * Rights may include X (for ELF code caps) but W^X is enforced: no W+X together. */
 static inline int v2_mint(v2_caps_t *st, unsigned long t, unsigned long src,
                           unsigned long rights, unsigned long dst)
 {
@@ -161,8 +166,10 @@ static inline int v2_mint(v2_caps_t *st, unsigned long t, unsigned long src,
     c = &st->caps[t][src];
     if ((rights & ~c->rights) != 0)
         return V2_ERR_INVALID;
-    if ((rights & ~(V2_RIGHT_R | V2_RIGHT_W)) != 0)
+    if (rights & ~(V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X))
         return V2_ERR_INVALID;
+    if ((rights & V2_RIGHT_W) && (rights & V2_RIGHT_X))
+        return V2_ERR_INVALID; /* W^X: no write+execute together */
     if (dst >= (unsigned long)V2_CAP_SLOTS)
         return V2_ERR_INVALID;
     if (st->caps[t][dst].valid)
@@ -198,7 +205,7 @@ static inline int v2_grant(v2_caps_t *st, unsigned long from, unsigned long slot
 }
 
 /* MAP t slot vpn: map the frame through a valid cap. Mapping rights = cap
- * rights (never X: frames are data). Mirrors d_map. */
+ * rights (X allowed for ELF code, W^X enforced). Mirrors d_map. */
 static inline int v2_map(v2_caps_t *st, unsigned long t, unsigned long slot,
                          unsigned long vpn)
 {
@@ -208,9 +215,11 @@ static inline int v2_map(v2_caps_t *st, unsigned long t, unsigned long slot,
         return V2_ERR_INVALID;
     if (v2_vm_find(st, t, vpn) >= 0)
         return V2_ERR_INVALID;
+    c = &st->caps[t][slot];
+    if ((c->rights & V2_RIGHT_W) && (c->rights & V2_RIGHT_X))
+        return V2_ERR_INVALID; /* W^X: mapping cannot be both writable and executable */
     for (i = 0; i < V2_VPN_SLOTS; i++) {
         if (!st->vm[t][i].valid) {
-            c = &st->caps[t][slot];
             st->vm[t][i].valid = 1;
             st->vm[t][i].vpn = vpn;
             st->vm[t][i].frame = c->obj;
@@ -230,6 +239,19 @@ static inline int v2_unmap(v2_caps_t *st, unsigned long t, unsigned long vpn)
         return V2_ERR_INVALID;
     st->vm[t][i].valid = 0;
     return V2_OK;
+}
+
+/* Compute Sv39 PTE flags from mapping rights (W^X enforced by model).
+ * Returns flags suitable for PTE: U|A|D|R|W|X as appropriate.
+ * W^X is enforced: if both W and X are set, X is dropped (should not happen if model is correct). */
+static inline unsigned long v2_vm_install_rights(unsigned long rights)
+{
+    unsigned long flags = 0;
+    if (rights & V2_RIGHT_R) flags |= 1UL << 1; /* PTE_R */
+    if (rights & V2_RIGHT_W) flags |= (1UL << 2) | (1UL << 3); /* PTE_W | PTE_D */
+    if ((rights & V2_RIGHT_X) && !(rights & V2_RIGHT_W)) flags |= 1UL << 4; /* PTE_X (only if not W) */
+    flags |= (1UL << 0) | (1UL << 6); /* PTE_V | PTE_A (valid + accessed) */
+    return flags;
 }
 
 /* REVOKE t slot: destroy every NON-ROOT cap to the object system-wide,
@@ -331,7 +353,7 @@ static inline int v2_read(v2_caps_t *st, unsigned long t, unsigned long vpn,
     return V2_OK;
 }
 
-/* W^X over mappings (mirrors noexec_vm): no mapping may carry X. */
+/* W^X over mappings (mirrors noexec_vm): no mapping may carry both W and X. */
 static inline int v2_vm_noexec(const v2_caps_t *st)
 {
     unsigned long t;
@@ -340,7 +362,9 @@ static inline int v2_vm_noexec(const v2_caps_t *st)
         return 0;
     for (t = 0; t < st->nthreads; t++) {
         for (i = 0; i < V2_VPN_SLOTS; i++) {
-            if (st->vm[t][i].valid && (st->vm[t][i].rights & V2_RIGHT_X))
+            if (st->vm[t][i].valid &&
+                (st->vm[t][i].rights & V2_RIGHT_W) &&
+                (st->vm[t][i].rights & V2_RIGHT_X))
                 return 0;
         }
     }

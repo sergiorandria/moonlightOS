@@ -168,14 +168,35 @@ int main(void) {
     CHECK(v2_has_cap(&st, 0, V2_CAP_SLOTS) == 0);
     CHECK(v2_map(&st, 1, V2_CAP_SLOTS, 0) == V2_ERR_INVALID);
 
-    /* rights-with-X: mint with X right rejected (W^X) */
-    CHECK(v2_mint(&st, 1, 0, V2_RIGHT_X, 1) == V2_ERR_INVALID);
-    CHECK(v2_mint(&st, 1, 0, V2_RIGHT_R | V2_RIGHT_X, 1) == V2_ERR_INVALID);
+    /* rights-with-X: X alone now allowed (for ELF code caps), but W+X rejected (W^X) */
+    /* Note: X can't be minted from RW (attenuation only). Test negative W^X cases with existing RW caps. */
+    CHECK(v2_mint(&st, 1, 0, V2_RIGHT_W | V2_RIGHT_X, 3) == V2_ERR_INVALID); /* W+X rejected */
+    CHECK(v2_mint(&st, 1, 0, V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X, 4) == V2_ERR_INVALID); /* RWX rejected */
+
+    /* cap_ok rejects W+X */
+    CHECK(v2_cap_ok(0, V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X) == 0);
+    CHECK(v2_cap_ok(0, V2_RIGHT_W | V2_RIGHT_X) == 0);
+    CHECK(v2_cap_ok(0, V2_RIGHT_X) == 1);
+    CHECK(v2_cap_ok(0, V2_RIGHT_R | V2_RIGHT_X) == 1);
 
     /* write / read / unmap unmapped vpn */
     CHECK(v2_write(&st, 1, 31, 42) == V2_ERR_INVALID); /* vpn 31 has no mapping */
     CHECK(v2_read(&st, 1, 31, &v) == V2_ERR_INVALID);
     CHECK(v2_unmap(&st, 1, 31) == V2_ERR_INVALID);
+
+    /* map with W+X cap rejected (W^X) - manually construct cap with W+X in slot 5 */
+    st.caps[1][5].valid = 1;
+    st.caps[1][5].obj = 0;
+    st.caps[1][5].rights = V2_RIGHT_W | V2_RIGHT_X;
+    st.caps[1][5].root = 0;
+    CHECK(v2_map(&st, 1, 5, 10) == V2_ERR_INVALID); /* cap has W+X, map must fail */
+
+    /* map with X-only cap allowed - manually construct cap with X in slot 6 */
+    st.caps[1][6].valid = 1;
+    st.caps[1][6].obj = 0;
+    st.caps[1][6].rights = V2_RIGHT_X;
+    st.caps[1][6].root = 0;
+    CHECK(v2_map(&st, 1, 6, 11) == V2_OK); /* X-only cap maps fine */
 
     /* map with no cap in slot (empty slot) */
     CHECK(v2_map(&st, 1, 3, 0) == V2_ERR_INVALID); /* slot 3 is empty */
