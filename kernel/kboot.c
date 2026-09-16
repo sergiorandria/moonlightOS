@@ -290,6 +290,7 @@ typedef struct {
 
 #define T_RUNNABLE 0
 #define T_PARKED 1
+#define T_DEAD 2
 #define T_BLOCKED 2
 
 static uctx_t threads[NTHREADS];
@@ -332,8 +333,9 @@ static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
 #define V2_INV_PT_ALLOC 6
 #define V2_INV_ELF_CHECK 7
 #define V2_INV_ELF_MAP 8
-#define V2_INV_WRITE 9
-#define V2_INV_READ 10
+#define V2_INV_SPAWN 9
+#define V2_INV_WRITE 10
+#define V2_INV_READ 11
 
 /* ---- User copy (both directions, V2_DESIGN Sec.4): validate-then-copy.
  * S runs with SUM=0; the window is opened only for the bounded copy loop
@@ -375,6 +377,47 @@ static int pick_next(void) {
         if (threads[i].state == T_RUNNABLE)
             return i;
     return -1;
+}
+
+/* Build child VSpace: copy kernel mappings (l1_t, l0_k, l0_frames, l1_m)
+ * from parent, allocate fresh l0_u for user mappings, and fresh l1_t for child.
+ * Returns child's root PPN or 0 on failure. */
+static unsigned long build_child_vspace(unsigned long parent_tid, unsigned long child_tid)
+{
+    unsigned long l1_child = (unsigned long)&l1_t[child_tid][0];
+    unsigned long l0_u_child = (unsigned long)&l0_u_t[child_tid][0];
+
+    if (child_tid >= (unsigned long)V2_CAP_THREADS)
+        return 0;
+
+    /* Zero child's page tables */
+    for (int i = 0; i < 512; i++)
+        l1_t[child_tid][i] = 0;
+    for (int i = 0; i < 512; i++)
+        l0_u_t[child_tid][i] = 0;
+
+    /* Copy kernel mappings from parent:
+     * l1[1] -> l0_k (kernel image)
+     * l1[8] -> l0_frames (frame pool)
+     * l1[0] -> l1_m (UART) - this is shared
+     * l1[4] -> l0_u_child (child's user window) */
+    l1_t[child_tid][1] = l1_t[parent_tid][1]; /* l0_k */
+    l1_t[child_tid][8] = l1_t[parent_tid][8]; /* l0_frames */
+    l1_t[child_tid][0] = l1_t[parent_tid][0]; /* l1_m (shared UART) */
+    l1_t[child_tid][4] = l0_u_child; /* child's own user window */
+
+    /* Allocate and zero child's root page table */
+    if (child_tid >= (unsigned long)V2_CAP_THREADS)
+        return 0;
+
+    /* Clear root page table for child */
+    for (int i = 0; i < 512; i++)
+        root_pt_t[child_tid][i] = 0;
+
+    /* Point root[1] -> l1_child (covers 0x40000000..0x7FFFFFFF) */
+    root_pt_t[child_tid][1] = (l1_child >> 12) | PTE_V;
+
+    return (unsigned long)root_pt_t[child_tid] >> 12;
 }
 
 static void enter_thread(int id) {
@@ -722,6 +765,58 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 rc = v2_elf_load(elf_data, elf_size, &caps, (unsigned long)cur, &entry, &brk);
                 if (rc == V2_OK) {
                     rc = (int)entry; /* return entry point as rc */
+                }
+                break;
+            }
+            case V2_INV_SPAWN: {
+                /* SPAWN (a1=frame_src, a2=phdrs_ptr, a3=phdr_count):
+                 * Create a new thread, allocate its VSpace, load ELF from initrd frame pool.
+                 * a1 = source frame id (from initrd frame pool)
+                 * a2 = user pointer to program headers (validated)
+                 * a3 = phdr count (validated)
+                 * Returns child tid in rc on success.
+                 * FAIL CLOSED: any validation error -> V2_ERR_INVALID. */
+                uint64_t entry, brk = 0;
+                if (a1 >= (uint64_t)V2_FRAMES_MAX) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                if (!v2_recv_range_ok((uintptr_t)a2, a3)) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                /* Find a free thread slot */
+                int child = -1;
+                for (int t = 0; t < (int)V2_CAP_THREADS; t++) {
+                    if (threads[t].state == T_DEAD) {
+                        child = t;
+                        break;
+                    }
+                }
+                if (child < 0) {
+                    rc = V2_ERR_OVERFLOW;
+                    break;
+                }
+                /* Build child's VSpace: copy current thread's page tables for kernel mappings,
+                 * allocate fresh l0_u for user mappings */
+                unsigned long child_root = build_child_vspace((unsigned long)cur, (unsigned long)child);
+                if (!child_root) {
+                    rc = V2_ERR_OVERFLOW;
+                    break;
+                }
+                threads[child].vspace_root_ppn = child_root;
+                threads[child].state = T_RUNNABLE;
+
+                /* Load ELF into child's VSpace */
+                const uint8_t *elf_data = (const uint8_t *)(V2_FRAME_PHYS_BASE + a1 * 4096UL);
+                size_t elf_size = 4096;
+                rc = v2_elf_load(elf_data, elf_size, &caps, (unsigned long)child, &entry, &brk);
+                if (rc == V2_OK) {
+                    threads[child].regs[2] = u_sp[child];
+                    threads[child].sepc = entry;
+                    rc = child; /* return child tid */
+                } else {
+                    threads[child].state = T_DEAD; /* cleanup on failure */
                 }
                 break;
             }
