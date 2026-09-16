@@ -334,8 +334,9 @@ static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
 #define V2_INV_ELF_CHECK 7
 #define V2_INV_ELF_MAP 8
 #define V2_INV_SPAWN 9
-#define V2_INV_WRITE 10
-#define V2_INV_READ 11
+#define V2_INV_FORK 10
+#define V2_INV_WRITE 11
+#define V2_INV_READ 12
 
 /* ---- User copy (both directions, V2_DESIGN Sec.4): validate-then-copy.
  * S runs with SUM=0; the window is opened only for the bounded copy loop
@@ -415,6 +416,56 @@ static unsigned long build_child_vspace(unsigned long parent_tid, unsigned long 
         root_pt_t[child_tid][i] = 0;
 
     /* Point root[1] -> l1_child (covers 0x40000000..0x7FFFFFFF) */
+    root_pt_t[child_tid][1] = (l1_child >> 12) | PTE_V;
+
+    return (unsigned long)root_pt_t[child_tid] >> 12;
+}
+
+/* Build child VSpace with COW: copy kernel mappings, mark user pages COW.
+ * Parent's user mappings (l1[4] -> l0_u) are copied with PTE_W cleared and
+ * a COW flag set (using PTE_D as COW indicator since D is not used for COW).
+ * On write fault, kernel allocates new frame and copies data. */
+static unsigned long build_child_vspace_cow(unsigned long parent_tid, unsigned long child_tid)
+{
+    unsigned long l1_child = (unsigned long)&l1_t[child_tid][0];
+    unsigned long l0_u_child = (unsigned long)&l0_u_t[child_tid][0];
+    unsigned long l0_u_parent = (unsigned long)&l0_u_t[parent_tid][0];
+
+    if (child_tid >= (unsigned long)V2_CAP_THREADS)
+        return 0;
+
+    /* Zero child's page tables */
+    for (int i = 0; i < 512; i++)
+        l1_t[child_tid][i] = 0;
+    for (int i = 0; i < 512; i++)
+        l0_u_t[child_tid][i] = 0;
+
+    /* Copy kernel mappings from parent (same as regular fork) */
+    l1_t[child_tid][1] = l1_t[parent_tid][1]; /* l0_k */
+    l1_t[child_tid][8] = l1_t[parent_tid][8]; /* l0_frames */
+    l1_t[child_tid][0] = l1_t[parent_tid][0]; /* l1_m (shared UART) */
+
+    /* Copy user page table (l0_u) with COW: clear PTE_W, set a COW indicator */
+    unsigned long *l0_u_child_ptr = (unsigned long *)l0_u_child;
+    unsigned long *l0_u_parent_ptr = (unsigned long *)l0_u_parent;
+    for (int i = 0; i < 512; i++) {
+        unsigned long pte = l0_u_parent_ptr[i];
+        if (pte & PTE_V) {
+            /* Clear PTE_W, set PTE_D as COW indicator (since D not used for COW pages) */
+            pte &= ~((1UL << 2) | (1UL << 3)); /* clear PTE_W and PTE_D */
+            pte |= (1UL << 3); /* set PTE_D as COW flag */
+            l0_u_child_ptr[i] = pte;
+        }
+    }
+    l1_t[child_tid][4] = l0_u_child; /* child's own user window */
+
+    /* Allocate and zero child's root page table */
+    if (child_tid >= (unsigned long)V2_CAP_THREADS)
+        return 0;
+
+    for (int i = 0; i < 512; i++)
+        root_pt_t[child_tid][i] = 0;
+
     root_pt_t[child_tid][1] = (l1_child >> 12) | PTE_V;
 
     return (unsigned long)root_pt_t[child_tid] >> 12;
@@ -818,6 +869,51 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 } else {
                     threads[child].state = T_DEAD; /* cleanup on failure */
                 }
+                break;
+            }
+            case V2_INV_FORK: {
+                /* FORK (no args):
+                 * Create a child thread with COW copy of parent's VSpace and caps.
+                 * Returns child tid to parent, 0 to child.
+                 * FAIL CLOSED: any error -> V2_ERR_INVALID/V2_ERR_OVERFLOW. */
+                int child = -1;
+                for (int t = 0; t < (int)V2_CAP_THREADS; t++) {
+                    if (threads[t].state == T_DEAD) {
+                        child = t;
+                        break;
+                    }
+                }
+                if (child < 0) {
+                    rc = V2_ERR_OVERFLOW;
+                    break;
+                }
+                /* Copy parent's caps table */
+                for (int s = 0; s < V2_CAP_SLOTS; s++)
+                    caps.caps[child][s] = caps.caps[cur][s];
+                /* Copy parent's mappings with COW: clear W, set COW bit (bit 8) */
+                for (int i = 0; i < V2_VPN_SLOTS; i++) {
+                    if (caps.vm[cur][i].valid) {
+                        caps.vm[child][i] = caps.vm[cur][i];
+                        caps.vm[child][i].rights &= ~V2_RIGHT_W; /* clear write for COW */
+                        caps.vm[child][i].rights |= (1UL << 8); /* COW flag in bit 8 */
+                    }
+                }
+                /* Build child VSpace with COW page tables */
+                unsigned long child_root = build_child_vspace_cow((unsigned long)cur, (unsigned long)child);
+                if (!child_root) {
+                    rc = V2_ERR_OVERFLOW;
+                    break;
+                }
+                threads[child].vspace_root_ppn = child_root;
+                threads[child].state = T_RUNNABLE;
+                threads[child].regs[2] = u_sp[child];
+                threads[child].sepc = threads[cur].sepc + 4; /* return after ecall */
+                /* Copy registers (parent's a0..a7, sp, etc.) */
+                for (int r = 0; r < 32; r++)
+                    threads[child].regs[r] = threads[cur].regs[r];
+                threads[child].regs[10] = 0; /* child returns 0 in a0 */
+                threads[child].regs[11] = cur; /* child gets parent tid in a1 */
+                rc = child; /* parent returns child tid in a0 */
                 break;
             }
             case V2_INV_WRITE: {

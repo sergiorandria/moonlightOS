@@ -32,8 +32,9 @@
 #define V2_INV_ELF_CHECK 7
 #define V2_INV_ELF_MAP 8
 #define V2_INV_SPAWN 9
-#define V2_INV_WRITE 10
-#define V2_INV_READ 11
+#define V2_INV_FORK 10
+#define V2_INV_WRITE 11
+#define V2_INV_READ 12
 
 #define V2_INV_MAP 3
 #define V2_INV_UNMAP 4
