@@ -28,8 +28,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define V2_FRAMES_MAX 8
-#define V2_CAP_SLOTS 16
+#define V2_FRAMES_MAX 16
+#define V2_CAP_SLOTS 32
 #define V2_CAP_THREADS 8
 #define V2_VPN_SLOTS 32
 

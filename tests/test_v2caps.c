@@ -43,16 +43,16 @@ int main(void) {
     int ws[8];
     unsigned long n;
 
-    /* Init: thread 0 holds root caps on frames 0..7, rest empty. */
+    /* Init: thread 0 holds root caps on frames 0..15 (V2_FRAMES_MAX=16), rest empty. */
     v2_caps_init(&st, 2);
     CHECK(st.nthreads == 2);
-    for (i = 0; i < 8; i++) {
+    for (i = 0; i < 16; i++) {
         CHECK(v2_has_cap(&st, 0, i));
         CHECK(st.caps[0][i].root);
         CHECK(st.caps[0][i].obj == i);
         CHECK(st.caps[0][i].rights == V2_RIGHT_RW);
     }
-    for (i = 8; i < 16; i++)
+    for (i = 16; i < 16; i++)
         CHECK(!v2_has_cap(&st, 0, i));
     for (i = 0; i < 16; i++)
         CHECK(!v2_has_cap(&st, 1, i));
@@ -119,10 +119,10 @@ int main(void) {
 
     /* Mint touches only the actor (d_mint_local / d_no_grant_no_gain). */
     snap = st;
-    CHECK(v2_mint(&st, 0, 1, V2_RIGHT_R, 8) == V2_OK);
+    CHECK(v2_mint(&st, 0, 1, V2_RIGHT_R, 16) == V2_OK);
     for (i = 0; i < 16; i++)
         CHECK(caps_equal_slot(&st, &snap, 1, i));
-    CHECK(!caps_equal_slot(&st, &snap, 0, 8)); /* actor's own slot changed */
+    CHECK(!caps_equal_slot(&st, &snap, 0, 16)); /* actor's own slot changed */
 
     /* Mapping table full is fail-closed (implementation bound). */
     v2_caps_init(&st, 2);

@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include "ipc.h"
 #include "caps.h"
+#include "initrd.h"
 #include "elf.h"
 
 /* ---- SBI (legacy EIDs; OpenSBI serves M-mode) ---- */
@@ -133,7 +134,7 @@ static void pagetable_init(void) {
 
 /* ---- Frame pool (bitmap, 1=free, 0=in-use) ---- */
 #define V2_FRAME_TOTAL (V2_FRAMES_MAX)
-static uint8_t frame_bitmap[V2_FRAME_TOTAL]; /* 1=free, 0=used */
+uint8_t frame_bitmap[V2_FRAME_TOTAL]; /* 1=free, 0=used */
 
 static void frame_pool_init(void) {
     /* Frame 0 stays reserved for the kernel (its page tables live in the
@@ -1060,6 +1061,7 @@ void kboot(void) {
     kputs("v2 stage2: S-mode entry (OpenSBI)\n");
     v2_ep_init(&ep0);
     frame_pool_init();
+    initrd_init();
     v2_caps_init(&caps, NTHREADS);
     kputs("[caps] init: thread 0 has root caps to all frames\n");
     user_stacks_init(); /* pre-MMU: U stacks need no SUM games */
