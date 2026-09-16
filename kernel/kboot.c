@@ -335,8 +335,9 @@ static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
 #define V2_INV_ELF_MAP 8
 #define V2_INV_SPAWN 9
 #define V2_INV_FORK 10
-#define V2_INV_WRITE 11
-#define V2_INV_READ 12
+#define V2_INV_EXEC 11
+#define V2_INV_WRITE 12
+#define V2_INV_READ 13
 
 /* ---- User copy (both directions, V2_DESIGN Sec.4): validate-then-copy.
  * S runs with SUM=0; the window is opened only for the bounded copy loop
@@ -914,6 +915,52 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 threads[child].regs[10] = 0; /* child returns 0 in a0 */
                 threads[child].regs[11] = cur; /* child gets parent tid in a1 */
                 rc = child; /* parent returns child tid in a0 */
+                break;
+            }
+            case V2_INV_EXEC: {
+                /* EXEC (a1=frame_src, a2=phdrs_ptr, a3=phdr_count):
+                 * Replace current thread's image: unmap all user mappings, free frames,
+                 * clear user caps, load new ELF from initrd frame pool.
+                 * a1 = source frame id (from initrd frame pool)
+                 * a2 = user pointer to program headers (validated)
+                 * a3 = phdr count (validated)
+                 * Returns 0 on success.
+                 * FAIL CLOSED: any validation error -> V2_ERR_INVALID. */
+                if (a1 >= (uint64_t)V2_FRAMES_MAX) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                if (!v2_recv_range_ok((uintptr_t)a2, a3)) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                /* Unmap all user mappings and free frames */
+                for (int i = 0; i < V2_VPN_SLOTS; i++) {
+                    if (caps.vm[cur][i].valid) {
+                        /* Free the frame back to pool */
+                        frame_free(caps.vm[cur][i].frame);
+                        caps.vm[cur][i].valid = 0;
+                    }
+                }
+                /* Clear user caps (slots 0..V2_CAP_SLOTS-1, keep root caps) */
+                for (int s = 0; s < V2_CAP_SLOTS; s++) {
+                    if (!caps.caps[cur][s].root)
+                        caps.caps[cur][s].valid = 0;
+                }
+                /* Load new ELF into current VSpace */
+                const uint8_t *elf_data = (const uint8_t *)(V2_FRAME_PHYS_BASE + a1 * 4096UL);
+                size_t elf_size = 4096;
+                uint64_t entry, brk = 0;
+                rc = v2_elf_load(elf_data, elf_size, &caps, (unsigned long)cur, &entry, &brk);
+                if (rc == V2_OK) {
+                    threads[cur].regs[2] = u_sp[cur];
+                    threads[cur].sepc = entry;
+                    /* Reset registers to clean state */
+                    for (int r = 0; r < 32; r++)
+                        threads[cur].regs[r] = 0;
+                    threads[cur].regs[2] = u_sp[cur];
+                    rc = 0; /* return 0 on success */
+                }
                 break;
             }
             case V2_INV_WRITE: {
