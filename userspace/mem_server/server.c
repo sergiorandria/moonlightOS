@@ -198,6 +198,26 @@ void mem_server_run(void) {
             msg.words[1] = mem_pressure();
             msg.length = 2;
             moonlight_call(ep, &msg);
+        } else if (msg.label == 4) {
+            /* ELF frame request: words[0] = index of ELF in initrd (0=first).
+             * Returns frame ID in words[0] or error in words[0]. */
+            uint32_t idx = (uint32_t)msg.words[0];
+            /* For now, initrd is a simple array of ELF frames starting at frame 1.
+             * Frame 0 is reserved, frame 1 = first ELF, etc. */
+            uint32_t frame_id = idx + 1;
+            if (frame_id >= 8) { /* V2_FRAMES_MAX = 8 */
+                msg.words[0] = (uint64_t)(int64_t)-1;
+            } else {
+                msg.words[0] = (uint64_t)frame_id;
+                /* Cap is already in next_frame_slot-1 from alloc, but ELF frames
+                 * are pre-allocated. For simplicity, we return the frame ID
+                 * and the caller must have the cap. In a real impl, we'd
+                 * retype the initrd frame here. */
+                msg.caps = 1;
+                msg.cap_ptrs[0] = frame_id;
+            }
+            msg.length = 1;
+            moonlight_call(ep, &msg);
         }
     }
 }
