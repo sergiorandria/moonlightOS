@@ -11,7 +11,7 @@ _Static_assert(sizeof(uintptr_t)==8, "uintptr_t is not 8 bytes");' | clang --tar
 echo "[1b] userspace servers + shell (host sim)"
 gcc $ABI -o /tmp/test_sched_server tests/test_sched_server.c userspace/sched_server/server.c && /tmp/test_sched_server || echo "FAIL: test_sched_server"
 if gcc $ABI -o /tmp/test_vfs tests/test_vfs.c userspace/vfs_server/server.c 2>&1; then /tmp/test_vfs || echo "FAIL: test_vfs run failed"; else echo "FAIL: test_vfs compile failed"; fi
-gcc -Wall -Wextra -o /tmp/test_shell tests/test_shell.c userspace/sh/shell.c && /tmp/test_shell || echo "FAIL: test_shell"
+gcc -Wall -Wextra -o /tmp/test_shell tests/test_shell.c userspace/sh/shell.c userspace/lib/moonlight.c && /tmp/test_shell || echo "FAIL: test_shell"
 echo "[1c] userspace drivers host-sim (frozen v1 ABI headers in userspace/abi)"
 gcc -Wall -Wextra -Werror $ABI -o /tmp/test_uart tests/test_uart.c && /tmp/test_uart || echo "FAIL: test_uart"
 gcc -Wall -Wextra -Werror $ABI -o /tmp/test_plic tests/test_plic.c && /tmp/test_plic || echo "FAIL: test_plic"

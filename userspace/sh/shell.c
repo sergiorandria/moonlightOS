@@ -219,6 +219,10 @@ static void shell_history_show(void) {
 static void shell_help_topic(const char *topic) {
     if (shell_streq(topic, "echo")) {
         shell_puts("echo [-n] <text>: print text (+ newline unless -n)\n");
+    } else if (shell_streq(topic, "exec")) {
+        shell_puts("exec <path> [args...]: replace shell with program from initrd\n");
+    } else if (shell_streq(topic, "echo")) {
+        shell_puts("echo [-n] <text>: print text (+ newline unless -n)\n");
     } else if (shell_streq(topic, "hex")) {
         shell_puts("hex <text>: hexdump the argument bytes\n");
     } else if (shell_streq(topic, "sleep")) {
@@ -620,6 +624,83 @@ void shell_exec_line(const char *line) {
                 shell_puts("rm: denied (owner-only, must be closed): ");
                 shell_puts(name);
                 moonlight_putc('\n');
+            }
+        }
+    } else if (shell_strncmp(cmd, "exec", 4) == 0 && (cmd[4] == '\0' || cmd[4] == ' ')) {
+        const char *t = cmd + 4;
+        while (*t == ' ') t++;
+        if (*t == '\0') {
+            shell_puts("usage: exec <path> [args...]\n");
+        } else {
+            /* Parse path and args */
+            char path[64];
+            int i = 0;
+            while (*t && *t != ' ' && i < 63) {
+                path[i++] = *t++;
+            }
+            path[i] = '\0';
+            while (*t == ' ') t++;
+            (void)t; /* suppress unused warning */
+            
+            shell_puts("exec: loading ");
+            shell_puts(path);
+            shell_puts("...\n");
+            
+            /* Open file via VFS */
+            if (!vfs_open) {
+                shell_puts("exec: VFS not available\n");
+            } else {
+                int fd = vfs_open(VFS_SHELL_CLIENT, path, VFS_R);
+                if (fd < 0) {
+                    shell_puts("exec: cannot open ");
+                    shell_puts(path);
+                    shell_puts("\n");
+                } else {
+                    /* Get file size */
+                    unsigned size = 0;
+                    vfs_stat(VFS_SHELL_CLIENT, path, &size, NULL);
+                    
+                    /* Request ELF frame from mem_server (label 4) */
+                    struct { uint32_t label, length, caps; uint64_t words[30]; uint32_t cap_ptrs[3]; } msg;
+                    msg.label = 4;
+                    msg.words[0] = 0; /* first ELF in initrd */
+                    msg.length = 1;
+                    int rc = moonlight_call(1, &msg); /* endpoint 1 = mem_server */
+                    
+                    if (rc == 0 && (int64_t)msg.words[0] >= 0) {
+                        /* Read program headers from file */
+                        /* For simplicity, assume ELF is at offset 0 with standard layout */
+                        /* Read ELF header to get phoff, phnum */
+                        char elf_buf[64];
+                        int r = vfs_read(VFS_SHELL_CLIENT, fd, elf_buf, 64);
+                        if (r >= 64) {
+                            uint64_t *eh = (uint64_t*)elf_buf;
+                            if (eh[0] == 0x464C457F) { /* ELF magic */
+                                
+                                /* For simplicity, just use frame 0 (first ELF in initrd) */
+                                /* Call V2_INV_EXEC */
+                                struct { uint32_t label, length, caps; uint64_t words[30]; uint32_t cap_ptrs[3]; } exec_msg;
+                                exec_msg.label = 7;
+                                exec_msg.length = 3;
+                                exec_msg.caps = 0;
+                                exec_msg.words[0] = 11;
+                                exec_msg.words[1] = 0;
+                                exec_msg.words[2] = 0;
+                                rc = moonlight_call(7, &exec_msg);
+                                
+                                if (rc == 0) {
+                                    shell_puts("exec: image replaced\n");
+                                    return; /* Should not return */
+                                } else {
+                                    shell_puts("exec: V2_INV_EXEC failed\n");
+                                }
+                            } else {
+                                shell_puts("exec: invalid ELF\n");
+                            }
+                        }
+                    }
+                    vfs_close(VFS_SHELL_CLIENT, fd);
+                }
             }
         }
     } else if (shell_streq(cmd, "poweroff") || shell_streq(cmd, "reboot")) {

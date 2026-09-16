@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <stdint.h>
 
 static char out_buf[4096];
 static int out_len;
@@ -11,7 +12,6 @@ int moonlight_putc(char c) {
     return c;
 }
 int moonlight_getc(void) { return -1; }
-int moonlight_yield(void) { return 0; }
 
 void shell_exec_line(const char *line);
 void shell_test_reset(void);
