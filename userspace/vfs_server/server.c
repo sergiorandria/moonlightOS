@@ -655,10 +655,27 @@ void vfs_server_run(uint32_t ep) {
             msg.words[2] = used;
             msg.length = 3;
             moonlight_call(ep, &msg);
-        } else {
+} else {
             msg.words[0] = (uint64_t)(uint32_t)-1;
             msg.length = 1;
             moonlight_call(ep, &msg);
         }
     }
+}
+
+/* Demo seed for the in-kernel shell build (called from shell_main via a
+ * weak symbol; the bare moonsh.elf build has no VFS server so the call is
+ * skipped there). Registers a placeholder "sh" file on a demo pool frame.
+ * NOTE: this is NOT the initrd: the initrd blob lives in the kernel image
+ * (.data) and is looked up via initrd_lookup(), it never occupies pool
+ * frames. A production console server would populate entries from the
+ * initrd TOC instead of hardcoding one frame. */
+void vfs_server_init(void) {
+    /* moonsh (shell) - frame 1 */
+    {
+        unsigned cap = 1; /* frame 1 in initrd */
+        unsigned size = 4096; /* 1 frame = 4096 bytes (ELF is small) */
+        vfs_create(VFS_SHELL_CLIENT, "sh", cap, size, 0, VFS_READ);
+    }
+    /* Add more binaries here as they're added to initrd */
 }

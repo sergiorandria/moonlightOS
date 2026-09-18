@@ -49,6 +49,7 @@ __attribute__((weak)) int vfs_close(unsigned caller, int fd);
 __attribute__((weak)) int vfs_unlink(unsigned caller, const char *name);
 __attribute__((weak)) int vfs_stat(unsigned caller, const char *name, unsigned *size_out, unsigned *used_out);
 __attribute__((weak)) int vfs_list(int *cursor, char *name_out, unsigned *size_out, unsigned *used_out);
+__attribute__((weak)) void vfs_server_init(void);
 #define VFS_SHELL_CLIENT 128u
 #define VFS_R 1u
 #define VFS_W 2u
@@ -802,6 +803,11 @@ static void rd_delete_at(void) {
 }
 
 void shell_main(void) {
+    /* Weak: only present in the in-kernel build (vfs_server linked).
+     * The bare moonsh.elf has no VFS server; an unguarded call would
+     * jump to address 0. */
+    if (vfs_server_init)
+        vfs_server_init();
     shell_puts("\nmoonsh 0.2 on MoonlightOS (type 'help')\n");
     for (;;) {
         int esc = 0; /* 0 normal, 1 got ESC, 2 got ESC [, 3 got ESC [ <digits> */

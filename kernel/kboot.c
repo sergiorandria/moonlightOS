@@ -176,7 +176,8 @@ static void frame_zero(int f) {
  * user VA 0x80800000 + vpn*4096 (l1_t[t][4] -> l0_u_t[t], VPN[1]=4).
  * These are kernel-enforcement helpers: they run ONLY after the caps.h
  * model op returned V2_OK, so they never make a PTE state change on a
- * rejected op (fail closed). W^X: no PTE_X is ever set.
+ * rejected op (fail closed). W^X: X is set only for execute segments;
+ * W+X is rejected by the model and dropped defensively here.
  *
  * A 0-rights mapping is skipped (the slot stays 0 = unmapped), the
  * faithful hardware image of "no access": a leaf PTE with V=1 and
@@ -194,9 +195,12 @@ static void v2_pte_install(unsigned long t, unsigned long vpn,
         return;
     if (rights == 0)
         return; /* R=W=X=0 leaf is the reserved table-pointer encoding */
+    /* W^X: X is installed for execute segments; W+X can never arrive here
+     * (rejected by mint/map/ELF validation), and is dropped defensively. */
     flags = PTE_U | PTE_A |
             ((rights & V2_RIGHT_W) ? (PTE_W | PTE_D) : 0) |
-            ((rights & V2_RIGHT_R) ? PTE_R : 0);
+            ((rights & V2_RIGHT_R) ? PTE_R : 0) |
+            (((rights & V2_RIGHT_X) && !(rights & V2_RIGHT_W)) ? PTE_X : 0);
     l0_u_t[t][vpn] = pte_leaf(V2_FRAME_PHYS_BASE + frame * 4096UL, flags);
 }
 
@@ -286,7 +290,7 @@ typedef struct {
     uint64_t ipc_cap;
     uint64_t notify;   /* pending signal bits (OR-accumulate) */
     int wait_kind;     /* V2_WK_* : what this thread is blocked in */
-    uint64_t vspace_root_ppn; /* PPN of thread's root page table */
+    uint64_t vspace_root_ppn; /* satp value (mode 8 | root PPN); see v2_satp_of */
 } uctx_t;
 
 #define T_RUNNABLE 0
@@ -382,95 +386,85 @@ static int pick_next(void) {
     return -1;
 }
 
-/* Build child VSpace: copy kernel mappings (l1_t, l0_k, l0_frames, l1_m)
- * from parent, allocate fresh l0_u for user mappings, and fresh l1_t for child.
- * Returns child's root PPN or 0 on failure. */
-static unsigned long build_child_vspace(unsigned long parent_tid, unsigned long child_tid)
+/* Sync hardware PTEs with the caps model for thread t: (re)install every
+ * valid mapping into l0_u_t[t] and fence once. ELF loads record model
+ * mappings without touching PTEs, so every load path calls this before
+ * the thread can run. Reinstalling existing entries is idempotent.
+ * bound: V2_VPN_SLOTS. */
+static void v2_pte_sync(unsigned long t)
 {
-    unsigned long l1_child = (unsigned long)&l1_t[child_tid][0];
-    unsigned long l0_u_child = (unsigned long)&l0_u_t[child_tid][0];
-
-    if (child_tid >= (unsigned long)V2_CAP_THREADS)
-        return 0;
-
-    /* Zero child's page tables */
-    for (int i = 0; i < 512; i++)
-        l1_t[child_tid][i] = 0;
-    for (int i = 0; i < 512; i++)
-        l0_u_t[child_tid][i] = 0;
-
-    /* Copy kernel mappings from parent:
-     * l1[1] -> l0_k (kernel image)
-     * l1[8] -> l0_frames (frame pool)
-     * l1[0] -> l1_m (UART) - this is shared
-     * l1[4] -> l0_u_child (child's user window) */
-    l1_t[child_tid][1] = l1_t[parent_tid][1]; /* l0_k */
-    l1_t[child_tid][8] = l1_t[parent_tid][8]; /* l0_frames */
-    l1_t[child_tid][0] = l1_t[parent_tid][0]; /* l1_m (shared UART) */
-    l1_t[child_tid][4] = l0_u_child; /* child's own user window */
-
-    /* Allocate and zero child's root page table */
-    if (child_tid >= (unsigned long)V2_CAP_THREADS)
-        return 0;
-
-    /* Clear root page table for child */
-    for (int i = 0; i < 512; i++)
-        root_pt_t[child_tid][i] = 0;
-
-    /* Point root[1] -> l1_child (covers 0x40000000..0x7FFFFFFF) */
-    root_pt_t[child_tid][1] = (l1_child >> 12) | PTE_V;
-
-    return (unsigned long)root_pt_t[child_tid] >> 12;
+    int i;
+    if (t >= (unsigned long)V2_CAP_THREADS)
+        return;
+    for (i = 0; i < V2_VPN_SLOTS; i++) {
+        if (caps.vm[t][i].valid)
+            v2_pte_install(t, caps.vm[t][i].vpn, caps.vm[t][i].frame,
+                           caps.vm[t][i].rights);
+    }
+    v2_sfence_all();
 }
 
-/* Build child VSpace with COW: copy kernel mappings, mark user pages COW.
- * Parent's user mappings (l1[4] -> l0_u) are copied with PTE_W cleared and
- * a COW flag set (using PTE_D as COW indicator since D is not used for COW).
- * On write fault, kernel allocates new frame and copies data. */
-static unsigned long build_child_vspace_cow(unsigned long parent_tid, unsigned long child_tid)
+/* satp value (mode 8 / Sv39 + root PPN) for thread t's tables. The
+ * uctx_t.vspace_root_ppn field always holds this full satp encoding
+ * (not a bare PPN); enter_thread loads it straight into satp. */
+static uint64_t v2_satp_of(unsigned long t)
 {
-    unsigned long l1_child = (unsigned long)&l1_t[child_tid][0];
-    unsigned long l0_u_child = (unsigned long)&l0_u_t[child_tid][0];
-    unsigned long l0_u_parent = (unsigned long)&l0_u_t[parent_tid][0];
+    return (8UL << 60) |
+           ((((uintptr_t)root_pt_t[t] >> 12) & 0xFFFFFFFFFFFUL));
+}
 
-    if (child_tid >= (unsigned long)V2_CAP_THREADS)
+/* Build child VSpace: wire the child's tables exactly like pagetable_init
+ * wires each thread's tables (shared kernel image, shared frame window,
+ * shared UART; the child's OWN l0_u for its user window), and return the
+ * child's satp value (0 on bad tid). The child's l0_u starts zeroed; the
+ * caller installs mappings (v2_pte_sync) afterwards.
+ * bound: fixed 512-entry table loops. */
+static unsigned long build_child_vspace(unsigned long parent_tid, unsigned long child_tid)
+{
+    if (child_tid >= (unsigned long)NTHREADS ||
+        parent_tid >= (unsigned long)NTHREADS)
         return 0;
 
-    /* Zero child's page tables */
+    /* Zero child's tables */
     for (int i = 0; i < 512; i++)
         l1_t[child_tid][i] = 0;
     for (int i = 0; i < 512; i++)
         l0_u_t[child_tid][i] = 0;
-
-    /* Copy kernel mappings from parent (same as regular fork) */
-    l1_t[child_tid][1] = l1_t[parent_tid][1]; /* l0_k */
-    l1_t[child_tid][8] = l1_t[parent_tid][8]; /* l0_frames */
-    l1_t[child_tid][0] = l1_t[parent_tid][0]; /* l1_m (shared UART) */
-
-    /* Copy user page table (l0_u) with COW: clear PTE_W, set a COW indicator */
-    unsigned long *l0_u_child_ptr = (unsigned long *)l0_u_child;
-    unsigned long *l0_u_parent_ptr = (unsigned long *)l0_u_parent;
-    for (int i = 0; i < 512; i++) {
-        unsigned long pte = l0_u_parent_ptr[i];
-        if (pte & PTE_V) {
-            /* Clear PTE_W, set PTE_D as COW indicator (since D not used for COW pages) */
-            pte &= ~((1UL << 2) | (1UL << 3)); /* clear PTE_W and PTE_D */
-            pte |= (1UL << 3); /* set PTE_D as COW flag */
-            l0_u_child_ptr[i] = pte;
-        }
-    }
-    l1_t[child_tid][4] = l0_u_child; /* child's own user window */
-
-    /* Allocate and zero child's root page table */
-    if (child_tid >= (unsigned long)V2_CAP_THREADS)
-        return 0;
-
     for (int i = 0; i < 512; i++)
         root_pt_t[child_tid][i] = 0;
 
-    root_pt_t[child_tid][1] = (l1_child >> 12) | PTE_V;
+    /* Mirror pagetable_init's per-thread wiring (same indices, same
+     * pte_table encoding): root[0] -> shared UART, root[2] -> own l1. */
+    l1_t[child_tid][1] = l1_t[parent_tid][1]; /* l0_k: kernel image */
+    l1_t[child_tid][8] = l1_t[parent_tid][8]; /* l0_frames: frame pool */
+    l1_t[child_tid][4] = pte_table(l0_u_t[child_tid]); /* own user window */
+    root_pt_t[child_tid][0] = pte_table(l1_m); /* shared UART */
+    root_pt_t[child_tid][2] = pte_table(l1_t[child_tid]);
 
-    return (unsigned long)root_pt_t[child_tid] >> 12;
+    return v2_satp_of(child_tid);
+}
+
+/* COW write-protect: drop PTE_W from every W-mapping's hardware PTE in
+ * BOTH parent and child tables (the caps model keeps W rights on both
+ * sides and stays the authority). A later store faults (R-only PTE) and
+ * the fault handler consults the model to authorize the break. No flag
+ * bits are hidden in PTEs or rights, so there is nothing that can collide
+ * with legitimate RX execute pages.
+ * bound: V2_VPN_SLOTS. */
+static void v2_cow_write_protect(unsigned long parent_tid,
+                                 unsigned long child_tid)
+{
+    for (int i = 0; i < V2_VPN_SLOTS; i++) {
+        if (caps.vm[parent_tid][i].valid &&
+            (caps.vm[parent_tid][i].rights & V2_RIGHT_W)) {
+            unsigned long vpn = caps.vm[parent_tid][i].vpn;
+            if (vpn >= (unsigned long)V2_VPN_SLOTS)
+                continue;
+            l0_u_t[parent_tid][vpn] &= ~(PTE_W | PTE_D);
+            l0_u_t[child_tid][vpn] &= ~(PTE_W | PTE_D);
+        }
+    }
+    v2_sfence_all();
 }
 
 static void enter_thread(int id) {
@@ -796,51 +790,56 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 rc = v2_elf_ok((int)a1, (const v2_phdr_t *)a2, a3) ? V2_OK : V2_ERR_INVALID;
                 break;
             case V2_INV_ELF_MAP: {
-                /* ELF_MAP (a1=frame_src, a2=phdrs_ptr, a3=phdr_count):
-                 * Load ELF from frame pool (initrd) into current VSpace.
-                 * a1 = source frame id (from initrd frame pool)
-                 * a2 = user pointer to program headers (validated)
-                 * a3 = phdr count (validated)
+                /* ELF_MAP (a1=initrd index, a2/a3 reserved):
+                 * Load an initrd ELF into the caller's VSpace.
+                 * a1 = initrd index (0 = mem_server.elf, see mkinitrd.sh)
+                 * a2/a3 are reserved and must be zero (unused).
                  * Returns entry point in rc (a0 on return).
                  * FAIL CLOSED: any validation error -> V2_ERR_INVALID. */
+                const uint8_t *elf_data;
+                uint32_t elf_size;
                 uint64_t entry, brk = 0;
-                if (a1 >= (uint64_t)V2_FRAMES_MAX) {
+                if (!((a2 == 0 && a3 == 0) ||
+                      v2_recv_range_ok((uintptr_t)a2, a3))) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (!v2_recv_range_ok((uintptr_t)a2, a3)) {
+                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                /* Source frame is in the initrd frame pool (read-only for this op) */
-                const uint8_t *elf_data = (const uint8_t *)(V2_FRAME_PHYS_BASE + a1 * 4096UL);
-                size_t elf_size = 4096; /* assume one frame for now */
-                rc = v2_elf_load(elf_data, elf_size, &caps, (unsigned long)cur, &entry, &brk);
+                rc = v2_elf_load(elf_data, (size_t)elf_size, &caps,
+                                 (unsigned long)cur, &entry, &brk);
                 if (rc == V2_OK) {
+                    v2_pte_sync((unsigned long)cur);
                     rc = (int)entry; /* return entry point as rc */
                 }
                 break;
             }
             case V2_INV_SPAWN: {
-                /* SPAWN (a1=frame_src, a2=phdrs_ptr, a3=phdr_count):
-                 * Create a new thread, allocate its VSpace, load ELF from initrd frame pool.
-                 * a1 = source frame id (from initrd frame pool)
-                 * a2 = user pointer to program headers (validated)
-                 * a3 = phdr count (validated)
+                /* SPAWN (a1=initrd index, a2/a3 reserved):
+                 * Create a new thread, allocate its VSpace, load an
+                 * initrd ELF into it.
+                 * a1 = initrd index (0 = mem_server.elf, see mkinitrd.sh)
+                 * a2/a3 are reserved and must be zero (unused).
                  * Returns child tid in rc on success.
                  * FAIL CLOSED: any validation error -> V2_ERR_INVALID. */
+                const uint8_t *elf_data;
+                uint32_t elf_size;
                 uint64_t entry, brk = 0;
-                if (a1 >= (uint64_t)V2_FRAMES_MAX) {
+                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (!v2_recv_range_ok((uintptr_t)a2, a3)) {
+                if (!((a2 == 0 && a3 == 0) ||
+                      v2_recv_range_ok((uintptr_t)a2, a3))) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                /* Find a free thread slot */
+                /* Find a free thread slot (threads[] has NTHREADS entries;
+                 * V2_CAP_THREADS is the model's bound, not ours). */
                 int child = -1;
-                for (int t = 0; t < (int)V2_CAP_THREADS; t++) {
+                for (int t = 0; t < NTHREADS; t++) {
                     if (threads[t].state == T_DEAD) {
                         child = t;
                         break;
@@ -850,6 +849,12 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     rc = V2_ERR_OVERFLOW;
                     break;
                 }
+                /* A reused slot may hold a previous life's caps/mappings:
+                 * clear them so the load starts fresh (fail closed). */
+                for (int s = 0; s < V2_CAP_SLOTS; s++)
+                    caps.caps[child][s].valid = 0;
+                for (int i = 0; i < V2_VPN_SLOTS; i++)
+                    caps.vm[child][i].valid = 0;
                 /* Build child's VSpace: copy current thread's page tables for kernel mappings,
                  * allocate fresh l0_u for user mappings */
                 unsigned long child_root = build_child_vspace((unsigned long)cur, (unsigned long)child);
@@ -858,28 +863,43 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     break;
                 }
                 threads[child].vspace_root_ppn = child_root;
+                /* Fresh IPC/notify state: a reused slot must not inherit
+                 * the previous life's blocked sends or pending signals. */
+                threads[child].ipc_ptr = 0;
+                threads[child].ipc_cap = 0;
+                threads[child].notify = 0;
+                threads[child].wait_kind = V2_WK_NONE;
+                /* Fresh registers: no stale-word leak into the new image. */
+                for (int r = 0; r < 32; r++)
+                    threads[child].regs[r] = 0;
                 threads[child].state = T_RUNNABLE;
 
                 /* Load ELF into child's VSpace */
-                const uint8_t *elf_data = (const uint8_t *)(V2_FRAME_PHYS_BASE + a1 * 4096UL);
-                size_t elf_size = 4096;
-                rc = v2_elf_load(elf_data, elf_size, &caps, (unsigned long)child, &entry, &brk);
-                if (rc == V2_OK) {
+                rc = v2_elf_load(elf_data, (size_t)elf_size, &caps, (unsigned long)child, &entry, &brk);
+                if (rc == V2_OK && entry != 0) {
+                    v2_pte_sync((unsigned long)child);
                     threads[child].regs[2] = u_sp[child];
                     threads[child].sepc = entry;
                     rc = child; /* return child tid */
                 } else {
                     threads[child].state = T_DEAD; /* cleanup on failure */
+                    if (rc == V2_OK)
+                        rc = V2_ERR_INVALID;
                 }
                 break;
             }
             case V2_INV_FORK: {
                 /* FORK (no args):
-                 * Create a child thread with COW copy of parent's VSpace and caps.
+                 * Create a child thread with a COW copy of the parent's
+                 * VSpace and caps. The caps model keeps full rights on
+                 * both sides (it stays the authority); only the hardware
+                 * PTEs lose W (see v2_cow_write_protect), so the first
+                 * store to a shared page faults and the handler breaks
+                 * the share for the faulting thread only.
                  * Returns child tid to parent, 0 to child.
                  * FAIL CLOSED: any error -> V2_ERR_INVALID/V2_ERR_OVERFLOW. */
                 int child = -1;
-                for (int t = 0; t < (int)V2_CAP_THREADS; t++) {
+                for (int t = 0; t < NTHREADS; t++) {
                     if (threads[t].state == T_DEAD) {
                         child = t;
                         break;
@@ -889,24 +909,38 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     rc = V2_ERR_OVERFLOW;
                     break;
                 }
-                /* Copy parent's caps table */
-                for (int s = 0; s < V2_CAP_SLOTS; s++)
+                /* Copy parent's caps table. The child must not inherit
+                 * allocator authority: root bits stay with the parent. */
+                for (int s = 0; s < V2_CAP_SLOTS; s++) {
                     caps.caps[child][s] = caps.caps[cur][s];
-                /* Copy parent's mappings with COW: clear W, set COW bit (bit 8) */
-                for (int i = 0; i < V2_VPN_SLOTS; i++) {
-                    if (caps.vm[cur][i].valid) {
-                        caps.vm[child][i] = caps.vm[cur][i];
-                        caps.vm[child][i].rights &= ~V2_RIGHT_W; /* clear write for COW */
-                        caps.vm[child][i].rights |= (1UL << 8); /* COW flag in bit 8 */
-                    }
+                    caps.caps[child][s].root = 0;
                 }
-                /* Build child VSpace with COW page tables */
-                unsigned long child_root = build_child_vspace_cow((unsigned long)cur, (unsigned long)child);
+                /* Copy parent's mappings verbatim (rights intact: the
+                 * model is the COW authority, not a rights bit). */
+                for (int i = 0; i < V2_VPN_SLOTS; i++)
+                    caps.vm[child][i] = caps.vm[cur][i];
+                /* Build child tables, install the shared mappings, then
+                 * write-protect both sides in hardware. */
+                unsigned long child_root = build_child_vspace((unsigned long)cur, (unsigned long)child);
                 if (!child_root) {
                     rc = V2_ERR_OVERFLOW;
                     break;
                 }
                 threads[child].vspace_root_ppn = child_root;
+                for (int i = 0; i < V2_VPN_SLOTS; i++) {
+                    if (caps.vm[child][i].valid)
+                        v2_pte_install((unsigned long)child,
+                                       caps.vm[child][i].vpn,
+                                       caps.vm[child][i].frame,
+                                       caps.vm[child][i].rights);
+                }
+                v2_cow_write_protect((unsigned long)cur,
+                                     (unsigned long)child);
+                /* Fresh IPC/notify state for the new life. */
+                threads[child].ipc_ptr = 0;
+                threads[child].ipc_cap = 0;
+                threads[child].notify = 0;
+                threads[child].wait_kind = V2_WK_NONE;
                 threads[child].state = T_RUNNABLE;
                 threads[child].regs[2] = u_sp[child];
                 threads[child].sepc = threads[cur].sepc + 4; /* return after ecall */
@@ -919,19 +953,21 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 break;
             }
             case V2_INV_EXEC: {
-                /* EXEC (a1=frame_src, a2=phdrs_ptr, a3=phdr_count):
+                /* EXEC (a1=initrd index, a2/a3 reserved):
                  * Replace current thread's image: unmap all user mappings, free frames,
-                 * clear user caps, load new ELF from initrd frame pool.
-                 * a1 = source frame id (from initrd frame pool)
-                 * a2 = user pointer to program headers (validated)
-                 * a3 = phdr count (validated)
+                 * clear user caps, load a new initrd ELF.
+                 * a1 = initrd index (0 = mem_server.elf, see mkinitrd.sh)
+                 * a2/a3 are reserved and must be zero (unused).
                  * Returns 0 on success.
                  * FAIL CLOSED: any validation error -> V2_ERR_INVALID. */
-                if (a1 >= (uint64_t)V2_FRAMES_MAX) {
+                const uint8_t *elf_data;
+                uint32_t elf_size;
+                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (!v2_recv_range_ok((uintptr_t)a2, a3)) {
+                if (!((a2 == 0 && a3 == 0) ||
+                      v2_recv_range_ok((uintptr_t)a2, a3))) {
                     rc = V2_ERR_INVALID;
                     break;
                 }
@@ -939,28 +975,33 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 for (int i = 0; i < V2_VPN_SLOTS; i++) {
                     if (caps.vm[cur][i].valid) {
                         /* Free the frame back to pool */
-                        frame_free(caps.vm[cur][i].frame);
+                        frame_free((int)caps.vm[cur][i].frame);
+                        v2_pte_clear((unsigned long)cur, caps.vm[cur][i].vpn);
                         caps.vm[cur][i].valid = 0;
                     }
                 }
+                v2_sfence_all();
                 /* Clear user caps (slots 0..V2_CAP_SLOTS-1, keep root caps) */
                 for (int s = 0; s < V2_CAP_SLOTS; s++) {
                     if (!caps.caps[cur][s].root)
                         caps.caps[cur][s].valid = 0;
                 }
                 /* Load new ELF into current VSpace */
-                const uint8_t *elf_data = (const uint8_t *)(V2_FRAME_PHYS_BASE + a1 * 4096UL);
-                size_t elf_size = 4096;
-                uint64_t entry, brk = 0;
-                rc = v2_elf_load(elf_data, elf_size, &caps, (unsigned long)cur, &entry, &brk);
-                if (rc == V2_OK) {
-                    threads[cur].regs[2] = u_sp[cur];
-                    threads[cur].sepc = entry;
-                    /* Reset registers to clean state */
-                    for (int r = 0; r < 32; r++)
-                        threads[cur].regs[r] = 0;
-                    threads[cur].regs[2] = u_sp[cur];
-                    rc = 0; /* return 0 on success */
+                {
+                    uint64_t entry = 0, brk = 0;
+                    rc = v2_elf_load(elf_data, (size_t)elf_size, &caps, (unsigned long)cur, &entry, &brk);
+                    if (rc == V2_OK && entry != 0) {
+                        v2_pte_sync((unsigned long)cur);
+                        threads[cur].regs[2] = u_sp[cur];
+                        threads[cur].sepc = entry;
+                        /* Reset registers to clean state */
+                        for (int r = 0; r < 32; r++)
+                            threads[cur].regs[r] = 0;
+                        threads[cur].regs[2] = u_sp[cur];
+                        rc = 0; /* return 0 on success */
+                    } else if (rc == V2_OK) {
+                        rc = V2_ERR_INVALID;
+                    }
                 }
                 break;
             }
@@ -1040,6 +1081,53 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
     case 9: /* S-mode ecall: our own SBI calls return via M, never here. */
         threads[cur].sepc += 4;
         return;
+case 13: /* Load page fault */
+    case 15: { /* Store page fault: may be a COW break */
+        uint64_t fault_addr;
+        asm volatile("csrr %0, stval" : "=r"(fault_addr));
+        /* COW break, S-mode authority rule: the caps model is the ONLY
+         * authority. A store fault inside the frame window whose model
+         * mapping still carries W is a COW share (hardware PTE is R-only
+         * after v2_cow_write_protect); anything else — RX execute page,
+         * R-only data, unmapped address — falls through to containment.
+         * PTE bits are never trusted as COW flags, so this cannot
+         * misclassify a legitimate RX page. */
+        if (code == 15 &&
+            fault_addr >= V2_U_END &&
+            fault_addr < V2_U_END + (uint64_t)V2_VPN_SLOTS * 4096UL) {
+            unsigned long t = (unsigned long)cur;
+            unsigned long vpn =
+                (unsigned long)((fault_addr - V2_U_END) >> 12);
+            int m = v2_vm_find(&caps, t, vpn);
+            if (m >= 0 && (caps.vm[t][m].rights & V2_RIGHT_W)) {
+                unsigned long old_frame = caps.vm[t][m].frame;
+                int new_frame = frame_alloc();
+                if (new_frame >= 0 &&
+                    old_frame < (unsigned long)V2_FRAMES_MAX) {
+                    /* Copy via physical addresses (S-mode, SUM=0: the
+                     * faulting U VA is NOT dereferenced). */
+                    volatile uint64_t *dst = (volatile uint64_t *)
+                        (V2_FRAME_PHYS_BASE + (uintptr_t)new_frame * 4096);
+                    const volatile uint64_t *src =
+                        (const volatile uint64_t *)
+                        (V2_FRAME_PHYS_BASE + (uintptr_t)old_frame * 4096);
+                    for (int i = 0; i < 512; i++) /* bound: 4096/8 */
+                        dst[i] = src[i];
+                    /* The word-model shadow follows the break so later
+                     * WRITE/READ word ops stay coherent with real memory. */
+                    caps.fdata[new_frame] = caps.fdata[old_frame];
+                    caps.vm[t][m].frame = (unsigned long)new_frame;
+                    /* Reinstall THIS thread's PTE only (the other sharer
+                     * keeps its R-only PTE until it faults in turn). */
+                    v2_pte_install(t, vpn, (unsigned long)new_frame,
+                                   caps.vm[t][m].rights);
+                    v2_sfence_all();
+                    return; /* Resume the faulting store */
+                }
+            }
+        }
+        /* Not a COW share (or no frame left) - fall through to default */
+    }
     default: { /* fault: park the offender, keep the rest running */
         kputs("[fault] tcb=");
         sbi_putchar('0' + cur);
@@ -1115,6 +1203,24 @@ void kboot(void) {
     threads[3].regs[2] = u_sp[3];
     threads[3].sepc = (uint64_t)test_cap_thread;
     threads[3].state = T_RUNNABLE;
+    /* Stage 3: boot the userspace mem_server from initrd index 0 into
+     * thread 2's VSpace. On success thread 2 enters the ELF image and
+     * prints MEM-SRV from U-mode; on failure it keeps the in-kernel
+     * stub above, and the missing MEM-SRV marker fails the smoke loudly. */
+    {
+        const uint8_t *elf_data;
+        uint32_t elf_size;
+        uint64_t entry = 0, brk = 0;
+        if (initrd_lookup(0, &elf_data, &elf_size) == 0 &&
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 2, &entry, &brk) == V2_OK &&
+            entry != 0) {
+            v2_pte_sync(2);
+            threads[2].sepc = entry;
+            kputs("[spawn] mem_server ELF ok\n");
+        } else {
+            kputs("[spawn] mem_server ELF FAIL; stub\n");
+        }
+    }
     kputs("v2: entering U-mode mem_server\n");
     enter_thread(0);
 }

@@ -39,7 +39,20 @@ CFLAGS_DRV = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
             -Wall -Wextra -Werror -I lib -I libc/include -I abi -I$(CLANG_INC) \
             -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
 
-all: build/hello.elf build/moonsh.elf build/linux_demo.elf drivers libc
+# v2 initrd server (Stage 3): freestanding rv64 ELF on the V2 UABI, linked
+# at the frame-window base via v2_user.ld. No libc, no v1 moonlight.h.
+CFLAGS_V2 = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
+            -O2 -ffreestanding -nostdlib -fno-builtin -mcmodel=medany -mno-relax \
+            -Wall -Wextra -Werror -I$(CLANG_INC) \
+            -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
+LDFLAGS_V2 = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib -T v2_user.ld
+
+all: build/hello.elf build/moonsh.elf build/linux_demo.elf build/ls.elf build/cat.elf build/mem_server.elf drivers libc
+
+build/mem_server.elf: mem_server/v2_main.c lib/v2_start.S v2_user.ld
+	@mkdir -p build
+	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ mem_server/v2_main.c lib/v2_start.S
+	ls -lh $@
 
 build/hello.elf: example/hello.c $(LIB) lib/start.S user.ld
 	@mkdir -p build
@@ -49,6 +62,16 @@ build/hello.elf: example/hello.c $(LIB) lib/start.S user.ld
 build/moonsh.elf: sh/shell.c $(LIB) lib/start.S user.ld
 	@mkdir -p build
 	$(CC) $(CFLAGS_U) $(LDFLAGS_U) -o $@ sh/shell.c $(LIB) lib/start.S
+	ls -lh $@
+
+build/ls.elf: example/ls.c $(LIB) lib/start.S user.ld
+	@mkdir -p build
+	$(CC) $(CFLAGS_U) $(LDFLAGS_U) -o $@ example/ls.c $(LIB) lib/start.S
+	ls -lh $@
+
+build/cat.elf: example/cat.c $(LIB) lib/start.S user.ld
+	@mkdir -p build
+	$(CC) $(CFLAGS_U) $(LDFLAGS_U) -o $@ example/cat.c $(LIB) lib/start.S
 	ls -lh $@
 
 # Driver compile gate: every driver must build freestanding rv64 warning-free.

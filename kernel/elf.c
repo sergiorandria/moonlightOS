@@ -66,7 +66,12 @@ static unsigned long v2_elf_rights_from_flags(uint32_t flags)
     return rights;
 }
 
-/* Find or allocate a frame and map it at vpn with rights */
+/* Find or allocate a frame and map it at vpn with rights.
+ * frame_alloc_slot returns the new cap slot index (>= 0) or a negative
+ * errno; the kernel (allocator authority) then specializes the fresh RW
+ * cap to the segment rights directly (minting X from RW would fail closed,
+ * so attenuation is not used here). vpn is the frame-window index
+ * (VA = V2_U_END + vpn*4096), already range-checked by the caller. */
 static int v2_elf_map_page(v2_caps_t *caps, unsigned long tid,
                            unsigned long vpn, unsigned long rights,
                            unsigned long *out_frame)
@@ -74,43 +79,32 @@ static int v2_elf_map_page(v2_caps_t *caps, unsigned long tid,
     int slot;
     unsigned long frame;
 
-    /* Find an empty cap slot for the frame */
-    for (slot = 0; slot < V2_CAP_SLOTS; slot++) {
-        if (!caps->caps[tid][slot].valid) break;
-    }
-    if (slot >= V2_CAP_SLOTS)
-        return V2_ERR_OVERFLOW;
+    if (!caps || !out_frame)
+        return V2_ERR_INVALID;
+    if (rights & ~(V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X))
+        return V2_ERR_INVALID;
+    if ((rights & V2_RIGHT_W) && (rights & V2_RIGHT_X))
+        return V2_ERR_INVALID; /* W^X */
+    if (vpn >= (unsigned long)V2_VPN_SLOTS)
+        return V2_ERR_INVALID;
+    if (v2_vm_find(caps, tid, vpn) >= 0)
+        return V2_ERR_INVALID; /* duplicate vpn: fail before allocating */
 
-    /* Allocate frame */
-    int rc = frame_alloc_slot(caps, tid);
-    if (rc != V2_OK)
-        return rc;
-    /* frame_alloc_slot returns in caps->caps[tid][slot].obj - find it */
-    for (slot = 0; slot < V2_CAP_SLOTS; slot++) {
-        if (caps->caps[tid][slot].valid && !caps->caps[tid][slot].root) {
-            frame = caps->caps[tid][slot].obj;
-            caps->caps[tid][slot].valid = 0; /* we'll reinstall with proper rights */
-            break;
-        }
-    }
+    slot = frame_alloc_slot(caps, tid);
+    if (slot < 0)
+        return slot;
     if (slot >= V2_CAP_SLOTS)
         return V2_ERR_OVERFLOW;
-
-    /* Create cap with rights */
-    for (slot = 0; slot < V2_CAP_SLOTS; slot++) {
-        if (!caps->caps[tid][slot].valid) break;
-    }
-    if (slot >= V2_CAP_SLOTS)
-        return V2_ERR_OVERFLOW;
-    caps->caps[tid][slot].valid = 1;
-    caps->caps[tid][slot].obj = frame;
     caps->caps[tid][slot].rights = rights;
-    caps->caps[tid][slot].root = 0;
+    frame = caps->caps[tid][slot].obj;
 
-    /* Map the page */
-    rc = v2_map(caps, tid, slot, vpn);
-    if (rc != V2_OK)
-        return rc;
+    if (v2_map(caps, tid, (unsigned long)slot, vpn) != V2_OK) {
+        /* Table full after a successful alloc: drop the cap so no
+         * half-mapped state survives. The bitmap frame stays marked used
+         * (one-frame leak on an already-failed load, fail-closed). */
+        caps->caps[tid][slot].valid = 0;
+        return V2_ERR_OVERFLOW;
+    }
 
     *out_frame = frame;
     return V2_OK;
@@ -145,10 +139,20 @@ int v2_elf_load(const uint8_t *elf_data, size_t elf_size,
             continue;
 
         unsigned long rights = v2_elf_rights_from_flags(ph->p_flags);
-        unsigned long vpn_start = ph->p_vaddr >> 12;
-        unsigned long npages = (ph->p_memsz + 4095) >> 12;
+        unsigned long vpn_start, npages;
+        /* PT_LOAD VAs live in the frame window (v2_user.ld BASE =
+         * V2_U_END): the vpn is the window index, not the raw page number. */
+        if (ph->p_vaddr < V2_U_END)
+            return V2_ERR_INVALID;
+        if (ph->p_vaddr & 0xFFFUL)
+            return V2_ERR_INVALID; /* segments are page-aligned by link */
+        if (ph->p_memsz > (unsigned long)V2_VPN_SLOTS * 4096UL)
+            return V2_ERR_OVERFLOW;
+        vpn_start = (unsigned long)((ph->p_vaddr - V2_U_END) >> 12);
+        npages = (unsigned long)((ph->p_memsz + 4095) >> 12);
 
-        if (vpn_start + npages > V2_VPN_SLOTS)
+        if (vpn_start >= (unsigned long)V2_VPN_SLOTS ||
+            npages > (unsigned long)V2_VPN_SLOTS - vpn_start)
             return V2_ERR_OVERFLOW;
 
         for (k = 0; k < npages; k++) {
@@ -157,19 +161,28 @@ int v2_elf_load(const uint8_t *elf_data, size_t elf_size,
             if (rc != V2_OK)
                 return rc;
 
-            /* Copy page data from ELF to frame */
-            uint64_t file_offset = ph->p_offset + k * 4096;
-            uint64_t copy_size = 4096;
-            if (k == npages - 1 && ph->p_filesz % 4096 != 0)
-                copy_size = ph->p_filesz % 4096;
+            /* Copy this page's file bytes into the frame, zero the rest
+             * (BSS). The file range [p_offset, p_offset+p_filesz) is
+             * clamped against the page window [page_off, page_off+4096)
+             * so BSS tail pages copy nothing instead of bytes past the
+             * segment's file range. bound: npages, 4096-byte page loop. */
+            uint64_t page_off = ph->p_offset + k * 4096;
+            uint64_t file_end = ph->p_offset + ph->p_filesz;
+            uint64_t copy_start = page_off < ph->p_offset ? ph->p_offset : page_off;
+            uint64_t copy_end = page_off + 4096 < file_end ? page_off + 4096 : file_end;
+            volatile uint8_t *dst =
+                (volatile uint8_t *)(V2_FRAME_PHYS_BASE + frame * 4096);
 
-            /* Zero the frame first (BSS) */
             for (unsigned long b = 0; b < 4096; b++)
-                ((volatile uint8_t *)(V2_FRAME_PHYS_BASE + frame * 4096))[b] = 0;
+                dst[b] = 0;
 
-            if (file_offset + copy_size <= elf_size && copy_size > 0) {
-                for (unsigned long b = 0; b < copy_size; b++)
-                    ((volatile uint8_t *)(V2_FRAME_PHYS_BASE + frame * 4096))[b] = elf_data[file_offset + b];
+            if (copy_end > copy_start && copy_end <= elf_size) {
+                unsigned long dst_off =
+                    (unsigned long)(copy_start - page_off);
+                unsigned long copy_len =
+                    (unsigned long)(copy_end - copy_start);
+                for (unsigned long b = 0; b < copy_len; b++)
+                    dst[dst_off + b] = elf_data[copy_start + b];
             }
         }
 

@@ -125,18 +125,27 @@ if [ -f kernel/build/moonlight.elf ]; then
   QEMU=$(command -v qemu-system-riscv64 || command -v /tmp/qb2/qemu-system-riscv64 || echo "")
   if [ -n "$QEMU" ] && [ -x "$QEMU" ]; then
     V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf 2>&1 | tr -d '\0')
-    echo "$V2LOG" | grep -q "satp Sv39 on" && echo "v2 smoke: satp on" || echo "v2 smoke: FAIL (no satp)"
-    echo "$V2LOG" | grep -q "entering U-mode" && echo "v2 smoke: U-mode entry" || echo "v2 smoke: FAIL (no U entry)"
-    echo "$V2LOG" | grep -q "B00pn" && echo "v2 smoke: ping 0->1 intact" || echo "v2 smoke: FAIL (no B00pn)"
-    echo "$V2LOG" | grep -q "A10pg" && echo "v2 smoke: pong 1->0 intact" || echo "v2 smoke: FAIL (no A10pg)"
-    echo "$V2LOG" | grep -q "W1" && echo "v2 smoke: notify delivered" || echo "v2 smoke: FAIL (no W1)"
-    echo "$V2LOG" | grep -q "MEM" && echo "v2 smoke: MEM frame init" || echo "v2 smoke: FAIL (no MEM)"
-    echo "$V2LOG" | grep -q "CAP" && echo "v2 smoke: CAP report" || echo "v2 smoke: FAIL (no CAP)"
-    echo "$V2LOG" | grep -q "OK" && echo "v2 smoke: OK invoke success" || echo "v2 smoke: FAIL (no OK)"
-    echo "$V2LOG" | grep -q "DU: vpn0 mirrored" && echo "v2 smoke: DU real-frame proof" || echo "v2 smoke: FAIL (no DU)"
-    echo "$V2LOG" | grep -q "NP" && echo "v2 smoke: NP negative-passed" || echo "v2 smoke: FAIL (no NP)"
-    echo "$V2LOG" | grep -q "no runnable left; parking cpu" && echo "v2 smoke: clean park" || echo "v2 smoke: FAIL (no clean park)"
-    QEMU_STATUS="PASS"
+    # Fail closed: every missing marker flips the gate to FAIL (a smoke
+    # that only prints FAIL lines but reports PASS proves nothing).
+    QEMU_FAIL=0
+    echo "$V2LOG" | grep -q "satp Sv39 on" && echo "v2 smoke: satp on" || { echo "v2 smoke: FAIL (no satp)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "entering U-mode" && echo "v2 smoke: U-mode entry" || { echo "v2 smoke: FAIL (no U entry)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "B00pn" && echo "v2 smoke: ping 0->1 intact" || { echo "v2 smoke: FAIL (no B00pn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "A10pg" && echo "v2 smoke: pong 1->0 intact" || { echo "v2 smoke: FAIL (no A10pg)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "W1" && echo "v2 smoke: notify delivered" || { echo "v2 smoke: FAIL (no W1)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "MEM" && echo "v2 smoke: MEM frame init" || { echo "v2 smoke: FAIL (no MEM)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "MEM-SRV" && echo "v2 smoke: MEM-SRV userspace" || { echo "v2 smoke: FAIL (no MEM-SRV)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "CAP" && echo "v2 smoke: CAP report" || { echo "v2 smoke: FAIL (no CAP)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "OK" && echo "v2 smoke: OK invoke success" || { echo "v2 smoke: FAIL (no OK)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "DU: vpn0 mirrored" && echo "v2 smoke: DU real-frame proof" || { echo "v2 smoke: FAIL (no DU)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "NP" && echo "v2 smoke: NP negative-passed" || { echo "v2 smoke: FAIL (no NP)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "no runnable left; parking cpu" && echo "v2 smoke: clean park" || { echo "v2 smoke: FAIL (no clean park)"; QEMU_FAIL=1; }
+    if [ "$QEMU_FAIL" = "0" ]; then
+      QEMU_STATUS="PASS"
+    else
+      QEMU_STATUS="FAIL"
+      echo "FAIL: QEMU smoke missing markers (see above)"
+    fi
   else
     echo "SKIP: QEMU not found"
     QEMU_STATUS="SKIP"
@@ -149,6 +158,10 @@ echo "=== verify summary ==="
 echo "Isabelle proofs: $ISABELLE_STATUS"
 echo "Kernel build: $CHERI_STATUS"
 echo "QEMU smoke: $QEMU_STATUS"
+if [ "$QEMU_STATUS" = "FAIL" ]; then
+  echo "=== verify done: FAIL (QEMU smoke missing markers) ==="
+  exit 1
+fi
 if [ "$ISABELLE_STATUS" = "PASS" ] && [ "$CHERI_STATUS" = "PASS (CHERI toolchain)" ]; then
   echo "=== verify done: FULL PASS (proofs and CHERI checked) ==="
   exit 0

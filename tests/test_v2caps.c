@@ -227,11 +227,12 @@ int main(void) {
         assert(allocated_slot >= 0);
         assert(st.caps[0][allocated_slot].rights == V2_RIGHT_RW);
 
-        /* MINT: attenuate RW -> R only */
-        rc = v2_mint(&st, 0, (unsigned long)allocated_slot, V2_RIGHT_R, 14);
+        /* MINT: attenuate RW -> R only (dst 17: slots 0..15 hold the
+         * init roots and 16 the fresh alloc, so 14 would collide). */
+        rc = v2_mint(&st, 0, (unsigned long)allocated_slot, V2_RIGHT_R, 17);
         assert(rc == V2_OK);
-        assert(st.caps[0][14].rights == V2_RIGHT_R);
-        assert(st.caps[0][14].root == 0);
+        assert(st.caps[0][17].rights == V2_RIGHT_R);
+        assert(st.caps[0][17].root == 0);
 
         /* MAP: map frame via RW cap */
         rc = v2_map(&st, 0, (unsigned long)allocated_slot, 0x100);
@@ -248,8 +249,9 @@ int main(void) {
         assert(rc == V2_OK);
         assert(val == 0xDEADBEEF);
 
-        /* W^X: mint with X rights rejected */
-        rc = v2_mint(&st, 0, (unsigned long)allocated_slot, V2_RIGHT_X, 15);
+        /* W^X: mint with X rights rejected (dst 18 is free, so the
+         * rejection is genuinely about rights, not an occupied slot). */
+        rc = v2_mint(&st, 0, (unsigned long)allocated_slot, V2_RIGHT_X, 18);
         assert(rc == V2_ERR_INVALID);
 
         /* UNMAP: remove mapping */

@@ -1,6 +1,6 @@
 # Moonlight v2 — Design: a verifiable RISC-V CHERI microkernel
 
-Status: DESIGN + Stages 0–2 built (see §9 for per-stage BUILT notes).
+Status: DESIGN + Stages 0–3 built (see §9 for per-stage BUILT notes).
 Every section ends with what must exist before the next begins. Only §9
 stage entries marked BUILT are claimed as built. The v2/ tree was merged
 into the repo root on 2026-09-14: this repo is now the single codebase.
@@ -228,6 +228,25 @@ per-function where not).
   *Theorem:* authority confinement (`V2_D`, spec green 2026-09-14 — kernel
   side pending). *Demo:* mem_server in userspace owns
   all allocation; kernel holds no heap.
+  - BUILT 2026-09-17 (initrd boot): `userspace/mem_server/v2_main.c`
+    (V2-UABI freestanding ELF, `v2_user.ld` BASE = frame window
+    0x80800000) packed first by `tools/mkinitrd.sh` (index 0 + TOC);
+    the kernel SPAWNs index 0 into thread 2 at boot (`[spawn] mem_server
+    ELF ok`, `MEM-SRV` banner, EP0 service loop). Loader fixes along the
+    way: window-base vpn translation, allocator-rights specialization,
+    PTE sync + X for execute segments (W^X kept); ELF_MAP/SPAWN/EXEC take
+    initrd indexes; the initrd blob stays in the kernel image (no pool
+    frames consumed).
+  - BUILT 2026-09-18 (process ops): `V2_INV_ELF_MAP` (load initrd ELF into
+    caller), `V2_INV_SPAWN` (fresh thread + VSpace + ELF, stale caps/
+    mappings/IPC state cleared), `V2_INV_FORK` (COW copy: model keeps full
+    rights on both sides as the authority, hardware PTEs lose W on both
+    sides, first store faults and breaks the share for the faulting thread
+    only; child inherits no root caps), `V2_INV_EXEC` (replace image,
+    free frames, keep root caps). Reserved args (a2/a3) must be zero.
+    Child VSpaces mirror `pagetable_init` wiring exactly and
+    `vspace_root_ppn` always holds the full satp value. Gated by the QEMU
+    smoke (`MEM-SRV`) + host caps/IPC tests.
 - **Stage 4 — Time + console.** Partitions/EDF enforcement, console server
   (owns UART Frame+IRQ), `moonsh` ported as its first client, bring-up
   console flag deleted. *Theorem:* temporal isolation. *Demo:* this repo's
