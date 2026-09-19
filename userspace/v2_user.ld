@@ -9,6 +9,10 @@ BASE = 0x80800000;
 SECTIONS {
     . = BASE;
     .text : { *(.text._v2_start) *(.text*) }
+    /* Page-align every PT_LOAD: the kernel loader maps whole pages keyed by
+     * (p_vaddr - BASE) >> 12 and rejects unaligned segments (fail closed),
+     * so a .text of any size must never push .rodata off alignment. */
+    . = ALIGN(4096);
     .rodata : { *(.rodata*) }
     . = ALIGN(4096);
     .data : { *(.data*) *(.got*) *(.sdata*) }

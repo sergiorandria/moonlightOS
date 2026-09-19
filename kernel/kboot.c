@@ -75,7 +75,11 @@ static void kputdec(unsigned long v) {
  * free region above the image (< 0x80800000). S-only identity map via
  * l0_frames, wired at l1_t[t][8] (VPN[1] of 0x81000000) in every VSpace. */
 #define V2_FRAME_PHYS_BASE 0x81000000UL
-#define NTHREADS 4 /* bound for all thread loops (<= V2_CAP_THREADS) */
+#define NTHREADS 6 /* bound for all thread loops (<= V2_CAP_THREADS) */
+/* Growing NTHREADS forces WCET/table re-analysis: threads[], qube_of[],
+ * u_sp[] size with it; root_pt_t/l1_t/l0_u_t cover V2_CAP_THREADS. */
+_Static_assert(NTHREADS <= V2_CAP_THREADS,
+               "NTHREADS must fit the caps model + page tables");
 
 /* V2_INV_WRITE/READ move exactly one 64-bit word: the caps.h model is
  * word-per-frame (fdata[f] = val), so the real store/load mirrors exactly
@@ -321,6 +325,7 @@ void mem_server_main(void);
 void test_cap_thread(void);
 void user_stacks_init(void);
 extern uintptr_t ustack_a_top, ustack_b_top, ustack_m_top, ustack_cap_top;
+extern uintptr_t ustack_qrexec_top, ustack_adminvm_top;
 __attribute__((noreturn)) void u_enter(uctx_t *ctx);
 
 static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
@@ -890,8 +895,13 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 /* Find a free thread slot (threads[] has NTHREADS entries;
                  * V2_CAP_THREADS is the model's bound, not ours). */
                 int child = -1;
-                for (int t = 0; t < NTHREADS; t++) {
-                    if (threads[t].state == T_DEAD) {
+                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                    /* T_DEAD aliases T_BLOCKED (both 2): a rendezvous-blocked
+                     * thread parks (ptr, cap) + wait_kind, so all three must
+                     * read clear before the slot is reusable (fail closed). */
+                    if (threads[t].state == T_DEAD &&
+                        threads[t].wait_kind == V2_WK_NONE &&
+                        threads[t].ipc_ptr == 0 && threads[t].ipc_cap == 0) {
                         child = t;
                         break;
                     }
@@ -950,8 +960,13 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                  * Returns child tid to parent, 0 to child.
                  * FAIL CLOSED: any error -> V2_ERR_INVALID/V2_ERR_OVERFLOW. */
                 int child = -1;
-                for (int t = 0; t < NTHREADS; t++) {
-                    if (threads[t].state == T_DEAD) {
+                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                    /* T_DEAD aliases T_BLOCKED (both 2): a rendezvous-blocked
+                     * thread parks (ptr, cap) + wait_kind, so all three must
+                     * read clear before the slot is reusable (fail closed). */
+                    if (threads[t].state == T_DEAD &&
+                        threads[t].wait_kind == V2_WK_NONE &&
+                        threads[t].ipc_ptr == 0 && threads[t].ipc_cap == 0) {
                         child = t;
                         break;
                     }
@@ -1134,7 +1149,10 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     break;
                 }
                 for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-                    if (threads[t].state == T_DEAD) {
+                    /* T_DEAD aliases T_BLOCKED (both 2): see SPAWN scan. */
+                    if (threads[t].state == T_DEAD &&
+                        threads[t].wait_kind == V2_WK_NONE &&
+                        threads[t].ipc_ptr == 0 && threads[t].ipc_cap == 0) {
                         child = t;
                         break;
                     }
@@ -1365,7 +1383,9 @@ void kboot(void) {
     u_sp[0] = (uint64_t)ustack_a_top;
     u_sp[1] = (uint64_t)ustack_b_top;
     u_sp[2] = (uint64_t)ustack_m_top;
-    u_sp[3] = (uint64_t)ustack_cap_top;
+    u_sp[3] = (uint64_t)ustack_qrexec_top; /* 8KB: policy frame (user.c) */
+    u_sp[4] = (uint64_t)ustack_adminvm_top;
+    u_sp[5] = (uint64_t)ustack_cap_top;
     pagetable_init();
     uintptr_t root = (uintptr_t)root_pt_t[0];
     uint64_t satp = (8UL << 60) | ((root >> 12) & 0xFFFFFFFFFFFUL);
@@ -1409,9 +1429,12 @@ void kboot(void) {
     threads[2].regs[2] = u_sp[2];
     threads[2].sepc = (uint64_t)mem_server_main;
     threads[2].state = T_RUNNABLE;
-    threads[3].regs[2] = u_sp[3];
-    threads[3].sepc = (uint64_t)test_cap_thread;
-    threads[3].state = T_RUNNABLE;
+    /* Thread 5 is the scratch slot: it keeps the in-kernel capability demo
+     * (CAP/OK/DU/NP markers) that thread 3 ran before the S2 brokers took
+     * threads 3-4, and stays free for a future QCREATE demo. */
+    threads[5].regs[2] = u_sp[5];
+    threads[5].sepc = (uint64_t)test_cap_thread;
+    threads[5].state = T_RUNNABLE;
     /* Stage 3: boot the userspace mem_server from initrd index 0 into
      * thread 2's VSpace. On success thread 2 enters the ELF image and
      * prints MEM-SRV from U-mode; on failure it keeps the in-kernel
@@ -1430,10 +1453,132 @@ void kboot(void) {
             kputs("[spawn] mem_server ELF FAIL; stub\n");
         }
     }
-    /* Qubes boot labels: mem_server (thread 2) owns qube 1; A/B/CAP stub
-     * stay in qube 0. Fresh QCREATE labels start at qube_next == 2. */
+    /* S2 brokers: qrexec from initrd index 1 into thread 3 (qube 2),
+     * AdminVM from index 2 into thread 4 (qube 3). Mirrors the mem_server
+     * load above. On success the thread enters the ELF image and prints
+     * QREXEC: up / ADMIN: up from U-mode; on failure it stays parked and
+     * the missing markers fail the smoke loudly (fail closed: no stub
+     * impersonates a broker). Backpressure note: a SEND with no waiter
+     * queues + blocks, and every cross-qube delivery fails INVALID at the
+     * raw gate (no QX grants at boot), so no broker rendezvous can ever
+     * complete across qubes — each broker ends parked in RECV/WAIT or
+     * SEND-blocked on its queued reply, and the A/B + CAP transcript runs
+     * to the clean park with no livelock. */
+    {
+        const uint8_t *elf_data;
+        uint32_t elf_size;
+        uint64_t entry = 0, brk = 0;
+        if (initrd_lookup(1, &elf_data, &elf_size) == 0 &&
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 3, &entry, &brk) == V2_OK &&
+            entry != 0) {
+            v2_pte_sync(3);
+            threads[3].regs[2] = u_sp[3];
+            threads[3].sepc = entry;
+            threads[3].state = T_RUNNABLE;
+            kputs("[spawn] qrexec ELF ok\n");
+        } else {
+            kputs("[spawn] qrexec ELF FAIL; parked\n");
+        }
+    }
+    {
+        const uint8_t *elf_data;
+        uint32_t elf_size;
+        uint64_t entry = 0, brk = 0;
+        if (initrd_lookup(2, &elf_data, &elf_size) == 0 &&
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 4, &entry, &brk) == V2_OK &&
+            entry != 0) {
+            v2_pte_sync(4);
+            threads[4].regs[2] = u_sp[4];
+            threads[4].sepc = entry;
+            threads[4].state = T_RUNNABLE;
+            kputs("[spawn] adminvm ELF ok\n");
+        } else {
+            kputs("[spawn] adminvm ELF FAIL; parked\n");
+        }
+    }
+    /* Qubes boot labels: mem_server (thread 2) owns qube 1, qrexec
+     * (thread 3) owns qube 2, AdminVM (thread 4) owns qube 3; A/B/CAP stub
+     * stay in qube 0. Fresh QCREATE labels start at qube_next == 4. */
     qube_of[2] = 1;
+    qube_of[3] = 2;
+    qube_of[4] = 3;
+    qube_next = 4;
     kputs("QUB: qube0 qube1 up\n");
+    /* S2 demo transcript (runs once at boot, in-kernel test_cap_thread-style
+     * sequence: straight-line, bounded, no loops, no IPC). It drives the
+     * REAL boot labels through qube_raw_ok and the qube.h policy ops the
+     * qrexec broker runs on (decide/enqueue/decide/audit), printing one
+     * marker per leg. Fail-closed: any unexpected result prints a
+     * marker-free "[demo] FAIL" line, so the smoke gate misses the marker
+     * and fails instead of passing on a lie.
+     *
+     * Honesty note (Task 3 follow-up d): there is no GETC in the V2 UABI,
+     * so the AdminVM auto-approves after displaying the hash prompt. The
+     * Ask leg below is therefore display-only: qube_decide_idx(approve=1)
+     * stands in for the console confirm, while the enqueue + hash-pinned
+     * decide + audit path is the real broker path.
+     *
+     * Arg-less note (Task 3 follow-up c): v2_qask_t carries
+     * (src, dst, rpc, hash) with no arg fields and T_DECIDE deliver
+     * forwards zeros, so the S2 demo RPCs use rpc ids only
+     * (keys.sign=1, clipboard=2) and no args are dropped anywhere. */
+    {
+        v2_qpolicy_t demo;
+        v2_qask_t ask;
+        uint8_t hbuf[1];
+        int dec;
+        demo.nrules = 2;
+        demo.npending = 0;
+        demo.naudit = 0;
+        demo.rules[0] = (v2_qrule_t){.src = 0, .dst = 1, .rpc = 1,
+                                     .decision = V2_QDEC_ASK};
+        demo.rules[1] = (v2_qrule_t){.src = V2_QWILD, .dst = V2_QWILD,
+                                     .rpc = 2, .decision = V2_QDEC_DENY};
+        /* 1. Direct work->vault bypass hits the raw gate: thread 0 is qube 0,
+         * thread 2 is qube 1, and thread 0 holds no QX -> expect reject. */
+        if (qube_raw_ok(qube_of, (unsigned long)NTHREADS, 0, 2,
+                        qube_has_qx(0))) {
+            kputs("[demo] FAIL raw gate allowed xqube\n");
+        } else {
+            (void)qube_audit(&demo, 0, 1, 0, 0);
+            kputs("QUB: xread denied\n");
+        }
+        /* 2. work->vault keys.sign raises Ask. */
+        dec = qube_decide(&demo, 0, 1, 1);
+        if (dec != V2_QDEC_ASK) {
+            kputs("[demo] FAIL keys.sign not ask\n");
+        } else {
+            kputs("QREXEC: ask\n");
+        }
+        /* 3. Enqueue the ask, then display-only auto-approve (approve=1). */
+        hbuf[0] = 1;
+        ask.src = 0;
+        ask.dst = 1;
+        ask.rpc = 1;
+        ask.hash = qube_fnv1a(hbuf, 1);
+        if (qube_ask_enqueue(&demo, &ask) != V2_OK ||
+            qube_decide_idx(&demo, 0, 1) != V2_OK) {
+            kputs("[demo] FAIL ask approve\n");
+        } else {
+            kputs("QREXEC: allow\n");
+        }
+        /* 4. work->net clipboard attempt is denied with no prompt. */
+        dec = qube_decide(&demo, 0, 1, 2);
+        if (dec != V2_QDEC_DENY) {
+            kputs("[demo] FAIL clipboard not deny\n");
+        } else {
+            (void)qube_audit(&demo, 0, 1, 2, 0);
+            kputs("QREXEC: deny\n");
+        }
+        /* 5. Audit count: raw-deny + allow + clipboard-deny = 3 entries. */
+        if (demo.naudit != 3) {
+            kputs("[demo] FAIL audit count\n");
+        } else {
+            kputs("AUD: ");
+            kputdec(demo.naudit);
+            kputs(" entries\n");
+        }
+    }
     kputs("v2: entering U-mode mem_server\n");
     enter_thread(0);
 }

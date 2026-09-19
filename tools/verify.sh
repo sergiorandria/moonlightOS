@@ -141,6 +141,12 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "OK" && echo "v2 smoke: OK invoke success" || { echo "v2 smoke: FAIL (no OK)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "DU: vpn0 mirrored" && echo "v2 smoke: DU real-frame proof" || { echo "v2 smoke: FAIL (no DU)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "NP" && echo "v2 smoke: NP negative-passed" || { echo "v2 smoke: FAIL (no NP)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "QUB: qube0 qube1 up" && echo "v2 smoke: qubes up" || { echo "v2 smoke: FAIL (no qubes)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "QUB: xread denied" && echo "v2 smoke: xread denied" || { echo "v2 smoke: FAIL (no xdeny)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "QREXEC: ask" && echo "v2 smoke: qrexec ask" || { echo "v2 smoke: FAIL (no ask)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "QREXEC: allow" && echo "v2 smoke: qrexec allow" || { echo "v2 smoke: FAIL (no allow)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "QREXEC: deny" && echo "v2 smoke: qrexec deny" || { echo "v2 smoke: FAIL (no deny)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "AUD:" && echo "v2 smoke: audit" || { echo "v2 smoke: FAIL (no audit)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "no runnable left; parking cpu" && echo "v2 smoke: clean park" || { echo "v2 smoke: FAIL (no clean park)"; QEMU_FAIL=1; }
     if [ "$QEMU_FAIL" = "0" ]; then
       QEMU_STATUS="PASS"

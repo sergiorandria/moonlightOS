@@ -353,15 +353,29 @@ static uint8_t ustack_a[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_b[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_m[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_cap[4096] __attribute__((section(".ustack"), aligned(16)));
+/* S2 broker stacks: qrexec holds a v2_qpolicy_t (~4.1KB) plus its service
+ * frame on-stack, so it gets an 8KB window; AdminVM's frame is small. */
+static uint8_t ustack_qrexec[8192] __attribute__((section(".ustack"), aligned(16)));
+static uint8_t ustack_adminvm[4096] __attribute__((section(".ustack"), aligned(16)));
+
+/* Boot assertion (Task 4 follow-up b): the qrexec U-stack window must fit
+ * the policy frame with headroom; a short window fails the build, never
+ * boots into a stack overflow. */
+_Static_assert(sizeof(ustack_qrexec) >= 8192,
+               "qrexec U-stack must be >= 8KB (v2_qpolicy_t ~4.1KB)");
 
 uintptr_t ustack_a_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_b_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_m_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_cap_top __attribute__((section(".udata"))) = 0;
+uintptr_t ustack_qrexec_top __attribute__((section(".udata"))) = 0;
+uintptr_t ustack_adminvm_top __attribute__((section(".udata"))) = 0;
 
 __attribute__((section(".utext"))) void user_stacks_init(void) {
     ustack_a_top = (uintptr_t)(ustack_a + sizeof(ustack_a));
     ustack_b_top = (uintptr_t)(ustack_b + sizeof(ustack_b));
     ustack_m_top = (uintptr_t)(ustack_m + sizeof(ustack_m));
     ustack_cap_top = (uintptr_t)(ustack_cap + sizeof(ustack_cap));
+    ustack_qrexec_top = (uintptr_t)(ustack_qrexec + sizeof(ustack_qrexec));
+    ustack_adminvm_top = (uintptr_t)(ustack_adminvm + sizeof(ustack_adminvm));
 }
