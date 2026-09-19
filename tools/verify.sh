@@ -36,6 +36,7 @@ clang -Wall -Wextra -Werror -o /tmp/test_v2ipc tests/test_v2ipc.c 2>&1 && /tmp/t
 clang -Wall -Wextra -Werror -o /tmp/test_v2caps tests/test_v2caps.c 2>&1 && /tmp/test_v2caps || echo "FAIL: test_v2caps"
 clang -Wall -Wextra -Werror -o /tmp/test_qlabels tests/test_qlabels.c 2>&1 && /tmp/test_qlabels || echo "FAIL: test_qlabels"
 clang -Wall -Wextra -Werror -o /tmp/test_qube_policy tests/test_qube_policy.c 2>&1 && /tmp/test_qube_policy || echo "FAIL: test_qube_policy"
+clang -Wall -Wextra -Werror -o /tmp/test_qargs tests/test_qargs.c 2>&1 && /tmp/test_qargs || echo "FAIL: test_qargs"
 if command -v clang &>/dev/null; then
   make -C kernel 2>&1 | tail -n 1 || echo "FAIL: kernel build"
 else

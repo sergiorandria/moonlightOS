@@ -36,6 +36,8 @@ typedef struct {
     unsigned long dst;
     unsigned long rpc;
     uint64_t hash;
+    unsigned long arg0; /* payload arg 0 (S3: frame_id) — carried, never interpreted */
+    unsigned long arg1; /* payload arg 1 (S3: len) — carried, never interpreted */
 } v2_qask_t;
 
 typedef struct {
