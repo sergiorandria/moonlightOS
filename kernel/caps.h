@@ -37,6 +37,10 @@
 #define V2_RIGHT_W 0x2UL
 #define V2_RIGHT_X 0x4UL
 #define V2_RIGHT_RW (V2_RIGHT_R | V2_RIGHT_W)
+/* QX (qube-cross): IPC gate bit only, never a memory right. Identical
+ * value to V2_RIGHT_QX in kernel/qube.h (both headers define 0x8UL;
+ * test_qlabels asserts the value). Masked out before any PTE computation. */
+#define V2_RIGHT_QX 0x8UL
 
 /* Error codes share ipc.h values (V2_OK/V2_ERR_INVALID/V2_ERR_OVERFLOW)
  * so kboot.c has one convention. */
@@ -77,12 +81,13 @@ typedef struct {
 #define V2_PHDRS_MAX 4
 #define V2_SEG_LEN_MAX 512
 
-/* Cap is well-formed: object in range, rights subset of {R,W,X}, W^X enforced. */
+/* Cap is well-formed: object in range, rights subset of {R,W,X,QX}, W^X enforced.
+ * QX is an IPC-gate bit only (never installed in a PTE; v2_map rejects it). */
 static inline int v2_cap_ok(unsigned long obj, unsigned long rights)
 {
     if (obj >= (unsigned long)V2_FRAMES_MAX)
         return 0;
-    if (rights & ~(V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X))
+    if (rights & ~(V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X | V2_RIGHT_QX))
         return 0;
     if ((rights & V2_RIGHT_W) && (rights & V2_RIGHT_X))
         return 0; /* W^X: never both write and execute */
@@ -156,7 +161,8 @@ static inline void v2_caps_init(v2_caps_t *st, unsigned long nthreads)
 
 /* MINT t src rights dst: attenuate own cap into an empty slot of the same
  * table. Copies never inherit the root bit. Mirrors d_mint.
- * Rights may include X (for ELF code caps) but W^X is enforced: no W+X together. */
+ * Rights may include X (for ELF code caps) or QX (IPC cross-qube grant);
+ * W^X is enforced: no W+X together. QX attenuates via the subset check. */
 static inline int v2_mint(v2_caps_t *st, unsigned long t, unsigned long src,
                           unsigned long rights, unsigned long dst)
 {
@@ -166,7 +172,7 @@ static inline int v2_mint(v2_caps_t *st, unsigned long t, unsigned long src,
     c = &st->caps[t][src];
     if ((rights & ~c->rights) != 0)
         return V2_ERR_INVALID;
-    if (rights & ~(V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X))
+    if (rights & ~(V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X | V2_RIGHT_QX))
         return V2_ERR_INVALID;
     if ((rights & V2_RIGHT_W) && (rights & V2_RIGHT_X))
         return V2_ERR_INVALID; /* W^X: no write+execute together */
@@ -182,8 +188,9 @@ static inline int v2_mint(v2_caps_t *st, unsigned long t, unsigned long src,
 }
 
 /* GRANT from slot to dst_slot: copy a valid cap cross-thread (same rights,
- * root bit cleared). The only op that grows another thread. Mirrors
- * d_grant. */
+ * root bit cleared; QX flows through verbatim so a holder can delegate the
+ * cross-qube grant — attenuation happens at MINT time). The only op that
+ * grows another thread. Mirrors d_grant. */
 static inline int v2_grant(v2_caps_t *st, unsigned long from, unsigned long slot,
                            unsigned long to, unsigned long dst)
 {
@@ -216,6 +223,8 @@ static inline int v2_map(v2_caps_t *st, unsigned long t, unsigned long slot,
     if (v2_vm_find(st, t, vpn) >= 0)
         return V2_ERR_INVALID;
     c = &st->caps[t][slot];
+    if (c->rights & V2_RIGHT_QX)
+        return V2_ERR_INVALID; /* QX is an IPC-gate bit, never a memory right */
     if ((c->rights & V2_RIGHT_W) && (c->rights & V2_RIGHT_X))
         return V2_ERR_INVALID; /* W^X: mapping cannot be both writable and executable */
     for (i = 0; i < V2_VPN_SLOTS; i++) {
@@ -247,6 +256,7 @@ static inline int v2_unmap(v2_caps_t *st, unsigned long t, unsigned long vpn)
 static inline unsigned long v2_vm_install_rights(unsigned long rights)
 {
     unsigned long flags = 0;
+    rights &= 0x7UL; /* mask: QX never reaches hardware flags */
     if (rights & V2_RIGHT_R) flags |= 1UL << 1; /* PTE_R */
     if (rights & V2_RIGHT_W) flags |= (1UL << 2) | (1UL << 3); /* PTE_W | PTE_D */
     if ((rights & V2_RIGHT_X) && !(rights & V2_RIGHT_W)) flags |= 1UL << 4; /* PTE_X (only if not W) */
@@ -353,7 +363,8 @@ static inline int v2_read(v2_caps_t *st, unsigned long t, unsigned long vpn,
     return V2_OK;
 }
 
-/* W^X over mappings (mirrors noexec_vm): no mapping may carry both W and X. */
+/* W^X over mappings (mirrors noexec_vm): no mapping may carry both W and X.
+ * QX is ignored here (never set on mappings: v2_map rejects it). */
 static inline int v2_vm_noexec(const v2_caps_t *st)
 {
     unsigned long t;

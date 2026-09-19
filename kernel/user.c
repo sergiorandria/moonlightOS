@@ -81,19 +81,22 @@ static long usend(unsigned long ep, const uint64_t *p, unsigned long n) {
 }
 
 /* RECV returns words-written in a0, kernel-stamped sender in a1,
- * truncation flag in a2 (explicit, never silent). */
+ * sender qube in a2, truncation flag in a3 (explicit, never silent). */
 static long urecv(unsigned long ep, uint64_t *buf, unsigned long cap,
-                  unsigned long *sender, unsigned long *ovf) {
+                  unsigned long *sender, unsigned long *qube,
+                  unsigned long *ovf) {
     register long r_a0 asm("a0") = (long)ep;
     register long r_a1 asm("a1") = (long)buf;
     register long r_a2 asm("a2") = (long)cap;
+    register long r_a3 asm("a3") = 0;
     register long r_a7 asm("a7") = V2_RECV;
     asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2)
+                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
                  : "r"(r_a7)
                  : "memory");
     *sender = (unsigned long)r_a1;
-    *ovf = (unsigned long)r_a2;
+    *qube = (unsigned long)r_a2;
+    *ovf = (unsigned long)r_a3;
     return r_a0;
 }
 
@@ -134,6 +137,7 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
     uint64_t ping[2];
     uint64_t out[4];
     unsigned long snd;
+    unsigned long qb;
     unsigned long ovf;
     long n;
     long bits;
@@ -142,7 +146,7 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
     uputc('A');
     uputc('\n');
     usend(0, ping, 2);
-    n = urecv(0, out, 4, &snd, &ovf);
+    n = urecv(0, out, 4, &snd, &qb, &ovf);
     uputc('A');
     uputc((char)('0' + snd)); /* kernel-stamped sender: must be 1 */
     uputc((char)('0' + ovf)); /* must be 0: pong fits */
@@ -159,11 +163,12 @@ __attribute__((section(".utext"), noinline)) void user_b_main(void) {
     uint64_t buf[4];
     uint64_t pong[2];
     unsigned long snd;
+    unsigned long qb;
     unsigned long ovf;
     long n;
     pong[0] = 'p';
     pong[1] = 'g';
-    n = urecv(0, buf, 4, &snd, &ovf);
+    n = urecv(0, buf, 4, &snd, &qb, &ovf);
     uputc('B');
     uputc((char)('0' + snd)); /* kernel-stamped sender: must be 0 */
     uputc((char)('0' + ovf)); /* must be 0: ping fits */
@@ -178,6 +183,7 @@ __attribute__((section(".utext"), noinline)) void user_b_main(void) {
 __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
     uint64_t buf[4];
     unsigned long snd;
+    unsigned long qb;
     unsigned long ovf;
     long n;
 
@@ -185,7 +191,7 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
 
     /* Main loop: wait for requests, handle them, reply */
     for (;;) { /* bound: ∞ — service loop */
-        n = urecv(0, buf, 4, &snd, &ovf);
+        n = urecv(0, buf, 4, &snd, &qb, &ovf);
         if (n < 1) {
             /* Empty or invalid: reply error */
             uint64_t resp[1] = { (uint64_t)RESP_ERR };

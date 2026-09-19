@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include "ipc.h"
 #include "caps.h"
+#include "qube.h"
 #include "initrd.h"
 #include "elf.h"
 
@@ -195,6 +196,7 @@ static void v2_pte_install(unsigned long t, unsigned long vpn,
         return;
     if (rights == 0)
         return; /* R=W=X=0 leaf is the reserved table-pointer encoding */
+    rights &= 0x7UL; /* mask: QX (IPC-gate bit) never reaches hardware flags */
     /* W^X: X is installed for execute segments; W+X can never arrive here
      * (rejected by mint/map/ELF validation), and is dropped defensively. */
     flags = PTE_U | PTE_A |
@@ -299,6 +301,8 @@ typedef struct {
 #define T_BLOCKED 2
 
 static uctx_t threads[NTHREADS];
+static uint8_t qube_of[NTHREADS]; /* qube label per thread (qube.h) */
+static unsigned long qube_next = 2; /* next fresh label; 0/1 taken at boot */
 static int cur = 0;
 static unsigned long tick = 0;
 static v2_ep_t ep0;
@@ -326,7 +330,7 @@ static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
 #define V2_PUTC 1
 #define V2_PARK 2
 #define V2_SEND 3 /* (ep, u_ptr, len): copy IN, block unless waiter; a0 = 0 / -ERR */
-#define V2_RECV 4 /* (ep, u_buf, cap): copy OUT, block unless queued; a0 = words, a1 = sender, a2 = ovf */
+#define V2_RECV 4 /* (ep, u_buf, cap): copy OUT, block unless queued; a0 = words, a1 = sender, a2 = sender_qube, a3 = ovf */
 #define V2_NOTIFY 5 /* (target, bits): OR-accumulate + wake waiters only; a0 = 0 / -ERR */
 #define V2_WAIT 6 /* (): take pending bits (a0) or block; a0 = bits */
 #define V2_INVOKE 7
@@ -384,6 +388,21 @@ static int pick_next(void) {
         if (threads[i].state == T_RUNNABLE)
             return i;
     return -1;
+}
+
+/* QX grant check: does tid hold any valid cap carrying V2_RIGHT_QX?
+ * Bounded scan of the thread's own cap table; fail-closed (bad tid = 0). */
+static int qube_has_qx(unsigned long tid)
+{
+    int s;
+    if (tid >= (unsigned long)NTHREADS)
+        return 0;
+    for (s = 0; s < V2_CAP_SLOTS; s++) { /* bound: V2_CAP_SLOTS */
+        if (caps.caps[tid][s].valid &&
+            (caps.caps[tid][s].rights & V2_RIGHT_QX))
+            return 1;
+    }
+    return 0;
 }
 
 /* Sync hardware PTEs with the caps model for thread t: (re)install every
@@ -557,6 +576,19 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 return;
             }
             u_copy_in(kb, up, ln);
+            /* Raw gate (peek before dequeue: fail-closed, no state lost on
+             * reject). Cross-qube handoff needs QX on the sender. */
+            if (ep0.recv_len > 0) {
+                unsigned long peek = ep0.recvq[ep0.recv_head];
+                if (peek >= (unsigned long)NTHREADS ||
+                    !qube_raw_ok(qube_of, (unsigned long)NTHREADS,
+                                 (unsigned long)cur, peek,
+                                 qube_has_qx((unsigned long)cur))) {
+                    threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
+                    kputs("QUB: xread denied\n");
+                    return;
+                }
+            }
             if (v2_q_take_waiter(&ep0, &r) == V2_OK && r < (unsigned long)NTHREADS) {
                 unsigned long cap = (unsigned long)threads[r].ipc_cap;
                 unsigned long nw = ln < cap ? ln : cap;
@@ -564,7 +596,8 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 u_copy_out(threads[r].ipc_ptr, kb, nw);
                 threads[r].regs[10] = (uint64_t)nw;
                 threads[r].regs[11] = (uint64_t)cur; /* kernel-stamped */
-                threads[r].regs[12] = (uint64_t)ovf;
+                threads[r].regs[12] = (uint64_t)qube_of[cur];
+                threads[r].regs[13] = (uint64_t)ovf;
                 threads[r].state = T_RUNNABLE;
                 threads[r].wait_kind = V2_WK_NONE;
                 threads[cur].regs[10] = (uint64_t)V2_OK;
@@ -607,13 +640,31 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                 return;
             }
+            /* Raw gate (peek before dequeue: fail-closed, no state lost on
+             * reject). Queued sends gate at delivery: the destination is
+             * unknown at send time, so the sender's qube is derived here
+             * via qube_of[slot.sender] (v2_slot_t stays as-is). */
+            if (ep0.send_len > 0) {
+                unsigned long psrc = ep0.sendq[ep0.send_head].sender;
+                if (psrc >= (unsigned long)NTHREADS ||
+                    !qube_raw_ok(qube_of, (unsigned long)NTHREADS, psrc,
+                                 (unsigned long)cur, qube_has_qx(psrc))) {
+                    threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
+                    kputs("QUB: xread denied\n");
+                    return;
+                }
+            }
             if (v2_q_take_send(&ep0, &slot) == V2_OK) {
                 unsigned long nw = slot.len < cap ? slot.len : cap;
                 unsigned long ovf = slot.len > cap ? 1 : 0;
+                unsigned long sq = slot.sender < (unsigned long)NTHREADS
+                                       ? (unsigned long)qube_of[slot.sender]
+                                       : 0;
                 u_copy_out(up, slot.words, nw);
                 threads[cur].regs[10] = (uint64_t)nw;
                 threads[cur].regs[11] = (uint64_t)slot.sender;
-                threads[cur].regs[12] = (uint64_t)ovf;
+                threads[cur].regs[12] = (uint64_t)sq;
+                threads[cur].regs[13] = (uint64_t)ovf;
                 if (slot.sender < (unsigned long)NTHREADS) {
                     threads[slot.sender].state = T_RUNNABLE;
                     threads[slot.sender].wait_kind = V2_WK_NONE;
@@ -1061,6 +1112,163 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 }
                 break;
             }
+            case V2_INV_QCREATE: {
+                /* QCREATE (a1=initrd index, a2/a3 reserved=0): new thread
+                 * in a fresh qube label. Mirrors SPAWN's slot setup, then
+                 * stamps the fresh label. FAIL CLOSED: any validation
+                 * error -> V2_ERR_INVALID/OVERFLOW with no partial state. */
+                const uint8_t *elf_data;
+                uint32_t elf_size;
+                uint64_t entry = 0, brk = 0;
+                int child = -1;
+                if (!(a2 == 0 && a3 == 0)) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                if (qube_next >= (unsigned long)V2_QUBES_MAX) {
+                    rc = V2_ERR_OVERFLOW;
+                    break;
+                }
+                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                    if (threads[t].state == T_DEAD) {
+                        child = t;
+                        break;
+                    }
+                }
+                if (child < 0) {
+                    rc = V2_ERR_OVERFLOW;
+                    break;
+                }
+                /* A reused slot may hold a previous life's caps/mappings:
+                 * clear them so the load starts fresh (fail closed). */
+                for (int s = 0; s < V2_CAP_SLOTS; s++) /* bound: V2_CAP_SLOTS */
+                    caps.caps[child][s].valid = 0;
+                for (int i = 0; i < V2_VPN_SLOTS; i++) /* bound: V2_VPN_SLOTS */
+                    caps.vm[child][i].valid = 0;
+                {
+                    unsigned long child_root =
+                        build_child_vspace((unsigned long)cur,
+                                           (unsigned long)child);
+                    if (!child_root) {
+                        rc = V2_ERR_OVERFLOW;
+                        break;
+                    }
+                    threads[child].vspace_root_ppn = child_root;
+                }
+                /* Fresh IPC/notify state: a reused slot must not inherit
+                 * the previous life's blocked sends or pending signals. */
+                threads[child].ipc_ptr = 0;
+                threads[child].ipc_cap = 0;
+                threads[child].notify = 0;
+                threads[child].wait_kind = V2_WK_NONE;
+                /* Fresh registers: no stale-word leak into the new image. */
+                for (int r = 0; r < 32; r++) /* bound: 32 */
+                    threads[child].regs[r] = 0;
+                threads[child].state = T_RUNNABLE;
+                rc = v2_elf_load(elf_data, (size_t)elf_size, &caps,
+                                 (unsigned long)child, &entry, &brk);
+                if (rc == V2_OK && entry != 0) {
+                    v2_pte_sync((unsigned long)child);
+                    threads[child].regs[2] = u_sp[child];
+                    threads[child].sepc = entry;
+                    qube_of[child] = (uint8_t)qube_next++;
+                    kputs("QUB: qube");
+                    kputdec((unsigned long)qube_of[child]);
+                    kputs(" up\n");
+                    rc = V2_OK;
+                } else {
+                    threads[child].state = T_DEAD; /* cleanup on failure */
+                    if (rc == V2_OK)
+                        rc = V2_ERR_INVALID;
+                }
+                break;
+            }
+            case V2_INV_QDESTROY: {
+                /* QDESTROY (a1=label, a2/a3 reserved=0): park every thread
+                 * in the qube, drop their queued IPC, revoke-drain their
+                 * caps + clear hardware PTEs. Label 0 (base system) can
+                 * never be destroyed. FAIL CLOSED. */
+                unsigned long label = (unsigned long)a1;
+                int found = 0;
+                if (!(a2 == 0 && a3 == 0)) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                if (label == 0 || label >= (unsigned long)V2_QUBES_MAX) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                    if (qube_of[t] == (uint8_t)label)
+                        found = 1;
+                }
+                if (!found) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                /* Drop queued IPC entries owned by the qube (compact both
+                 * queues in place; other qubes' entries are preserved). */
+                {
+                    int w = 0;
+                    for (int i = 0; i < ep0.send_len; i++) { /* bound: V2_IPC_Q */
+                        int idx = (ep0.send_head + i) % V2_IPC_Q;
+                        unsigned long s = ep0.sendq[idx].sender;
+                        if (s < (unsigned long)NTHREADS &&
+                            qube_of[s] == (uint8_t)label)
+                            continue; /* drop: sender dies below */
+                        if (w != i) {
+                            int dst = (ep0.send_head + w) % V2_IPC_Q;
+                            ep0.sendq[dst] = ep0.sendq[idx];
+                        }
+                        w++;
+                    }
+                    ep0.send_len = w;
+                    w = 0;
+                    for (int i = 0; i < ep0.recv_len; i++) { /* bound: V2_IPC_Q */
+                        int idx = (ep0.recv_head + i) % V2_IPC_Q;
+                        unsigned long tid = ep0.recvq[idx];
+                        if (tid < (unsigned long)NTHREADS &&
+                            qube_of[tid] == (uint8_t)label)
+                            continue; /* drop: waiter dies below */
+                        if (w != i) {
+                            int dst = (ep0.recv_head + w) % V2_IPC_Q;
+                            ep0.recvq[dst] = ep0.recvq[idx];
+                        }
+                        w++;
+                    }
+                    ep0.recv_len = w;
+                }
+                /* Revoke-drain caps, clear the whole frame window in
+                 * hardware, park the threads. */
+                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                    if (qube_of[t] != (uint8_t)label)
+                        continue;
+                    for (int s = 0; s < V2_CAP_SLOTS; s++) { /* bound: V2_CAP_SLOTS */
+                        if (caps.caps[t][s].valid)
+                            (void)v2_revoke(&caps, (unsigned long)t,
+                                            (unsigned long)s);
+                    }
+                    for (int vpn = 0; vpn < V2_VPN_SLOTS; vpn++) /* bound: V2_VPN_SLOTS */
+                        v2_pte_clear((unsigned long)t,
+                                     (unsigned long)vpn);
+                    threads[t].state = T_DEAD;
+                    threads[t].wait_kind = V2_WK_NONE;
+                    threads[t].ipc_ptr = 0;
+                    threads[t].ipc_cap = 0;
+                    threads[t].notify = 0;
+                    qube_of[t] = 0;
+                }
+                v2_sfence_all();
+                kputs("QUB: qube");
+                kputdec(label);
+                kputs(" dead\n");
+                rc = V2_OK;
+                break;
+            }
             default:
                 rc = V2_ERR_INVALID;
                 break;
@@ -1149,6 +1357,7 @@ void kboot(void) {
     kputs("v2 stage2: S-mode entry (OpenSBI)\n");
     v2_ep_init(&ep0);
     frame_pool_init();
+    qube_init(qube_of, (unsigned long)NTHREADS); /* all threads start in qube 0 */
     initrd_init();
     v2_caps_init(&caps, NTHREADS);
     kputs("[caps] init: thread 0 has root caps to all frames\n");
@@ -1221,6 +1430,10 @@ void kboot(void) {
             kputs("[spawn] mem_server ELF FAIL; stub\n");
         }
     }
+    /* Qubes boot labels: mem_server (thread 2) owns qube 1; A/B/CAP stub
+     * stay in qube 0. Fresh QCREATE labels start at qube_next == 2. */
+    qube_of[2] = 1;
+    kputs("QUB: qube0 qube1 up\n");
     kputs("v2: entering U-mode mem_server\n");
     enter_thread(0);
 }
