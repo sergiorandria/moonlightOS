@@ -85,9 +85,9 @@ minted at creation by AdminVM; the label travels on every IPC (like
 
 | Qubes mechanism | Moonlight implementation | State |
 |---|---|---|
-| Xen VM boundary | H-ext two-stage `satp` + per-qube VSpace + PMP + CHERI bounds per thread | [TODO] S1 |
-| dom0 | AdminVM (U-mode server, no ambient caps) | [TODO] S2 |
-| qrexec + policy | `qrexec_server`: typed RPC over Endpoints, policy table, confirm path | [TODO] S2 |
+| Xen VM boundary | H-ext two-stage `satp` + per-qube VSpace + PMP + CHERI bounds per thread | [TODO] S1-deferred (VSpace+cap isolation shipped instead; see S1 BUILT note in §11) |
+| dom0 | AdminVM (U-mode server, no ambient caps) | [HAVE] S2: `userspace/adminvm/v2_main.c` |
+| qrexec + policy | `qrexec_server`: typed RPC over Endpoints, policy table, confirm path | [HAVE] S2: `userspace/qrexec_server/v2_main.c` |
 | NetVM/FirewallVM split | `net` qube (existing `virtio_net` driver) + `firewall` filter server | [TODO] S3 |
 | USBVM | `usb` qube + new USB HCI driver (bulk-only first, no isochronous) | [TODO] S3 |
 | GUI domain | `gui` server: per-qube Frame-capped surfaces + AdminVM chrome | [TODO] S4 |
@@ -202,9 +202,32 @@ usb         AdminVM     device.attach ask   "attach USB device?"
   qube-create/destroy syscalls or Invoke ops, label stamping on IPC.
   *Theorem:* authority confinement over qube labels. *Demo:* two qubes,
   cross-read faults, contained.
+  - BUILT 2026-09-19 (H-ext deferred, VSpace+cap isolation shipped):
+    `kernel/qube.h` (labels, `V2_RIGHT_QX=0x8UL`, `V2_INV_QCREATE=14`/
+    `V2_INV_QDESTROY=15`, `qube_raw_ok` gate, ask/audit ops) +
+    `kernel/kboot.c` wiring (`qube_of[]`, SEND/RECV gate fail-closed
+    with `QUB: xread denied`, QCREATE/QDESTROY, RECV stamp
+    `(a0=nw,a1=sender,a2=qube,a3=ovf)`); NTHREADS 4→6.
+    Host tests `tests/test_qlabels.c` + `tests/test_qube_policy.c`
+    (`verify.sh [1f]`); smoke markers `QUB: qube0 qube1 up`,
+    `QUB: xread denied`. Proofs: `Qubes_B.thy` (`raw_ok_same/cross`,
+    `c_q_call_refines`, `c_q_destroy_refines`, preservation + mutants,
+    C(8)-vs-spec(16) strictness pin).
 - **S2 — qrexec + AdminVM.** Policy engine, ask/confirm path, audit log,
   label chrome hooks. *Demo:* work→vault sign with prompt; denied
   clipboard exfil test.
+  - BUILT 2026-09-19: `userspace/qrexec_server/v2_main.c` (boot policy
+    work→vault `keys.sign` ask / `clipboard` deny, T_CALL/T_DECIDE broker
+    path, `QREXEC:`/`AUD:` transcript) + `userspace/adminvm/v2_main.c`
+    (HELLO-register, T_ASK prompt display, T_DECIDE verdict; auto-approve
+    — no GETC in the UABI, so the Ask leg is display-only), initrd
+    indexes 1–2 (`tools/mkinitrd.sh`: mem_server 0, qrexec 1, adminvm 2),
+    SPAWNed at boot (`[spawn] qrexec/adminvm ELF ok`;
+    `v2_user.ld` `ALIGN(4096)` fix for the second LOAD). Smoke markers
+    `QREXEC: ask-allow-deny` + `AUD: 3 entries`; semantics pinned by
+    `c_decide_eq` (`Qubes_B.thy`). Demo RPCs are arg-less (T_DECIDE
+    forwards zeros); live T_CALL→ASK→DECIDE→DELIVER is future work
+    (see Roadmap below).
 - **S3 — Net/firewall/USB split.** `net` qube (existing driver), `firewall`
   filter server, USB HCI driver + `usb` qube. *Demo:* AppVM web fetch
   through the chain; USB attach prompt.
@@ -217,6 +240,11 @@ usb         AdminVM     device.attach ask   "attach USB device?"
   policy engine and all untrusted-input parsers.
 - **S7 — Boot trust + release.** DICE wired, sealed vault, recovery flow,
   reproducible release artifacts, first versioned release.
+- **Deferred past S2 (honest future work, not built):** live end-to-end
+  T_CALL→ASK→DECIDE→DELIVER traffic over EP0 (needs a qube-0 client
+  holding QX or a same-qube harness); audit-cap `V2_AUDIT_MAX=64`
+  overflow modeling (spec audit lists are unbounded);
+  qube-lifecycle alias follow-ups; demo-convention brittleness (minor).
 
 ## 12. Hardware + emulation requirements
 

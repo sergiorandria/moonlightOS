@@ -35,8 +35,8 @@ does exactly this).
 ## 2. Userspace (freestanding ELFs + libc + drivers)
 
 ```bash
-make -C userspace        # build/hello.elf, build/moonsh.elf, build/linux_demo.elf, build/mem_server.elf, libc objects
-tools/mkinitrd.sh        # repack kernel/initrd_data.c + kernel/initrd.h (mem_server.elf first, index 0)
+make -C userspace        # build/hello.elf, build/moonsh.elf, build/linux_demo.elf, build/mem_server.elf, build/qrexec.elf, build/adminvm.elf, libc objects
+tools/mkinitrd.sh        # repack kernel/initrd_data.c + kernel/initrd.h (initrd order: mem_server.elf 0, qrexec.elf 1, adminvm.elf 2, then moonsh/ls/cat)
 make -C userspace drivers # freestanding rv64 -Werror compile gates for the 8 driver compartments
 make -C userspace clean
 ```
@@ -55,7 +55,7 @@ tools/verify.sh
 Stages: host unit tests (ABI regression, servers + shell, driver host-sims,
 freestanding libc, v2 IPC/caps) → production gates (linker layout: no
 PROGBITS inside the `[_bss,_bss_end)` clear range; `user.c` rodata ban) →
-Isabelle `kernel/isabelle` session (`V2` + `Qubes_A`, anti-vacuity gate) →
+Isabelle `kernel/isabelle` session (`V2` + `Qubes_A` + `Qubes_B`, anti-vacuity gate) →
 kernel build → QEMU text smoke. All `PASS` required before pushing
 (proofs/SMOKE may SKIP if the host lacks Isabelle/QEMU).
 
@@ -77,6 +77,14 @@ use `--no-disk` to boot diskless. Expect:
 v2 stage2: S-mode entry (OpenSBI)
 v2: satp Sv39 on, U-bit split (k U=0 / u U=1), SUM=0
 [spawn] mem_server ELF ok
+[spawn] qrexec ELF ok
+[spawn] adminvm ELF ok
+QUB: qube0 qube1 up
+QUB: xread denied
+QREXEC: ask
+QREXEC: allow
+QREXEC: deny
+AUD: 3 entries
 v2: entering U-mode thread A
 B00pn
 A10pg
@@ -89,7 +97,7 @@ no runnable left; parking cpu
 ## 5. Isabelle
 
 ```bash
-isabelle build -D kernel/isabelle -v    # session V2 (V2_A .. V2_D, Qubes_A)
+isabelle build -D kernel/isabelle -v    # session V2 (V2_A .. V2_D, Qubes_A, Qubes_B)
 make -C kernel isabelle                 # same
 ```
 

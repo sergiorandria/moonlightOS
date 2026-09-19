@@ -254,6 +254,41 @@ per-function where not).
 - **Stage 5 — Drivers + storage.** virtio_net + block in U-mode behind
   IOMMU windows, VFS, micro-reboot. SMP only if Stages 0–4 proofs replay
   cleanly — otherwise explicitly cut.
+- **Qubes S1 — isolation core (qube labels + raw gate).**
+  - BUILT 2026-09-19: `kernel/qube.h` (labels, `V2_RIGHT_QX=0x8UL`,
+    `V2_INV_QCREATE=14`/`V2_INV_QDESTROY=15`, raw gate `qube_raw_ok`,
+    ask/audit ops) wired in `kernel/kboot.c` (per-thread `qube_of[]`,
+    raw gate on SEND/RECV fail-closed with `QUB: xread denied`,
+    QCREATE/QDESTROY Invoke ops, RECV stamp
+    `(a0=nw,a1=sender,a2=qube,a3=ovf)`). Host-tested by
+    `tests/test_qlabels.c` + `tests/test_qube_policy.c` (gated in
+    `verify.sh [1f]`); QEMU smoke asserts `QUB: qube0 qube1 up` and
+    `QUB: xread denied`. Confinement proved in `Qubes_B.thy`
+    (`raw_ok_same/cross`, `c_q_call_refines` with allow/deny/ask_suspend/
+    ask_full pins, `c_q_destroy_refines`, preservation + mutants).
+- **Qubes S2 — qrexec + AdminVM.**
+  - BUILT 2026-09-19: `userspace/qrexec_server/v2_main.c` (typed RPC over
+    EP0, boot policy work→vault `keys.sign` ask / `clipboard` deny,
+    `QREXEC:`/`AUD:` transcript) + `userspace/adminvm/v2_main.c`
+    (HELLO-register, T_ASK prompt, T_DECIDE verdict), both packed as
+    initrd indexes 1–2 and SPAWNed at boot (`[spawn] qrexec/adminvm ELF
+    ok`). QEMU smoke asserts `QREXEC: ask`, `QREXEC: allow`,
+    `QREXEC: deny`, `AUD: 3 entries`; policy semantics pinned by
+    `c_decide_eq` in `Qubes_B.thy`.
+  - REFINEMENTS vs `QUBES_ISOLATION_PLAN.md`: (a) NTHREADS 4→6 (qrexec,
+    adminvm, scratch threads); (b) RECV stamp widened to a2=qube/a3=ovf
+    (UABI bump consumed verbatim by both ELFs); (c) qrexec lives in its
+    own qube (open-question #2 decided: fault containment over fewer
+    IPC hops); (d) H-ext stays `[TODO]` S1-deferred (open-question #1:
+    VSpace+cap isolation shipped instead); (e) `v2_user.ld` gained
+    `ALIGN(4096)` before `.rodata` (second LOAD of qrexec/adminvm ELFs
+    was page-misaligned; loader rejects fail-closed); (f) the S2 Ask leg
+    is display-only in the demo (auto-approve; no GETC in the UABI) and
+    demo RPCs are arg-less (T_DECIDE forwards zeros); live
+    T_CALL→ASK→DECIDE→DELIVER traffic is future work, listed in §10.
+  - KNOWN DEFERRED (not built): audit-cap `V2_AUDIT_MAX=64` overflow is
+    unmodeled (spec audit lists unbounded); qube-lifecycle alias
+    follow-ups; demo-convention brittleness (minor).
 
 ## 10. Open questions (decided late, deliberately)
 
