@@ -22,6 +22,8 @@ ELF_DIR="userspace/build"
 # do not list aspirational binaries (a missing entry used to warn forever).
 ELFS=(
     "mem_server.elf"
+    "qrexec.elf"
+    "adminvm.elf"
     "moonsh.elf"
     "ls.elf"
     "cat.elf"
