@@ -72,7 +72,7 @@ static void u_putc(char c)
 
 static void u_puts(const char *s)
 {
-    while (*s)
+    while (*s) /* bound: NUL-terminated rodata literal */
         u_putc(*s++);
 }
 
@@ -83,7 +83,7 @@ static void u_putdec(long v)
         v = -v;
     }
     if (v >= 10)
-        u_putdec(v / 10);
+        u_putdec(v / 10); /* bound: <=20 digits */
     u_putc((char)('0' + (v % 10)));
 }
 
@@ -155,7 +155,6 @@ void qrexec_main(void)
     pol.rules[1] = (v2_qrule_t){.src = V2_QWILD, .dst = V2_QWILD,
                                 .rpc = RPC_CLIPBOARD,
                                 .decision = V2_QDEC_DENY};
-    pol.nrules = 2;
 
     u_puts("QREXEC: up\n");
     u_puts("AUD: boot nrules=2\n");

@@ -1186,10 +1186,10 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 /* Fresh registers: no stale-word leak into the new image. */
                 for (int r = 0; r < 32; r++) /* bound: 32 */
                     threads[child].regs[r] = 0;
-                threads[child].state = T_RUNNABLE;
                 rc = v2_elf_load(elf_data, (size_t)elf_size, &caps,
                                  (unsigned long)child, &entry, &brk);
                 if (rc == V2_OK && entry != 0) {
+                    threads[child].state = T_RUNNABLE;
                     v2_pte_sync((unsigned long)child);
                     threads[child].regs[2] = u_sp[child];
                     threads[child].sepc = entry;
@@ -1535,9 +1535,9 @@ void kboot(void) {
         demo.rules[1] = (v2_qrule_t){.src = V2_QWILD, .dst = V2_QWILD,
                                      .rpc = 2, .decision = V2_QDEC_DENY};
         /* 1. Direct work->vault bypass hits the raw gate: thread 0 is qube 0,
-         * thread 2 is qube 1, and thread 0 holds no QX -> expect reject. */
-        if (qube_raw_ok(qube_of, (unsigned long)NTHREADS, 0, 2,
-                        qube_has_qx(0))) {
+         * thread 2 is qube 1. Literal 0 tests the gate independent of
+         * thread-0's cap table (identical today: thread 0 holds no QX). */
+        if (qube_raw_ok(qube_of, (unsigned long)NTHREADS, 0, 2, 0)) {
             kputs("[demo] FAIL raw gate allowed xqube\n");
         } else {
             (void)qube_audit(&demo, 0, 1, 0, 0);

@@ -212,7 +212,8 @@ usb         AdminVM     device.attach ask   "attach USB device?"
     (`verify.sh [1f]`); smoke markers `QUB: qube0 qube1 up`,
     `QUB: xread denied`. Proofs: `Qubes_B.thy` (`raw_ok_same/cross`,
     `c_q_call_refines`, `c_q_destroy_refines`, preservation + mutants,
-    C(8)-vs-spec(16) strictness pin).
+    C(8)-vs-spec(16) strictness pin (`mutant_b_c9_bad` +
+    `mutant_b_c9_spec_ok`).
 - **S2 — qrexec + AdminVM.** Policy engine, ask/confirm path, audit log,
   label chrome hooks. *Demo:* work→vault sign with prompt; denied
   clipboard exfil test.
@@ -224,7 +225,7 @@ usb         AdminVM     device.attach ask   "attach USB device?"
     indexes 1–2 (`tools/mkinitrd.sh`: mem_server 0, qrexec 1, adminvm 2),
     SPAWNed at boot (`[spawn] qrexec/adminvm ELF ok`;
     `v2_user.ld` `ALIGN(4096)` fix for the second LOAD). Smoke markers
-    `QREXEC: ask-allow-deny` + `AUD: 3 entries`; semantics pinned by
+    `QREXEC: ask` / `QREXEC: allow` / `QREXEC: deny` + `AUD: 3 entries`; semantics pinned by
     `c_decide_eq` (`Qubes_B.thy`). Demo RPCs are arg-less (T_DECIDE
     forwards zeros); live T_CALL→ASK→DECIDE→DELIVER is future work
     (see Roadmap below).

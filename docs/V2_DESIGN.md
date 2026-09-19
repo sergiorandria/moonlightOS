@@ -300,3 +300,5 @@ per-function where not).
    in Stage 3).
 4. Whether `Seal` survives as a syscall or becomes an `Invoke` op
    (spec churn only — decide in Stage 0, freeze after).
+5. Live T_CALL→ASK→DECIDE→DELIVER traffic + audit-cap modeling +
+   lifecycle aliases (future work, see §9 KNOWN DEFERRED).

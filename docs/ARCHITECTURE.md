@@ -43,8 +43,9 @@ The kernel source lives in `kernel/` and builds with stock clang:
 5. SPAWNs the initrd servers in order — mem_server (index 0, thread 2,
    qube 1), qrexec (index 1, thread 3, qube 2), adminvm (index 2,
    thread 4, qube 3) — printing `[spawn] <name> ELF ok` per server
-   (`QUB: qube0 qube1 up` once labels land), then runs the S2 demo
-   (`QUB: xread denied`, `QREXEC: ask/allow/deny`, `AUD: 3 entries`)
+   (`QUB: qube0 qube1 up` base-qube marker once labels land;
+   brokers/qubes 2-3 covered by the `[spawn]` lines), then runs the S2 demo
+   (`QUB: xread denied`, `QREXEC: ask` / `QREXEC: allow` / `QREXEC: deny`, `AUD: 3 entries`)
    before entering thread 0.
 
 ### Scheduling
@@ -153,8 +154,9 @@ validates the ABI headers).
 5. **QEMU smoke**: boots OpenSBI → kernel, asserts `satp Sv39 on`,
    `entering U-mode`, `B00pn`, `A10pg`, `W1`, `[spawn] mem_server ELF ok`,
    `MEM-SRV`, `MEM`/`CAP`/`OK` invoke reports, `DU: vpn0 mirrored`,
-   `NP`, `[spawn] qrexec/adminvm ELF ok`, `QUB: qube0 qube1 up`,
-   `QUB: xread denied`, `QREXEC: ask/allow/deny`, `AUD: 3 entries`,
+   `NP`, `[spawn] qrexec/adminvm ELF ok`, `QUB: qube0 qube1 up`
+   (base-qube marker; brokers/qubes 2-3 covered by the `[spawn]` lines),
+   `QUB: xread denied`, `QREXEC: ask` / `QREXEC: allow` / `QREXEC: deny`, `AUD: 3 entries`,
    `no runnable left; parking cpu`. Missing markers fail the gate
    (fail closed).
 
