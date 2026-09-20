@@ -64,8 +64,11 @@ static inline int fw_decide(const fw_rule_t *rules, unsigned long n,
     return FW_DENY;
 }
 
-/* Reload blob: byte 0 = count, then count * 8B entries
- * (src u32 LE, proto u8, pad, dport u16 LE, verdict u8, pad).
+/* Reload blob: byte 0 = count, then count * 8B entries, no pads
+ * (src u32 LE, proto u8, dport u16 LE, verdict u8).
+ * Wire-vs-blob dport asymmetry is honored: packets carry dport big-endian
+ * (fw_decide reads bytes[+2]<<8 | bytes[+3]) while the blob stores dport
+ * little-endian (parsed here as e[5] | e[6]<<8).
  * Returns parsed count (0..FW_MAX_RULES) or -1 on any malformation.
  * Pure validation: the caller swaps tables only on count >= 0. */
 static inline int fw_reload_validate(const uint8_t *blob, unsigned long len,

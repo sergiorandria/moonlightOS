@@ -24,6 +24,8 @@ ELFS=(
     "mem_server.elf"
     "qrexec.elf"
     "adminvm.elf"
+    "firewall.elf"
+    "net.elf"
     "moonsh.elf"
     "ls.elf"
     "cat.elf"
