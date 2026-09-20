@@ -49,6 +49,13 @@
 
 #define RPC_KEYS_SIGN 1
 #define RPC_CLIPBOARD 2
+#define RPC_NET_SEND 3
+#define RPC_NET_FWD 4
+#define RPC_FILTER_RELOAD 5
+#define RPC_NET_DONE 6
+
+#define FW_QUBE 4
+#define NET_QUBE 5
 
 #define QREXEC_QUBE 1
 
@@ -145,8 +152,10 @@ void qrexec_main(void)
     unsigned long admin_tid = 0;
     int admin_known = 0;
 
-    /* Boot policy table: {{0,1,keys.sign,ASK},{*,*,clipboard,DENY}}. */
-    pol.nrules = 2;
+    /* Boot policy table: keys.sign ASK, clipboard DENY, net.send ASK
+     * (AppVM->firewall), net.fwd ALLOW (firewall->net), net.send catch-all
+     * DENY, filter.reload ASK (AdminVM->firewall). First match wins. */
+    pol.nrules = 6;
     pol.npending = 0;
     pol.naudit = 0;
     pol.rules[0] = (v2_qrule_t){.src = 0, .dst = QREXEC_QUBE,
@@ -155,9 +164,21 @@ void qrexec_main(void)
     pol.rules[1] = (v2_qrule_t){.src = V2_QWILD, .dst = V2_QWILD,
                                 .rpc = RPC_CLIPBOARD,
                                 .decision = V2_QDEC_DENY};
+    pol.rules[2] = (v2_qrule_t){.src = 0, .dst = FW_QUBE,
+                                .rpc = RPC_NET_SEND,
+                                .decision = V2_QDEC_ASK};
+    pol.rules[3] = (v2_qrule_t){.src = FW_QUBE, .dst = NET_QUBE,
+                                .rpc = RPC_NET_FWD,
+                                .decision = V2_QDEC_ALLOW};
+    pol.rules[4] = (v2_qrule_t){.src = V2_QWILD, .dst = V2_QWILD,
+                                .rpc = RPC_NET_SEND,
+                                .decision = V2_QDEC_DENY};
+    pol.rules[5] = (v2_qrule_t){.src = 3, .dst = FW_QUBE,
+                                .rpc = RPC_FILTER_RELOAD,
+                                .decision = V2_QDEC_ASK};
 
     u_puts("QREXEC: up\n");
-    u_puts("AUD: boot nrules=2\n");
+    u_puts("AUD: boot nrules=6\n");
 
     for (;;) { /* bound: inf - service loop */
         uint64_t buf[4];
@@ -191,14 +212,16 @@ void qrexec_main(void)
                 if (idx < pol.npending && idx < (unsigned long)V2_PENDING_MAX &&
                     pol.pending[idx].hash == h) {
                     unsigned long rpc = pol.pending[idx].rpc;
+                    unsigned long a0 = pol.pending[idx].arg0;
+                    unsigned long a1 = pol.pending[idx].arg1;
                     int arc = qube_decide_idx(&pol, idx, approve);
                     (void)arc;
                     if (approve) {
                         uint64_t fwd[4];
                         fwd[0] = T_DELIVER;
                         fwd[1] = rpc;
-                        fwd[2] = 0;
-                        fwd[3] = 0;
+                        fwd[2] = a0;
+                        fwd[3] = a1;
                         /* Backpressure: blocks until a service RECVs. */
                         u_send(0, fwd, 4);
                         u_puts("AUD: allow rpc=");
@@ -260,6 +283,8 @@ void qrexec_main(void)
                 ask.dst = QREXEC_QUBE;
                 ask.rpc = rpc;
                 ask.hash = h;
+                ask.arg0 = n >= 3 ? (unsigned long)buf[2] : 0;
+                ask.arg1 = n >= 4 ? (unsigned long)buf[3] : 0;
                 erc = qube_ask_enqueue(&pol, &ask);
                 if (erc == 0) {
                     uint64_t na[4];
