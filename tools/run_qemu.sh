@@ -85,6 +85,15 @@ fi
 # (-bios default). -bios none was the v1 M-mode world and must not return.
 BIOS_ARGS="-bios default"
 
+# Phase-2 NIC (S3 Task 4): virtio-net on a virtio-mmio transport with
+# QEMU user-netdev. The net ELF / kernel scan for the NIC (QEMU attaches
+# backends last-first), so NET_ARGS stays ahead of DISK/VGA/KBD devices
+# but no fixed transport is assumed. force-legacy=off: the pinned QEMU
+# defaults virtio-mmio transports to legacy mode (Version=1); the driver
+# implements the modern queue core and needs Version=2.
+NET_ARGS="-device virtio-net-device,netdev=n0 -netdev user,id=n0"
+VIRTIO_MODERN="-global virtio-mmio.force-legacy=off"
+
 # 256M virtio-blk virtual disk (raw). Microkernel separation: the kernel
 # never touches the disk. The disk is owned exclusively by the userspace
 # block compartment (userspace/drivers/block.c, 524288 sectors); mem_server
@@ -133,10 +142,10 @@ fi
 if [[ "$*" == *"--gdb"* ]]; then
   echo "GDB on :1234 - connect with: riscv64-unknown-elf-gdb $ELF -ex 'target remote :1234'"
   # shellcheck disable=SC2086
-  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $VGA_ARGS $KBD_ARGS $DISK_ARGS -S -s -serial mon:stdio $LOG_ARGS -no-reboot
+  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $VIRTIO_MODERN $VGA_ARGS $KBD_ARGS $DISK_ARGS -S -s -serial mon:stdio $LOG_ARGS -no-reboot
 fi
 
-echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS $BIOS_ARGS -kernel $ELF -no-reboot $LOG_ARGS"
+echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS $NET_ARGS $VIRTIO_MODERN $BIOS_ARGS -kernel $ELF -no-reboot $LOG_ARGS"
 if [ -n "$DISK_ARGS" ]; then
   echo "(virtio-blk disk: $DISK 256M raw, owned by the userspace block compartment; --no-disk boots diskless)"
 else
@@ -149,4 +158,4 @@ else
 fi
 echo "(use --trace-int to re-enable -d int logging)"
 # shellcheck disable=SC2086
-exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS -serial mon:stdio $LOG_ARGS -no-reboot
+exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $VIRTIO_MODERN $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS -serial mon:stdio $LOG_ARGS -no-reboot

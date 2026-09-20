@@ -84,6 +84,37 @@ static void kputdec(unsigned long v) {
 _Static_assert(NTHREADS <= V2_CAP_THREADS,
                "NTHREADS must fit the caps model + page tables");
 
+/* S3 Phase-2 NIC: virtio-net on an MMIO transport (riscv-virt standard
+ * layout: 8 transports at 0x10001000+i*0x1000, IRQ 1+i). Measured on the
+ * pinned QEMU: transports default to legacy mode (fixed with
+ * -global virtio-mmio.force-legacy=off on the QEMU cmdline) and backends
+ * attach last-first, so the NIC is NOT assumed at transport 0: kboot
+ * scans for the modern (version-2) net device (device id 1) and records
+ * its IRQ, and the tid-6 U-leaf maps all 8 transport pages (only tid 6).
+ * PLIC regs below name both hart-0 context sets (M + S); the S-context
+ * set signals S-mode directly (the path that delivers on the pinned
+ * QEMU), the M-context set is programmed identically as a fallback. */
+#define VIRTIO0_BASE 0x10001000UL
+#define VIRTIO_NTRANSPORTS 8
+#define VIRTIO_DEV_NET 1u
+#define PLIC_BASE 0x0c000000UL
+/* PLIC hart-0 contexts (sifive_plic, stride 0x80 enables / 0x1000 claim):
+ * the M-context set is reached via delegation, the S-context set signals
+ * S-mode directly. Measured on the pinned QEMU: only the S-context
+ * delivers to the hart (an M-context claim succeeds but MEIP never
+ * asserts), so both are programmed and the handler claims both. */
+#define PLIC_ENABLE_M 0x0c002000UL
+#define PLIC_ENABLE_S 0x0c002080UL
+#define PLIC_THRESH_M 0x0c200000UL
+#define PLIC_THRESH_S 0x0c201000UL
+#define PLIC_CLAIM_M 0x0c200004UL
+#define PLIC_CLAIM_S 0x0c201004UL
+#define NET_IRQ_BIT 0x1UL /* notify bit the scause=9 handler raises on tid 6 */
+
+/* Phase-2 NIC IRQ (1+transport index), discovered at boot; 0xFFFFFFFF
+ * when no modern net transport exists (handler then matches nothing). */
+static uint32_t net_virtio_irq = 0xFFFFFFFFUL;
+
 /* V2_INV_WRITE/READ move exactly one 64-bit word: the caps.h model is
  * word-per-frame (fdata[f] = val), so the real store/load mirrors exactly
  * what the model records and fdata can never diverge from the
@@ -102,6 +133,11 @@ static uint64_t l0_u_t[V2_CAP_THREADS][512] __attribute__((aligned(4096)));
 static uint64_t l1_m[512] __attribute__((aligned(4096)));
 static uint64_t l0_k[512] __attribute__((aligned(4096)));
 static uint64_t l0_frames[512] __attribute__((aligned(4096)));
+/* Phase-2 NIC U-leaf: single page table mapping the 8 VIRTIO0 transport
+ * pages for tid 6 only (wired at l1_t[6][5]; every other l1_t[t][5] stays
+ * 0, asserted at boot). Zero-initialized except [0..7]: the transport
+ * pages, RW, never X. */
+static uint64_t l0_netmmio[512] __attribute__((aligned(4096)));
 
 static uint64_t pte_leaf(uint64_t paddr, uint64_t flags) {
     return ((paddr >> 12) << 10) | flags | PTE_V;
@@ -126,6 +162,17 @@ static void pagetable_init(void) {
         l0_frames[i] = pte_leaf(V2_FRAME_PHYS_BASE + (uintptr_t)i * 4096,
                                 PTE_R | PTE_W | PTE_A | PTE_D);
     l1_m[128] = pte_leaf(0x10000000UL, PTE_R | PTE_W | PTE_A | PTE_D);
+    /* Phase-2 NIC: S-only RW leaves for the PLIC region
+     * (0x0c000000-0x0c3fffff: priority/pending/enable + hart-0
+     * threshold/claim), mirroring the l1_m[128] UART line. */
+    l1_m[96] = pte_leaf(0x0c000000UL, PTE_R | PTE_W | PTE_A | PTE_D);
+    l1_m[97] = pte_leaf(0x0c200000UL, PTE_R | PTE_W | PTE_A | PTE_D);
+    /* Phase-2 NIC U-leaf: all 8 transport pages for tid 6 (NET_UVA +
+     * i*0x1000, VPN[1] 5, VPN[0] 0..7: the driver scans for the NIC
+     * because QEMU attaches backends last-first). W^X: RW, never X. */
+    for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
+        l0_netmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
+                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* Per-thread VSpaces: shared kernel/leaf/frame/UART regions are wired
      * through each thread's own l1_t; the per-thread frame window
      * (l0_u_t) stays zero until Task 3 maps frames. */
@@ -135,6 +182,11 @@ static void pagetable_init(void) {
         l1_t[t][3] = pte_leaf(0x80600000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
         l1_t[t][4] = pte_table(l0_u_t[t]);
         l1_t[t][8] = pte_table(l0_frames);
+        /* Phase-2 NIC: the transport U-leaf exists ONLY in tid 6's tables
+         * (NET_UVA 0x80A00000 = VPN[1] 5). Every other l1_t[t][5] stays 0
+         * (asserted at boot: "NETMMIO: tid=6 only"). */
+        if (t == 6)
+            l1_t[t][5] = pte_table(l0_netmmio);
         root_pt_t[t][0] = pte_table(l1_m);
         root_pt_t[t][2] = pte_table(l1_t[t]);
     }
@@ -356,6 +408,7 @@ static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
 #define V2_INV_EXEC 11
 #define V2_INV_WRITE 12
 #define V2_INV_READ 13
+#define V2_INV_FRAME_PA 16 /* (vpn,0,0,0): PA of the frame mapped at vpn; reserved!=0 -> INVALID */
 
 /* ---- User copy (both directions, V2_DESIGN Sec.4): validate-then-copy.
  * S runs with SUM=0; the window is opened only for the bounded copy loop
@@ -541,6 +594,35 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             sbi_putchar(n ? 'B' : 'A');
             sbi_putchar('\n');
             enter_thread(n);
+        }
+        if (code == 9) { /* S-mode external: virtio IRQ via PLIC claim */
+            uint32_t s = *(volatile uint32_t *)PLIC_CLAIM_S;
+            uint32_t m = *(volatile uint32_t *)PLIC_CLAIM_M;
+            uint32_t src = 0;
+            /* Either context may carry the delivery (measured: S does);
+             * one marker per trap even if both fired. */
+            if (s == net_virtio_irq)
+                src = s;
+            else if (m == net_virtio_irq)
+                src = m;
+            if (src != 0) {
+                threads[6].notify |= NET_IRQ_BIT;
+                /* Wake only genuine WAIT waiters (NOTIFY discipline);
+                 * unknown sources never wake anyone. */
+                if (threads[6].state == T_BLOCKED &&
+                    threads[6].wait_kind == V2_WK_WAIT) {
+                    threads[6].state = T_RUNNABLE;
+                    threads[6].wait_kind = V2_WK_NONE;
+                }
+                kputs("NET: irq ok\n");
+            } else {
+                kputs("IRQ: unexpected\n");
+            }
+            if (s != 0)
+                *(volatile uint32_t *)PLIC_CLAIM_S = s;
+            if (m != 0)
+                *(volatile uint32_t *)PLIC_CLAIM_M = m;
+            return;
         }
         kputs("[trap] unexpected interrupt\n");
         for (;;)
@@ -766,7 +848,10 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             uint64_t a2 = threads[cur].regs[12];
             uint64_t a3 = threads[cur].regs[13];
             threads[cur].sepc += 4;
-            int rc = V2_ERR_INVALID;
+            /* long: FRAME_PA returns a full PA (0x81000000+ exceeds int);
+             * all other ops assign small ints/negatives, so the epilogue
+             * regs[10] = (uint64_t)rc is bit-identical for them. */
+            long rc = V2_ERR_INVALID;
             switch (op) {
             case V2_INV_MINT:
                 rc = v2_mint(&caps, (unsigned long)cur, a1, a2, a3);
@@ -1291,6 +1376,25 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 rc = V2_OK;
                 break;
             }
+            case V2_INV_FRAME_PA: {
+                /* FRAME_PA (a1=vpn, a2/a3 reserved=0): return the physical
+                 * address of the frame mapped at vpn in the caller's VSpace.
+                 * Pure address math (V2_FRAME_PHYS_BASE + frame*4096): no
+                 * state change, no copy. Miss or nonzero reserved -> INVALID. */
+                int m; /* bound: V2_VPN_SLOTS (v2_vm_find scan) */
+                if (a2 != 0 || a3 != 0) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                m = v2_vm_find(&caps, (unsigned long)cur, a1);
+                if (m < 0) {
+                    rc = V2_ERR_INVALID;
+                    break;
+                }
+                rc = (long)(V2_FRAME_PHYS_BASE +
+                            caps.vm[cur][m].frame * 4096UL);
+                break;
+            }
             default:
                 rc = V2_ERR_INVALID;
                 break;
@@ -1399,6 +1503,28 @@ void kboot(void) {
     asm volatile("sfence.vma" ::: "memory");
     asm volatile("csrc sstatus, %0" :: "r"((1UL << 18) | (1UL << 19)) : "memory");
     kputs("v2: satp Sv39 on, U-bit split (k U=0 / u U=1), SUM=0\n");
+    /* Phase-2 NIC discovery: transports live at VIRTIO0_BASE+i*0x1000
+     * (S-only UART megapage, pre-MMU-mapped). QEMU attaches backends
+     * last-first, so scan for the modern net device instead of assuming
+     * transport 0. A found IRQ gets priority 1 + its enable bit with
+     * threshold 0 (any priority-1 IRQ fires); none found leaves
+     * net_virtio_irq at 0xFFFFFFFF (handler matches nothing, fail closed). */
+    for (int ti = 0; ti < VIRTIO_NTRANSPORTS; ti++) { /* bound: 8 */
+        volatile uint32_t *tr = (volatile uint32_t *)
+            (VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
+        if (tr[0] == 0x74726976u && tr[1] == 2u &&
+            tr[2] == (uint32_t)VIRTIO_DEV_NET) {
+            net_virtio_irq = (uint32_t)(1 + ti);
+            break;
+        }
+    }
+    if (net_virtio_irq != 0xFFFFFFFFUL) {
+        *(volatile uint32_t *)(PLIC_BASE + 4u * net_virtio_irq) = 1;
+        *(volatile uint32_t *)PLIC_ENABLE_M |= (1U << net_virtio_irq);
+        *(volatile uint32_t *)PLIC_ENABLE_S |= (1U << net_virtio_irq);
+        *(volatile uint32_t *)PLIC_THRESH_M = 0;
+        *(volatile uint32_t *)PLIC_THRESH_S = 0;
+    }
 
     for (int i = 0; i < NTHREADS; i++) { /* bound: NTHREADS */
         for (int r = 0; r < 32; r++)
@@ -1423,7 +1549,9 @@ void kboot(void) {
     /* Arm our timer BEFORE enabling: reprograms stimecmp, de-asserting any
      * stale firmware pending bit. */
     sbi_set_timer(rdtime() + TICK_DELTA);
-    asm volatile("csrs sie, %0" :: "r"(1UL << 5) : "memory");   /* STIE */
+    /* Phase-2 NIC PLIC setup lives in the discovery block above (priority
+     * + enable for the found IRQ, threshold 0 on the claimed context). */
+    asm volatile("csrs sie, %0" :: "r"((1UL << 5) | (1UL << 9)) : "memory"); /* STIE + SEIE */
     asm volatile("csrs sstatus, %0" :: "r"(1UL << 1) : "memory"); /* SIE */
 
     threads[0].regs[2] = u_sp[0];
@@ -1562,21 +1690,37 @@ void kboot(void) {
     }
     /* S3 QX boot grants: QX is holder-based (qube_has_qx scans the
      * sender's own table), so each cross-qube leg needs its sender to
-     * hold a QX cap. Three legs, three holders, all at slot 8: slot 8
-     * is the phase-1 data-plane slot (firewall FW_IN_SLOT, net
-     * NET_IN_SLOT — both ELFs enforce slot==8 fail-closed), so the QX
-     * grant and any later frame grant share one audited slot per table.
-     * qube0 augments its slot-8 root in place (slot 8 already holds
-     * root frame 8; a fresh slot would break the slot-8 convention),
-     * then delegates verbatim (QX flows through v2_grant unchanged):
-     * qube0->firewall lands tid 5 slot 8 (enables firewall->net) and
-     * firewall->net lands tid 6 slot 8 (enables net->firewall).
+     * hold a QX cap. Three legs, three holders, all at slot 9: slot 8 is
+     * the live data-plane slot (firewall FW_IN_SLOT, net NET_IN_SLOT —
+     * both ELFs enforce slot==8 fail-closed), and MAP rejects QX-bit
+     * caps, so a boot QX cap at slot 8 would collide with the live frame
+     * GRANT(->8)+MAP(8) path (grant needs an empty dst). The QX grants
+     * therefore live at slot >= 9, leaving slot 8 free in tid 5/6 for
+     * live traffic. qube0 augments its slot-9 root in place, then
+     * delegates verbatim (QX flows through v2_grant unchanged):
+     * qube0->firewall lands tid 5 slot 9 (enables firewall->net) and
+     * firewall->net lands tid 6 slot 9 (enables net->firewall).
      * Fail-closed: any grant failure prints marker-free "[demo] FAIL". */
-    caps.caps[0][8].rights |= V2_RIGHT_QX;
-    if (v2_grant(&caps, 0, 8, 5, 8) != V2_OK ||
-        v2_grant(&caps, 5, 8, 6, 8) != V2_OK ||
+    caps.caps[0][9].rights |= V2_RIGHT_QX;
+    if (v2_grant(&caps, 0, 9, 5, 9) != V2_OK ||
+        v2_grant(&caps, 5, 9, 6, 9) != V2_OK ||
         !qube_has_qx(0) || !qube_has_qx(5) || !qube_has_qx(6)) {
         kputs("[demo] FAIL qx boot grants\n");
+    }
+    /* NETMMIO leaf gate: the transport U-leaf exists ONLY in tid 6's
+     * tables (l1_t[6][5]); any other mapping is a leak. Fail-closed:
+     * mismatch prints marker-free "[demo] FAIL", so the smoke gate
+     * misses the marker and fails instead of passing on a lie. */
+    {
+        int mmio_ok = (l1_t[6][5] != 0);
+        for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+            if (t != 6 && l1_t[t][5] != 0)
+                mmio_ok = 0;
+        }
+        if (mmio_ok)
+            kputs("NETMMIO: tid=6 only\n");
+        else
+            kputs("[demo] FAIL netmmio leak\n");
     }
     /* S2 demo transcript (runs once at boot, in-kernel test_cap_thread-style
      * sequence: straight-line, bounded, no loops, no IPC). It drives the

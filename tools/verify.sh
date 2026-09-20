@@ -128,7 +128,7 @@ QEMU_STATUS="SKIP"
 if [ -f kernel/build/moonlight.elf ]; then
   QEMU=$(command -v qemu-system-riscv64 || command -v /tmp/qb2/qemu-system-riscv64 || echo "")
   if [ -n "$QEMU" ] && [ -x "$QEMU" ]; then
-    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf 2>&1 | tr -d '\0')
+    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -global virtio-mmio.force-legacy=off 2>&1 | tr -d '\0')
     # Fail closed: every missing marker flips the gate to FAIL (a smoke
     # that only prints FAIL lines but reports PASS proves nothing).
     QEMU_FAIL=0
@@ -160,6 +160,10 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "NET: up" && echo "v2 smoke: net up" || { echo "v2 smoke: FAIL (no NET up)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "LEAK: denied" && echo "v2 smoke: leak denied" || { echo "v2 smoke: FAIL (no leak)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "SPOOF: ignored" && echo "v2 smoke: spoof ignored" || { echo "v2 smoke: FAIL (no spoof)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "NETMMIO: tid=6 only" && echo "v2 smoke: netmmio leaf" || { echo "v2 smoke: FAIL (no netmmio)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "NET: link up" && echo "v2 smoke: net link" || { echo "v2 smoke: FAIL (no link)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "NET: tx ok" && echo "v2 smoke: net tx" || { echo "v2 smoke: FAIL (no tx)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "NET: irq ok" && echo "v2 smoke: net irq" || { echo "v2 smoke: FAIL (no irq)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "no runnable left; parking cpu" && echo "v2 smoke: clean park" || { echo "v2 smoke: FAIL (no clean park)"; QEMU_FAIL=1; }
     if [ "$QEMU_FAIL" = "0" ]; then
       QEMU_STATUS="PASS"
