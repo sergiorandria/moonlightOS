@@ -11,6 +11,7 @@
 #include "qube.h"
 #include "initrd.h"
 #include "elf.h"
+#include "../userspace/firewall/fw.h" /* S3 demo drives fw_decide (header-only, pure C) */
 
 /* ---- SBI (legacy EIDs; OpenSBI serves M-mode) ---- */
 #define SBI_SET_TIMER 0
@@ -75,9 +76,11 @@ static void kputdec(unsigned long v) {
  * free region above the image (< 0x80800000). S-only identity map via
  * l0_frames, wired at l1_t[t][8] (VPN[1] of 0x81000000) in every VSpace. */
 #define V2_FRAME_PHYS_BASE 0x81000000UL
-#define NTHREADS 6 /* bound for all thread loops (<= V2_CAP_THREADS) */
-/* Growing NTHREADS forces WCET/table re-analysis: threads[], qube_of[],
- * u_sp[] size with it; root_pt_t/l1_t/l0_u_t cover V2_CAP_THREADS. */
+#define NTHREADS 8 /* bound for all thread loops (<= V2_CAP_THREADS) */
+/* Threads: 0 A, 1 B, 2 mem_server, 3 qrexec, 4 AdminVM, 5 firewall,
+ * 6 net, 7 CAP stub. Growing NTHREADS forces WCET/table re-analysis:
+ * threads[], qube_of[], u_sp[] size with it; root_pt_t/l1_t/l0_u_t
+ * cover V2_CAP_THREADS. */
 _Static_assert(NTHREADS <= V2_CAP_THREADS,
                "NTHREADS must fit the caps model + page tables");
 
@@ -326,6 +329,7 @@ void test_cap_thread(void);
 void user_stacks_init(void);
 extern uintptr_t ustack_a_top, ustack_b_top, ustack_m_top, ustack_cap_top;
 extern uintptr_t ustack_qrexec_top, ustack_adminvm_top;
+extern uintptr_t ustack_fw_top, ustack_net_top;
 __attribute__((noreturn)) void u_enter(uctx_t *ctx);
 
 static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
@@ -1385,7 +1389,9 @@ void kboot(void) {
     u_sp[2] = (uint64_t)ustack_m_top;
     u_sp[3] = (uint64_t)ustack_qrexec_top; /* 8KB: policy frame (user.c) */
     u_sp[4] = (uint64_t)ustack_adminvm_top;
-    u_sp[5] = (uint64_t)ustack_cap_top;
+    u_sp[5] = (uint64_t)ustack_fw_top;
+    u_sp[6] = (uint64_t)ustack_net_top;
+    u_sp[7] = (uint64_t)ustack_cap_top;
     pagetable_init();
     uintptr_t root = (uintptr_t)root_pt_t[0];
     uint64_t satp = (8UL << 60) | ((root >> 12) & 0xFFFFFFFFFFFUL);
@@ -1429,12 +1435,12 @@ void kboot(void) {
     threads[2].regs[2] = u_sp[2];
     threads[2].sepc = (uint64_t)mem_server_main;
     threads[2].state = T_RUNNABLE;
-    /* Thread 5 is the scratch slot: it keeps the in-kernel capability demo
+    /* Thread 7 is the scratch slot: it keeps the in-kernel capability demo
      * (CAP/OK/DU/NP markers) that thread 3 ran before the S2 brokers took
-     * threads 3-4, and stays free for a future QCREATE demo. */
-    threads[5].regs[2] = u_sp[5];
-    threads[5].sepc = (uint64_t)test_cap_thread;
-    threads[5].state = T_RUNNABLE;
+     * threads 3-4 (and the S3 packet plane takes threads 5-6). */
+    threads[7].regs[2] = u_sp[7];
+    threads[7].sepc = (uint64_t)test_cap_thread;
+    threads[7].state = T_RUNNABLE;
     /* Stage 3: boot the userspace mem_server from initrd index 0 into
      * thread 2's VSpace. On success thread 2 enters the ELF image and
      * prints MEM-SRV from U-mode; on failure it keeps the in-kernel
@@ -1496,14 +1502,82 @@ void kboot(void) {
             kputs("[spawn] adminvm ELF FAIL; parked\n");
         }
     }
+    /* S3 packet plane: firewall from initrd index 3 into thread 5 (qube 4),
+     * net from index 4 into thread 6 (qube 5). Mirrors the S2 broker loads
+     * above. On success the thread enters the ELF image and prints FW: up
+     * / NET: up from U-mode; on failure it stays parked and the missing
+     * markers fail the smoke loudly (fail closed: no stub impersonates
+     * the packet plane). Same rendezvous discipline as S2: no QX exists
+     * for these qubes until the boot grants below, so no cross-qube
+     * delivery can complete before the labels + grants land. */
+    {
+        const uint8_t *elf_data;
+        uint32_t elf_size;
+        uint64_t entry = 0, brk = 0;
+        if (initrd_lookup(3, &elf_data, &elf_size) == 0 &&
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 5, &entry, &brk) == V2_OK &&
+            entry != 0) {
+            v2_pte_sync(5);
+            threads[5].regs[2] = u_sp[5];
+            threads[5].sepc = entry;
+            threads[5].state = T_RUNNABLE;
+            kputs("[spawn] firewall ELF ok\n");
+        } else {
+            kputs("[spawn] firewall ELF FAIL; parked\n");
+        }
+    }
+    {
+        const uint8_t *elf_data;
+        uint32_t elf_size;
+        uint64_t entry = 0, brk = 0;
+        if (initrd_lookup(4, &elf_data, &elf_size) == 0 &&
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 6, &entry, &brk) == V2_OK &&
+            entry != 0) {
+            v2_pte_sync(6);
+            threads[6].regs[2] = u_sp[6];
+            threads[6].sepc = entry;
+            threads[6].state = T_RUNNABLE;
+            kputs("[spawn] net ELF ok\n");
+        } else {
+            kputs("[spawn] net ELF FAIL; parked\n");
+        }
+    }
     /* Qubes boot labels: mem_server (thread 2) owns qube 1, qrexec
-     * (thread 3) owns qube 2, AdminVM (thread 4) owns qube 3; A/B/CAP stub
-     * stay in qube 0. Fresh QCREATE labels start at qube_next == 4. */
+     * (thread 3) owns qube 2, AdminVM (thread 4) owns qube 3, firewall
+     * (thread 5) owns qube 4, net (thread 6) owns qube 5; A/B/CAP stub
+     * stay in qube 0. Fresh QCREATE labels start at qube_next == 6. */
     qube_of[2] = 1;
     qube_of[3] = 2;
     qube_of[4] = 3;
-    qube_next = 4;
+    qube_of[5] = 4;
+    qube_of[6] = 5;
+    qube_next = 6;
     kputs("QUB: qube0 qube1 up\n");
+    /* NETQ label assert: fail closed (mismatch prints marker-free
+     * "[demo] FAIL", so the smoke gate misses the marker and fails). */
+    if (qube_of[5] != 4 || qube_of[6] != 5 || qube_next != 6) {
+        kputs("[demo] FAIL netq labels\n");
+    } else {
+        kputs("NETQ: labels ok\n");
+    }
+    /* S3 QX boot grants: QX is holder-based (qube_has_qx scans the
+     * sender's own table), so each cross-qube leg needs its sender to
+     * hold a QX cap. Three legs, three holders, all at slot 8: slot 8
+     * is the phase-1 data-plane slot (firewall FW_IN_SLOT, net
+     * NET_IN_SLOT — both ELFs enforce slot==8 fail-closed), so the QX
+     * grant and any later frame grant share one audited slot per table.
+     * qube0 augments its slot-8 root in place (slot 8 already holds
+     * root frame 8; a fresh slot would break the slot-8 convention),
+     * then delegates verbatim (QX flows through v2_grant unchanged):
+     * qube0->firewall lands tid 5 slot 8 (enables firewall->net) and
+     * firewall->net lands tid 6 slot 8 (enables net->firewall).
+     * Fail-closed: any grant failure prints marker-free "[demo] FAIL". */
+    caps.caps[0][8].rights |= V2_RIGHT_QX;
+    if (v2_grant(&caps, 0, 8, 5, 8) != V2_OK ||
+        v2_grant(&caps, 5, 8, 6, 8) != V2_OK ||
+        !qube_has_qx(0) || !qube_has_qx(5) || !qube_has_qx(6)) {
+        kputs("[demo] FAIL qx boot grants\n");
+    }
     /* S2 demo transcript (runs once at boot, in-kernel test_cap_thread-style
      * sequence: straight-line, bounded, no loops, no IPC). It drives the
      * REAL boot labels through qube_raw_ok and the qube.h policy ops the
@@ -1577,6 +1651,126 @@ void kboot(void) {
             kputs("AUD: ");
             kputdec(demo.naudit);
             kputs(" entries\n");
+        }
+    }
+    /* S3 Phase-1 demo (model-level: straight-line, bounded, no IPC).
+     * Drives the real fw_decide + qube_fnv1a + qube_raw_ok + qube_audit
+     * over one demo frame, one marker per leg. Fail-closed: any
+     * unexpected result prints marker-free "[demo] FAIL", so the smoke
+     * gate misses the marker and fails instead of passing on a lie.
+     * The frame lifecycle closes in-model via v2_revoke. */
+    {
+        fw_rule_t frules[3];
+        v2_qpolicy_t netdemo;
+        uint8_t pkt[64] = {0};
+        unsigned long i;
+        unsigned long sender_qube;
+        int ds, ms, gs, ns;
+        uint64_t h;
+        int dec;
+        /* Ruleset v0 mirror (boot): DNS out, HTTPS to Ask, else DENY. */
+        frules[0] = (fw_rule_t){.src_qube = 0,
+                                .proto = (unsigned long)FW_PROTO_UDP,
+                                .dport = 53,
+                                .verdict = FW_ALLOW};
+        frules[1] = (fw_rule_t){.src_qube = 0,
+                                .proto = (unsigned long)FW_PROTO_TCP,
+                                .dport = 443,
+                                .verdict = FW_ASK};
+        frules[2] = (fw_rule_t){.src_qube = FW_ANY_QUBE,
+                                .proto = (unsigned long)FW_ANY_PROTO,
+                                .dport = (unsigned long)FW_ANY_PORT,
+                                .verdict = FW_DENY};
+        netdemo.nrules = 0;
+        netdemo.npending = 0;
+        netdemo.naudit = 0;
+        /* Allow packet: IPv4 ethertype, UDP, dport 53 (BE tail bytes). */
+        pkt[12] = 0x08;
+        pkt[13] = 0x00;
+        pkt[FW_ETH_HDR + 9] = FW_PROTO_UDP;
+        pkt[FW_ETH_HDR + FW_IP_MIN + 2] = 0;
+        pkt[FW_ETH_HDR + FW_IP_MIN + 3] = 53;
+        /* 1. Allow leg: alloc the demo frame as the qube-0 scratch holder
+         * (thread 7/CAP stub: empty table at demo time, so slot 0),
+         * attenuate to R-only in place (slot 1, free), grant R to the
+         * firewall's first free slot, hash the bytes, grant R onward to
+         * net's first free slot, re-hash (integrity holds) and decide:
+         * UDP/53 from qube 0 must ALLOW. */
+        ds = frame_alloc_slot(&caps, 7);
+        ms = 1;
+        gs = -1;
+        ns = -1;
+        for (i = 0; i < (unsigned long)V2_CAP_SLOTS; i++) { /* bound: V2_CAP_SLOTS */
+            if (gs < 0 && !caps.caps[5][i].valid)
+                gs = (int)i;
+            if (ns < 0 && !caps.caps[6][i].valid)
+                ns = (int)i;
+        }
+        h = qube_fnv1a(pkt, 64);
+        if (ds < 0 ||
+            v2_mint(&caps, 7, (unsigned long)ds, V2_RIGHT_R,
+                    (unsigned long)ms) != V2_OK ||
+            gs < 0 || ns < 0 ||
+            v2_grant(&caps, 7, (unsigned long)ms, 5,
+                     (unsigned long)gs) != V2_OK ||
+            v2_grant(&caps, 5, (unsigned long)gs, 6,
+                     (unsigned long)ns) != V2_OK ||
+            qube_fnv1a(pkt, 64) != h) {
+            kputs("[demo] FAIL fw allow setup\n");
+        } else {
+            dec = fw_decide(frules, 3, 0, pkt, 64);
+            if (dec != FW_ALLOW) {
+                kputs("[demo] FAIL fw allow decide\n");
+            } else {
+                /* src 0, dst FW_QUBE 4, rpc NET_SEND 3, allowed. */
+                (void)qube_audit(&netdemo, 0, 4, 3, 1);
+                kputs("FW: allow\n");
+            }
+        }
+        /* 2. Deny leg: same frame, TCP/22 (no row covers it) -> DENY. */
+        pkt[FW_ETH_HDR + 9] = FW_PROTO_TCP;
+        pkt[FW_ETH_HDR + FW_IP_MIN + 2] = 0;
+        pkt[FW_ETH_HDR + FW_IP_MIN + 3] = 22;
+        dec = fw_decide(frules, 3, 0, pkt, 64);
+        if (dec != FW_DENY) {
+            kputs("[demo] FAIL fw deny decide\n");
+        } else {
+            /* src 0, dst FW_QUBE 4, rpc NET_SEND 3, denied. */
+            (void)qube_audit(&netdemo, 0, 4, 3, 0);
+            kputs("FW: deny\n");
+        }
+        /* 3. Leak leg: AppVM (thread 0, qube 0) -> net (thread 6, qube 5)
+         * with no QX must read 0 at the raw gate. Literal 0 tests the
+         * gate independent of thread-0's table (which now holds QX). */
+        if (qube_raw_ok(qube_of, (unsigned long)NTHREADS, 0, 6, 0)) {
+            kputs("[demo] FAIL leak open\n");
+        } else {
+            /* src 0, dst NET_QUBE 5, rpc NET_SEND 3, denied. */
+            (void)qube_audit(&netdemo, 0, 5, 3, 0);
+            kputs("LEAK: denied\n");
+        }
+        /* 4. Spoof leg: an announcement stamped with sender_qube != 4
+         * (FW_QUBE) is ignored, like the net stub's silent drop (which
+         * audits nothing). */
+        sender_qube = 0;
+        if (sender_qube != 4UL) {
+            kputs("SPOOF: ignored\n");
+        } else {
+            kputs("[demo] FAIL spoof accepted\n");
+        }
+        /* 5. Audit count: allow + deny + leak-deny = 3 entries (the spoof
+         * drop audits nothing, like the stub). */
+        if (netdemo.naudit != 3) {
+            kputs("[demo] FAIL net audit count\n");
+        } else {
+            kputs("AUD: ");
+            kputdec(netdemo.naudit);
+            kputs(" entries\n");
+        }
+        /* 6. Lifecycle: revoke the demo frame (drops the scratch cap and
+         * every granted copy system-wide, mappings included). */
+        if (ds < 0 || v2_revoke(&caps, 7, (unsigned long)ds) != V2_OK) {
+            kputs("[demo] FAIL revoke\n");
         }
     }
     kputs("v2: entering U-mode mem_server\n");

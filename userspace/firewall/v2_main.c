@@ -26,9 +26,8 @@
  * Forward path: MAP slot at scratch vpn 8 -> fw_decide over the bytes ->
  *   ALLOW: GRANT the cap to the net thread's IN slot + SEND
  *     T_FWD [6, NET_IN_SLOT, len, h] -> "FW: allow"
- *   ASK:   UNMAP, re-ask qrexec as [T_CALL, RPC_NET_SEND, slot, len]
- *     ("FW: ask"; nobody waits on the pushed T_DELIVER, so no reply --
- *     same rationale as the broker's T_DECIDE path)
+ *   ASK:   UNMAP, reply INVALID, "FW: deny" (no prompter path from
+ *     the firewall; ASK rows document intent, resolve as deny)
  *   DENY:  UNMAP, reply INVALID, "FW: deny"
  * Single-flight is emergent: one RECV is processed per loop iteration;
  * no state is held across iterations (the scratch vpn is always UNMAPped
@@ -314,17 +313,10 @@ void firewall_main(void)
                 continue;
             }
             if (dec == FW_ASK) {
-                /* Re-ask qrexec as a fresh T_CALL (arg0=slot,
-                 * arg1=len); no reply -- nobody waits on the pushed
-                 * T_DELIVER and the client already holds PENDING. */
-                uint64_t ask[4];
+                /* no prompter path from firewall; ASK rows document intent, resolve as deny */
                 u_invoke(V2_INV_UNMAP, (long)FW_SCRATCH_MAP_VPN, 0, 0);
-                ask[0] = (uint64_t)T_CALL;
-                ask[1] = (uint64_t)RPC_NET_SEND;
-                ask[2] = (uint64_t)slot;
-                ask[3] = (uint64_t)len;
-                u_send(0, ask, 4);
-                u_puts("FW: ask\n");
+                u_reply(R_INVALID);
+                u_puts("FW: deny\n");
                 continue;
             }
             u_invoke(V2_INV_UNMAP, (long)FW_SCRATCH_MAP_VPN, 0, 0);

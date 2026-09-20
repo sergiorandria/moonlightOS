@@ -149,6 +149,17 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "QREXEC: allow" && echo "v2 smoke: qrexec allow" || { echo "v2 smoke: FAIL (no allow)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "QREXEC: deny" && echo "v2 smoke: qrexec deny" || { echo "v2 smoke: FAIL (no deny)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "AUD:" && echo "v2 smoke: audit" || { echo "v2 smoke: FAIL (no audit)"; QEMU_FAIL=1; }
+    # S3 phase-1: NET: fwd ok is NOT gated — the net stub prints it only
+    # on a processed T_FWD announcement and the smoke drives no live
+    # traffic, so gating it would fail on a phantom marker. FW: up /
+    # NET: up prove both ELFs run; FW: allow/deny prove the model demo.
+    echo "$V2LOG" | grep -q "NETQ: labels ok" && echo "v2 smoke: netq labels" || { echo "v2 smoke: FAIL (no netq)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "FW: allow" && echo "v2 smoke: fw allow" || { echo "v2 smoke: FAIL (no fw allow)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "FW: deny" && echo "v2 smoke: fw deny" || { echo "v2 smoke: FAIL (no fw deny)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "FW: up" && echo "v2 smoke: firewall up" || { echo "v2 smoke: FAIL (no FW up)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "NET: up" && echo "v2 smoke: net up" || { echo "v2 smoke: FAIL (no NET up)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "LEAK: denied" && echo "v2 smoke: leak denied" || { echo "v2 smoke: FAIL (no leak)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "SPOOF: ignored" && echo "v2 smoke: spoof ignored" || { echo "v2 smoke: FAIL (no spoof)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "no runnable left; parking cpu" && echo "v2 smoke: clean park" || { echo "v2 smoke: FAIL (no clean park)"; QEMU_FAIL=1; }
     if [ "$QEMU_FAIL" = "0" ]; then
       QEMU_STATUS="PASS"

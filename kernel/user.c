@@ -355,6 +355,10 @@ static uint8_t ustack_m[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_cap[4096] __attribute__((section(".ustack"), aligned(16)));
 /* S2 broker stacks: qrexec holds a v2_qpolicy_t (~4.1KB) plus its service
  * frame on-stack, so it gets an 8KB window; AdminVM's frame is small. */
+/* S3 packet-plane stacks: firewall holds a 16-rule table plus its service
+ * frame; net's frame is small. Both 4KB (mirror ustack_adminvm). */
+static uint8_t ustack_fw[4096] __attribute__((section(".ustack"), aligned(16)));
+static uint8_t ustack_net[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_qrexec[8192] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_adminvm[4096] __attribute__((section(".ustack"), aligned(16)));
 
@@ -370,6 +374,8 @@ uintptr_t ustack_m_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_cap_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_qrexec_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_adminvm_top __attribute__((section(".udata"))) = 0;
+uintptr_t ustack_fw_top __attribute__((section(".udata"))) = 0;
+uintptr_t ustack_net_top __attribute__((section(".udata"))) = 0;
 
 __attribute__((section(".utext"))) void user_stacks_init(void) {
     ustack_a_top = (uintptr_t)(ustack_a + sizeof(ustack_a));
@@ -378,4 +384,6 @@ __attribute__((section(".utext"))) void user_stacks_init(void) {
     ustack_cap_top = (uintptr_t)(ustack_cap + sizeof(ustack_cap));
     ustack_qrexec_top = (uintptr_t)(ustack_qrexec + sizeof(ustack_qrexec));
     ustack_adminvm_top = (uintptr_t)(ustack_adminvm + sizeof(ustack_adminvm));
+    ustack_fw_top = (uintptr_t)(ustack_fw + sizeof(ustack_fw));
+    ustack_net_top = (uintptr_t)(ustack_net + sizeof(ustack_net));
 }
