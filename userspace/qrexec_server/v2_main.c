@@ -152,10 +152,11 @@ void qrexec_main(void)
     unsigned long admin_tid = 0;
     int admin_known = 0;
 
-    /* Boot policy table: keys.sign ASK, clipboard DENY, net.send ASK
-     * (AppVM->firewall), net.fwd ALLOW (firewall->net), net.send catch-all
-     * DENY, filter.reload ASK (AdminVM->firewall). First match wins. */
-    pol.nrules = 6;
+    /* Boot policy table: keys.sign ASK, clipboard DENY, net.send ASK,
+     * filter.reload ASK. First match wins. dst is always QREXEC_QUBE:
+     * the broker collapses dst (qube_decide(&pol, sqb, QREXEC_QUBE, rpc)),
+     * so rows addressed to FW/NET/WILD can never match. */
+    pol.nrules = 4;
     pol.npending = 0;
     pol.naudit = 0;
     pol.rules[0] = (v2_qrule_t){.src = 0, .dst = QREXEC_QUBE,
@@ -164,21 +165,15 @@ void qrexec_main(void)
     pol.rules[1] = (v2_qrule_t){.src = V2_QWILD, .dst = V2_QWILD,
                                 .rpc = RPC_CLIPBOARD,
                                 .decision = V2_QDEC_DENY};
-    pol.rules[2] = (v2_qrule_t){.src = 0, .dst = FW_QUBE,
+    pol.rules[2] = (v2_qrule_t){.src = 0, .dst = QREXEC_QUBE,
                                 .rpc = RPC_NET_SEND,
                                 .decision = V2_QDEC_ASK};
-    pol.rules[3] = (v2_qrule_t){.src = FW_QUBE, .dst = NET_QUBE,
-                                .rpc = RPC_NET_FWD,
-                                .decision = V2_QDEC_ALLOW};
-    pol.rules[4] = (v2_qrule_t){.src = V2_QWILD, .dst = V2_QWILD,
-                                .rpc = RPC_NET_SEND,
-                                .decision = V2_QDEC_DENY};
-    pol.rules[5] = (v2_qrule_t){.src = 3, .dst = FW_QUBE,
+    pol.rules[3] = (v2_qrule_t){.src = 3, .dst = QREXEC_QUBE,
                                 .rpc = RPC_FILTER_RELOAD,
                                 .decision = V2_QDEC_ASK};
 
     u_puts("QREXEC: up\n");
-    u_puts("AUD: boot nrules=6\n");
+    u_puts("AUD: boot nrules=4\n");
 
     for (;;) { /* bound: inf - service loop */
         uint64_t buf[4];
