@@ -111,7 +111,7 @@ grants R onward + `SEND T_FWD`, ASK and DENY unmap + reply INVALID +
 `FW: deny` (no prompter path, so Ask resolves as deny). The net stub
 (`userspace/net/v2_main.c` → `userspace/build/net.elf`) honors only
 `T_FWD` stamped `sender_qube == FW_QUBE` (4) with `slot == NET_IN_SLOT`
-(8): it MAPs, recomputes `qube_fnv1a` over `len` bytes, and compares to
+(8): it MAPs, recomputes `qube_fnv1a` (C FNV-1a; Qubes_C models it as the pkt_hash byte-sum stand-in) over `len` bytes, and compares to
 the announced hash — mismatch is a silent drop (spoof-class, no oracle),
 match prints `NET: fwd ok`, UNMAPs, and `SEND`s `T_DONE` back. Ask
 payloads survive suspend/resume via `v2_qask_t` `arg0`/`arg1`

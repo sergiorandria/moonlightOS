@@ -93,12 +93,12 @@ QUB: xread denied
 QREXEC: ask
 QREXEC: allow
 QREXEC: deny
-AUD: 3 entries
+AUD: 3 entries # S2 audit leg
 FW: allow
 FW: deny
 LEAK: denied
 SPOOF: ignored
-AUD: 3 entries
+AUD: 3 entries # S3 audit leg
 FW: up
 NET: up
 NET: link up

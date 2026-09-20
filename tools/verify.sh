@@ -148,7 +148,7 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "QREXEC: ask" && echo "v2 smoke: qrexec ask" || { echo "v2 smoke: FAIL (no ask)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "QREXEC: allow" && echo "v2 smoke: qrexec allow" || { echo "v2 smoke: FAIL (no allow)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "QREXEC: deny" && echo "v2 smoke: qrexec deny" || { echo "v2 smoke: FAIL (no deny)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "AUD:" && echo "v2 smoke: audit" || { echo "v2 smoke: FAIL (no audit)"; QEMU_FAIL=1; }
+    [ "$(echo "$V2LOG" | grep -c "AUD: 3 entries")" -ge 2 ] && echo "v2 smoke: audit x2" || { echo "v2 smoke: FAIL (audit legs)"; QEMU_FAIL=1; }
     # S3 phase-1: NET: fwd ok is NOT gated — the net stub prints it only
     # on a processed T_FWD announcement and the smoke drives no live
     # traffic, so gating it would fail on a phantom marker. FW: up /
