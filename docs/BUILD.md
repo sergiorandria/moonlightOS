@@ -35,8 +35,8 @@ does exactly this).
 ## 2. Userspace (freestanding ELFs + libc + drivers)
 
 ```bash
-make -C userspace        # build/hello.elf, build/moonsh.elf, build/linux_demo.elf, build/mem_server.elf, build/qrexec.elf, build/adminvm.elf, libc objects
-tools/mkinitrd.sh        # repack kernel/initrd_data.c + kernel/initrd.h (initrd order: mem_server.elf 0, qrexec.elf 1, adminvm.elf 2, then moonsh/ls/cat)
+make -C userspace        # build/hello.elf, build/moonsh.elf, build/linux_demo.elf, build/mem_server.elf, build/qrexec.elf, build/adminvm.elf, build/firewall.elf, build/net.elf, libc objects
+tools/mkinitrd.sh        # repack kernel/initrd_data.c + kernel/initrd.h (initrd order 0-4: mem_server.elf 0, qrexec.elf 1, adminvm.elf 2, firewall.elf 3, net.elf 4, then moonsh/ls/cat)
 make -C userspace drivers # freestanding rv64 -Werror compile gates for the 8 driver compartments
 make -C userspace clean
 ```
@@ -53,9 +53,10 @@ tools/verify.sh
 ```
 
 Stages: host unit tests (ABI regression, servers + shell, driver host-sims,
-freestanding libc, v2 IPC/caps) → production gates (linker layout: no
+freestanding libc, v2 IPC/caps, qube ask-args `test_qargs`, firewall/net
+`test_netfw`) → production gates (linker layout: no
 PROGBITS inside the `[_bss,_bss_end)` clear range; `user.c` rodata ban) →
-Isabelle `kernel/isabelle` session (`V2` + `Qubes_A` + `Qubes_B`, anti-vacuity gate) →
+Isabelle `kernel/isabelle` session (`V2` + `Qubes_A` + `Qubes_B` + `Qubes_C`, anti-vacuity gate) →
 kernel build → QEMU text smoke. All `PASS` required before pushing
 (proofs/SMOKE may SKIP if the host lacks Isabelle/QEMU).
 
@@ -69,7 +70,11 @@ tools/build_qemu.sh           # alias for `make -C kernel`
 ```
 
 The runner uses `-bios default` (OpenSBI) — the v2 kernel is S-mode; the v1
-`-bios none` world is gone. It also attaches a 256M raw `virtio-blk` disk
+`-bios none` world is gone. It attaches a virtio-net device on a user
+(SLIRP) netdev plus `-global virtio-mmio.force-legacy=off` so the
+transports come up modern (version 2); the `-global` also flips the blk
+transport to modern mode, which the block driver already probes/handles
+via `vmm_probe`, so no blk change was needed. It also attaches a 256M raw `virtio-blk` disk
 (`kernel/build/moonlight-disk.img`) for the userspace block compartment;
 use `--no-disk` to boot diskless. Expect:
 
@@ -79,12 +84,26 @@ v2: satp Sv39 on, U-bit split (k U=0 / u U=1), SUM=0
 [spawn] mem_server ELF ok
 [spawn] qrexec ELF ok
 [spawn] adminvm ELF ok
+[spawn] firewall ELF ok
+[spawn] net ELF ok
 QUB: qube0 qube1 up
+NETQ: labels ok
+NETMMIO: tid=6 only
 QUB: xread denied
 QREXEC: ask
 QREXEC: allow
 QREXEC: deny
 AUD: 3 entries
+FW: allow
+FW: deny
+LEAK: denied
+SPOOF: ignored
+AUD: 3 entries
+FW: up
+NET: up
+NET: link up
+NET: tx ok
+NET: irq ok
 v2: entering U-mode thread A
 B00pn
 A10pg
@@ -97,7 +116,7 @@ no runnable left; parking cpu
 ## 5. Isabelle
 
 ```bash
-isabelle build -D kernel/isabelle -v    # session V2 (V2_A .. V2_D, Qubes_A, Qubes_B)
+isabelle build -D kernel/isabelle -v    # session V2 (V2_A .. V2_D, Qubes_A, Qubes_B, Qubes_C)
 make -C kernel isabelle                 # same
 ```
 

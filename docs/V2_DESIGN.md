@@ -289,6 +289,65 @@ per-function where not).
   - KNOWN DEFERRED (not built): audit-cap `V2_AUDIT_MAX=64` overflow is
     unmodeled (spec audit lists unbounded); qube-lifecycle alias
     follow-ups; demo-convention brittleness (minor).
+- **Qubes S3 — net/firewall split.**
+  - BUILT 2026-09-20 (Phase 1 loopback policy + Phase 2 NIC bring-up):
+    `userspace/firewall/fw.h` (first-match-wins, default-deny, IPv4/
+    TCP-UDP/ports guards, reload validator) + `userspace/firewall/v2_main.c`
+    (single-flight pipeline: MAP scratch vpn 8 → `fw_decide` → ALLOW grants
+    R + `SEND T_FWD[6,NET_IN_SLOT,len,h]`, ASK/DENY unmap + `FW: deny`;
+    `T_DONE` closes the audit trail) + `userspace/net/v2_main.c` (T_FWD
+    grant chain: sender_qube==4 check, slot/len bounds, MAP, hash recheck,
+    silent drop; Phase-2 virtio-net: scan 8 transports, negotiate, 2 DMA
+    frames, link check, one gratuitous ARP, IRQ wait) built as
+    `userspace/build/firewall.elf` + `userspace/build/net.elf`, packed as
+    initrd indexes 3–4 (`tools/mkinitrd.sh` order 0–4: mem_server, qrexec,
+    adminvm, firewall, net) and SPAWNed at boot (`[spawn] firewall/net ELF
+    ok`, threads 5–6, qubes 4–5). Host-tested by `tests/test_qargs.c`
+    (`v2_qask_t` arg0/arg1 carry) + `tests/test_netfw.c` (ruleset matrix,
+    oversize/zero-len, hash-mismatch, grant-without-announcement, spoof,
+    pending-full, reload atomicity), gated in `verify.sh [1f]`. Smoke
+    markers `NETQ: labels ok`, `FW: allow` / `FW: deny` / `FW: up`,
+    `NET: up`, `LEAK: denied`, `SPOOF: ignored`, `AUD:`,
+    `NETMMIO: tid=6 only`, `NET: link up` / `NET: tx ok` / `NET: irq ok`,
+    all gated in `verify.sh [4/4]`. Proved in
+    `kernel/isabelle/Qubes_C.thy` (69 lemmas: `packet_integrity`,
+    `deliver_allow_pins`, `net_trust_deliver` / `net_stamp_deliver`,
+    `fw_default_deny_nomatch` / `fw_malformed_deny` / `fw_empty_deny`,
+    `mmio_tid6_only` / `mmio_scan_covers` / `mmio_reach_exact`,
+    `irq_of_index_valid` / `irq_scan_ex`, `c_decide_args_eq` /
+    `args_verbatim`, `c_frame_implies_spec` / `c_packet_bounds`, mutants
+    per invariant, 0 sorry, 0 axioms). Hash note: the theory reasons over
+    `pkt_hash`, the byte-sum stand-in for `qube_fnv1a` (executable on
+    unary nats; delivery is gated on hash equality, never on collision
+    resistance, which is not modeled) — NOT the C FNV-1a itself.
+  - REFINEMENTS vs `QUBES_ISOLATION_PLAN.md` / the S3 spec: (a) NTHREADS
+    6→8, exactly at the `V2_CAP_THREADS` cap bound (any further growth
+    forces a cap bump + WCET re-analysis + proof replay); (b)
+    single-flight firewall pipeline (one RECV per loop iteration, scratch
+    always UNMAPped, no cross-iteration state); (c) Ask stays display-only
+    (inherited S2 discipline: auto-approve, no GETC in the UABI); (d)
+    deterministic link/tx/irq smoke — one gratuitous ARP, no external
+    fetch asserted, RX-from-wire stays manual-only; (e) MMIO-leaf gate
+    takes the boot-print form (`NETMMIO: tid=6 only`, fail-closed
+    `[demo] FAIL` on leak); (f) `v2_user.ld` untouched (no new
+    LOAD-alignment issue); (g) net MMIO reach is 8 pages, tid-6-only (NOT
+    the spec's single-page sketch: all 8 transports mapped for tid 6 so
+    the scan never assumes transport 0); (h) IRQ source scanned 1..8
+    (`net_virtio_irq = 1+ti` kernel scan, `net_find` `j < 8`; NOT
+    hardcoded IRQ 1); (i) `force-legacy=off` is `-global`: it flips the
+    blk transport to modern mode too — the block driver already
+    probes/handles both versions (`vmm_probe` legacy flag), so no blk
+    change was needed.
+  - S2-(c)-CLOSED: `v2_qask_t` now carries `arg0`/`arg1` (frame+len);
+    `T_DECIDE` re-attaches them and the hash is re-checked before
+    forwarding (`c_decide_args_eq`, `args_verbatim` in `Qubes_C.thy`,
+    `test_qargs` round-trip). Arg-less RPCs (`keys.sign`) forward zeros,
+    unaffected.
+  - KNOWN DEFERRED (not built): live end-to-end AppVM→firewall→net traffic
+    over EP0 (the smoke drives the model demo + NIC self-test; `NET: fwd
+    ok` is specified but ungated — no phantom assert); USB HCI + `usb`
+    qube; RX-from-wire CI assertions; firewall-compromise containment
+    (S6).
 
 ## 10. Open questions (decided late, deliberately)
 

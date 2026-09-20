@@ -88,7 +88,7 @@ minted at creation by AdminVM; the label travels on every IPC (like
 | Xen VM boundary | H-ext two-stage `satp` + per-qube VSpace + PMP + CHERI bounds per thread | [TODO] S1-deferred (VSpace+cap isolation shipped instead; see S1 BUILT note in §11) |
 | dom0 | AdminVM (U-mode server, no ambient caps) | [HAVE] S2: `userspace/adminvm/v2_main.c` |
 | qrexec + policy | `qrexec_server`: typed RPC over Endpoints, policy table, confirm path | [HAVE] S2: `userspace/qrexec_server/v2_main.c` |
-| NetVM/FirewallVM split | `net` qube (existing `virtio_net` driver) + `firewall` filter server | [TODO] S3 |
+| NetVM/FirewallVM split | `net` qube (`userspace/net/v2_main.c` → `userspace/build/net.elf`, initrd 4, thread 6, qube 5) + `firewall` filter server (`userspace/firewall/fw.h` + `userspace/firewall/v2_main.c` → `userspace/build/firewall.elf`, initrd 3, thread 5, qube 4); host tests `tests/test_netfw.c` + `tests/test_qargs.c`; proofs `kernel/isabelle/Qubes_C.thy` | [HAVE] S3 (USB HCI still TODO) |
 | USBVM | `usb` qube + new USB HCI driver (bulk-only first, no isochronous) | [TODO] S3 |
 | GUI domain | `gui` server: per-qube Frame-capped surfaces + AdminVM chrome | [TODO] S4 |
 | TemplateVM + overlays | `vfs_server` extensions: ro root caps + per-qube rw overlay, COW | [TODO] S5 |
@@ -232,6 +232,23 @@ usb         AdminVM     device.attach ask   "attach USB device?"
 - **S3 — Net/firewall/USB split.** `net` qube (existing driver), `firewall`
   filter server, USB HCI driver + `usb` qube. *Demo:* AppVM web fetch
   through the chain; USB attach prompt.
+  - BUILT 2026-09-20 (net/firewall; USB HCI + `usb` qube stay `[TODO]`):
+    `userspace/firewall/fw.h` + `userspace/firewall/v2_main.c` →
+    `userspace/build/firewall.elf` (initrd 3, thread 5, qube 4) and
+    `userspace/net/v2_main.c` → `userspace/build/net.elf` (initrd 4,
+    thread 6, qube 5); NTHREADS 6→8 at the `V2_CAP_THREADS` cap bound.
+    Host tests `tests/test_qargs.c` + `tests/test_netfw.c` (`verify.sh
+    [1f]`); smoke markers `NETQ: labels ok`, `FW: allow` / `FW: deny` /
+    `FW: up`, `NET: up`, `LEAK: denied`, `SPOOF: ignored`, `AUD:`,
+    `NETMMIO: tid=6 only`, `NET: link up` / `NET: tx ok` / `NET: irq ok`
+    (`verify.sh [4/4]`); proofs `kernel/isabelle/Qubes_C.thy` (69 lemmas:
+    `packet_integrity`, `deliver_allow_pins`, `net_trust_deliver`,
+    `fw_default_deny_nomatch`, `mmio_tid6_only`, `irq_of_index_valid`,
+    `c_decide_args_eq`; hash reasoning over the `pkt_hash` byte-sum
+    stand-in, not FNV-1a). Net reach is 8 pages tid-6-only, IRQ scanned
+    1..8 (never hardcoded); S2 deferred (c) closed (`v2_qask_t`
+    arg0/arg1, `T_DECIDE` re-attaches). Refinements + deferred list in
+    `V2_DESIGN.md` §9 S3 entry.
 - **S4 — GUI isolation.** Surfaces, trusted chrome, focus gesture,
   clipboard RPC. *Demo:* two qubes, spoofed prompt visibly untrusted.
 - **S5 — Storage: templates/overlays/disposables/updates/backup.**
