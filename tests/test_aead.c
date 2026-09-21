@@ -1,6 +1,9 @@
 /* tests/test_aead.c - KAT + property + tamper tests for the crypt headers. */
 #include <stdio.h>
 #include <string.h>
+/* Single DRBG owner for the host test: exactly one TU per program defines
+ * CRYPT_DRBG_DEFINE (see kdf.h); this TU is it. */
+#define CRYPT_DRBG_DEFINE
 #include "../userspace/crypt/sha256.h"
 #include "../userspace/crypt/aead.h"
 #include "../userspace/crypt/kdf.h"

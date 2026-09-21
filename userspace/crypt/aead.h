@@ -1,14 +1,18 @@
 /* userspace/crypt/aead.h - ChaCha20-Poly1305 AEAD (RFC 8439 section 2.8).
- * Pure C99, stdint.h/stddef.h only: host-testable (tests/test_aead.c)
- * and freestanding-safe for the later vault/cryptblk ELFs. No malloc,
- * no host calls. Constant-time discipline: quarter-round straight-line,
- * Poly1305 reduction branch-free, tag compare via accumulated diff with
- * a single return, no secret-dependent indices or early-outs. */
+ * Pure C99, stdint.h/stddef.h plus crypt_util.h only: host-testable
+ * (tests/test_aead.c) and freestanding-safe for the later vault/cryptblk
+ * ELFs. No malloc, no host calls. Constant-time discipline: quarter-round
+ * straight-line, Poly1305 reduction branch-free, tag compare via
+ * accumulated diff with a single return, no secret-dependent indices or
+ * early-outs. Key-material stack residue (ks0, want) is wiped before
+ * every return. */
 #ifndef MOONLIGHT_CRYPT_AEAD_H
 #define MOONLIGHT_CRYPT_AEAD_H
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include "crypt_util.h"
 
 /* RFC 8439 P_MAX: the 32-bit block counter addresses 2^32-1 blocks. */
 #define AEAD_MAX_MSG ((unsigned long)0xffffffffUL << 6)
@@ -32,15 +36,6 @@ static inline void crypt_st64le(uint8_t *p, uint64_t v)
     unsigned i;
     for (i = 0; i < 8; i++) /* bound: 8 */
         p[i] = (uint8_t)(v >> (8 * i));
-}
-
-/* Volatile wipe so the zeroing on auth-fail survives optimization. */
-static inline void crypt_wipe(void *p, unsigned long n)
-{
-    volatile uint8_t *v = (volatile uint8_t *)p;
-    unsigned long i;
-    for (i = 0; i < n; i++) /* bound: caller len */
-        v[i] = 0;
 }
 
 /* Accumulated-diff compare: single return, no early-out. */
@@ -352,8 +347,10 @@ static inline int aead_open(const uint8_t key[32], const uint8_t nonce[12],
     bad = crypt_ct_eq(tag, want, 16);
     if (bad != 0) {
         crypt_wipe(pt, ctlen);
+        crypt_wipe(want, sizeof(want)); /* recomputed tag is key material */
         return -1;
     }
+    crypt_wipe(want, sizeof(want));
     return 0;
 }
 
