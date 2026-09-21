@@ -62,7 +62,9 @@
 #include "../crypt/kdf.h"
 #include "../cryptblk/slot.h"
 
+#define V2_YIELD 0
 #define V2_PUTC 1
+#define V2_PARK 2
 #define V2_SEND 3
 #define V2_RECV 4
 #define V2_INVOKE 7
@@ -112,6 +114,14 @@
 /* Task-4 contract: cryptblk keeps this cap-table slot free so the vault's
  * key-frame GRANT always has an empty dst (grant needs an empty dst). */
 #define CRYPT_KEY_SLOT 20L
+
+/* Ack-wait bound (Task 4 ratification): ~2s @10MHz timebase + an iteration
+ * backstop (the time bound fires first while traffic flows). Each loop
+ * pass blocks in RECV until some message arrives, then re-checks the
+ * deadline: the bound fires on any wakeup after expiry, never while the
+ * ack is still plausibly in flight. */
+#define VAULT_ACK_TIMEOUT_TICKS 20000000UL
+#define VAULT_ACK_POLL_BOUND 2000000
 
 static long u_ecall3(long sys, long a0, long a1, long a2)
 {
@@ -195,6 +205,25 @@ static void u_reply(long v)
     u_send(0, resp, 1);
 }
 
+static long u_yield(void)
+{
+    return u_ecall3(V2_YIELD, 0, 0, 0);
+}
+
+static void u_park(void)
+{
+    u_ecall3(V2_PARK, 0, 0, 0);
+    for (;;) /* bound: inf - parked, never rescheduled */
+        u_ecall3(V2_PARK, 0, 0, 0);
+}
+
+static uint64_t u_rdtime(void)
+{
+    uint64_t t;
+    asm volatile("rdtime %0" : "=r"(t));
+    return t;
+}
+
 /* T_KEY handoff: move the 32-byte VMK to cryptblk by GRANT, never by SEND.
  *
  * GREP-GATE BOUNDARY (Task 6): this function contains no u_puts/u_putc
@@ -205,8 +234,13 @@ static void u_reply(long v)
  * R-only copy -> GRANT to CRYPT_TID/CRYPT_KEY_SLOT -> SEND [T_KEY, slot]
  * (blocks until cryptblk RECVs: rendezvous backpressure, firewall
  * precedent) -> RECV [T_KEY_ACK, slot] from CRYPT_QUBE (T_CALLs seen here
- * get INVALID so direct waiters never wedge; strays drop silently) ->
- * zero-wipe frame -> UNMAP -> REVOKE. Returns 0 ok, -1 fail-closed.
+ * get INVALID so direct waiters never wedge; strays drop silently),
+ * tick-bounded: each wakeup re-checks an rdtime deadline (V2_YIELD between
+ * passes so the acking peer is scheduled promptly); on expiry the frame
+ * is zero-wiped, UNMAPped and REVOKEed, then this thread parks (never
+ * wedges holding frame+grant; expiry prints NO marker — the missing
+ * release audit fails the gate instead) -> zero-wipe frame -> UNMAP ->
+ * REVOKE. Returns 0 ok, -1 fail-closed.
  */
 static long key_release(unsigned long slot, const uint8_t *vmk32)
 {
@@ -253,29 +287,46 @@ static long key_release(unsigned long slot, const uint8_t *vmk32)
         (void)u_invoke(V2_INV_REVOKE, c0, 0, 0);
         return -1;
     }
-    for (;;) { /* bound: inf - rendezvous ack wait (backpressure discipline) */
-        uint64_t ack[4];
-        unsigned long snd = 0;
-        unsigned long sqb = 0;
-        unsigned long ovf = 0;
-        long n = u_recv(0, ack, 4, &snd, &sqb, &ovf);
-        if (n >= 1 && ack[0] == (uint64_t)T_CALL) {
-            u_reply(R_INVALID);
-            continue;
+    /* Tick-bounded ack wait (Task 4 ratification): each pass blocks in
+     * RECV until some message arrives, then re-checks the deadline, so
+     * the wait ends on any wakeup after expiry. V2_YIELD between passes
+     * schedules the acking peer promptly (never a spin). */
+    {
+        uint64_t t0 = u_rdtime();
+        int acked = 0;
+        long p;
+        for (p = 0; p < 2000000L; p++) { /* bound: VAULT_ACK_POLL_BOUND */
+            uint64_t ack[4];
+            unsigned long snd = 0;
+            unsigned long sqb = 0;
+            unsigned long ovf = 0;
+            long n = u_recv(0, ack, 4, &snd, &sqb, &ovf);
+            if (n >= 1 && ack[0] == (uint64_t)T_CALL) {
+                u_reply(R_INVALID);
+            } else if (n >= 2 && ack[0] == (uint64_t)T_KEY_ACK &&
+                       (unsigned long)ack[1] == slot &&
+                       sqb == (unsigned long)CRYPT_QUBE) {
+                acked = 1;
+                break;
+            }
+            /* stray: silent drop, no reply (no waiter on ack/deliver paths) */
+            u_yield();
+            if (u_rdtime() - t0 > (uint64_t)VAULT_ACK_TIMEOUT_TICKS)
+                break;
         }
-        if (n >= 2 && ack[0] == (uint64_t)T_KEY_ACK &&
-            (unsigned long)ack[1] == slot && sqb == (unsigned long)CRYPT_QUBE)
-            break;
-        /* stray: silent drop, no reply (no waiter on ack/deliver paths) */
+        /* Cryptblk READ the words (ack is the proof): wipe the frame
+         * before dropping the caps so no VMK bytes linger in a freed
+         * frame. The wipe runs on the expiry path too: never wedge
+         * holding frame+grant. */
+        for (i = 0; i < 4UL; i++) /* bound: 4 (VMK words) */
+            (void)u_invoke(V2_INV_WRITE, (long)VAULT_SCRATCH_VPN,
+                           (long)&zero, 0);
+        u_invoke(V2_INV_UNMAP, (long)VAULT_SCRATCH_VPN, 0, 0);
+        (void)u_invoke(V2_INV_REVOKE, c0, 0, 0);
+        if (!acked)
+            u_park(); /* expiry: NO marker; the missing audit fails the gate */
+        return 0;
     }
-    /* Cryptblk READ the words (ack is the proof): wipe the frame before
-     * dropping the caps so no VMK bytes linger in a freed frame. */
-    for (i = 0; i < 4UL; i++) /* bound: 4 (VMK words) */
-        (void)u_invoke(V2_INV_WRITE, (long)VAULT_SCRATCH_VPN,
-                       (long)&zero, 0);
-    u_invoke(V2_INV_UNMAP, (long)VAULT_SCRATCH_VPN, 0, 0);
-    (void)u_invoke(V2_INV_REVOKE, c0, 0, 0);
-    return 0;
 }
 
 typedef struct {

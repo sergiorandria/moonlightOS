@@ -130,7 +130,18 @@ QEMU_STATUS="SKIP"
 if [ -f kernel/build/moonlight.elf ]; then
   QEMU=$(command -v qemu-system-riscv64 || command -v /tmp/qb2/qemu-system-riscv64 || echo "")
   if [ -n "$QEMU" ] && [ -x "$QEMU" ]; then
-    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -global virtio-mmio.force-legacy=off 2>&1 | tr -d '\0')
+    # FDE block disk (Task 4): 256M raw image owned by the cryptblk ELF
+    # (mirrors tools/run_qemu.sh DISK_ARGS). Created once, persists
+    # across runs: first-ever boot formats it, later boots reuse it.
+    DISK="kernel/build/moonlight-disk.img"
+    if [ ! -f "$DISK" ]; then
+      if command -v qemu-img >/dev/null 2>&1; then
+        qemu-img create -f raw "$DISK" 256M
+      else
+        truncate -s 256M "$DISK"
+      fi
+    fi
+    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -global virtio-mmio.force-legacy=off -drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 2>&1 | tr -d '\0')
     # Fail closed: every missing marker flips the gate to FAIL (a smoke
     # that only prints FAIL lines but reports PASS proves nothing).
     QEMU_FAIL=0
@@ -168,6 +179,20 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "NET: irq ok" && echo "v2 smoke: net irq" || { echo "v2 smoke: FAIL (no irq)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "VAULT: up" && echo "v2 smoke: vault up" || { echo "v2 smoke: FAIL (no vault)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "VAULTQ: labels ok" && echo "v2 smoke: vaultq labels" || { echo "v2 smoke: FAIL (no vaultq)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "CRYPTQ: labels ok" && echo "v2 smoke: cryptq labels" || { echo "v2 smoke: FAIL (no cryptq)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "CRYPT: up" && echo "v2 smoke: crypt up" || { echo "v2 smoke: FAIL (no crypt up)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "CRYPT: locked" && echo "v2 smoke: crypt locked" || { echo "v2 smoke: FAIL (no crypt locked)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "CRYPT: unlock ok" && echo "v2 smoke: crypt unlock" || { echo "v2 smoke: FAIL (no crypt unlock)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "CRYPT: rw ok" && echo "v2 smoke: crypt rw" || { echo "v2 smoke: FAIL (no crypt rw)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "CRYPT: wrong-key denied" && echo "v2 smoke: crypt wrong-key" || { echo "v2 smoke: FAIL (no crypt wrong-key)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "CRYPT: leak denied" && echo "v2 smoke: crypt leak" || { echo "v2 smoke: FAIL (no crypt leak)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "CRYPT: no volume" && echo "v2 smoke: crypt no-volume" || { echo "v2 smoke: FAIL (no crypt no-volume)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "BLKMMIO: tid=9 only" && echo "v2 smoke: blkmmio leaf" || { echo "v2 smoke: FAIL (no blkmmio)"; QEMU_FAIL=1; }
+    # Format-leg union gate (Task 4 idempotent provision: first-ever boot
+    # on a fresh image prints "CRYPT: formatted", later boots reuse the
+    # header and print "CRYPT: volume ok"; the disk persists across runs,
+    # so exactly one of the two appears — gate the union, never each leg).
+    echo "$V2LOG" | grep -qE "CRYPT: (formatted|volume ok)" && echo "v2 smoke: crypt format-or-volume" || { echo "v2 smoke: FAIL (no crypt format/volume)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "no runnable left; parking cpu" && echo "v2 smoke: clean park" || { echo "v2 smoke: FAIL (no clean park)"; QEMU_FAIL=1; }
     if [ "$QEMU_FAIL" = "0" ]; then
       QEMU_STATUS="PASS"

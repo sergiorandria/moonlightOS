@@ -43,21 +43,20 @@ int main(void) {
     int ws[8];
     unsigned long n;
 
-    /* Init: thread 0 holds root caps on frames 0..15 (V2_FRAMES_MAX=16), rest empty. */
+    /* Init: thread 0 holds root caps on frames 0..31 (V2_FRAMES_MAX=32),
+     * rest empty. */
     v2_caps_init(&st, 2);
     CHECK(st.nthreads == 2);
-    for (i = 0; i < 16; i++) {
+    for (i = 0; i < (unsigned long)V2_FRAMES_MAX; i++) {
         CHECK(v2_has_cap(&st, 0, i));
         CHECK(st.caps[0][i].root);
         CHECK(st.caps[0][i].obj == i);
         CHECK(st.caps[0][i].rights == V2_RIGHT_RW);
     }
-    for (i = 16; i < 16; i++)
-        CHECK(!v2_has_cap(&st, 0, i));
-    for (i = 0; i < 16; i++)
+    for (i = 0; i < (unsigned long)V2_FRAMES_MAX; i++)
         CHECK(!v2_has_cap(&st, 1, i));
     CHECK(!v2_has_cap(&st, 2, 0)); /* beyond live count: fail-closed */
-    CHECK(!v2_has_cap(&st, 0, 16));
+    CHECK(!v2_has_cap(&st, 0, V2_CAP_SLOTS)); /* slot OOB: fail-closed */
 
     /* No access before any grant/map (mirrors d_init_noaccess). */
     CHECK(v2_write(&st, 1, 9, 42) == V2_ERR_INVALID);
@@ -117,12 +116,15 @@ int main(void) {
     CHECK(v2_write(&st, 1, 9, 7) == V2_OK);
     CHECK(v2_read(&st, 1, 9, &v) == V2_OK && v == 7);
 
-    /* Mint touches only the actor (d_mint_local / d_no_grant_no_gain). */
+    /* Mint touches only the actor (d_mint_local / d_no_grant_no_gain).
+     * Actor is thread 1 here: thread 0's whole table holds init roots
+     * (V2_FRAMES_MAX=32 == V2_CAP_SLOTS), so no empty dst exists there;
+     * thread 1 has slots 0..2 used and 16 free. */
     snap = st;
-    CHECK(v2_mint(&st, 0, 1, V2_RIGHT_R, 16) == V2_OK);
-    for (i = 0; i < 16; i++)
-        CHECK(caps_equal_slot(&st, &snap, 1, i));
-    CHECK(!caps_equal_slot(&st, &snap, 0, 16)); /* actor's own slot changed */
+    CHECK(v2_mint(&st, 1, 0, V2_RIGHT_R, 16) == V2_OK);
+    for (i = 0; i < (unsigned long)V2_CAP_SLOTS; i++)
+        CHECK(caps_equal_slot(&st, &snap, 0, i));
+    CHECK(!caps_equal_slot(&st, &snap, 1, 16)); /* actor's own slot changed */
 
     /* Mapping table full is fail-closed (implementation bound). */
     v2_caps_init(&st, 2);
@@ -164,7 +166,7 @@ int main(void) {
     CHECK(v2_write(&st, 2, 9, 42) == V2_ERR_INVALID);
     CHECK(v2_read(&st, 2, 9, &v) == V2_ERR_INVALID);
 
-    /* slot OOB: slot V2_CAP_SLOTS = 16 (beyond valid range) */
+    /* slot OOB: slot V2_CAP_SLOTS = 32 (beyond valid range) */
     CHECK(v2_has_cap(&st, 0, V2_CAP_SLOTS) == 0);
     CHECK(v2_map(&st, 1, V2_CAP_SLOTS, 0) == V2_ERR_INVALID);
 
@@ -208,67 +210,73 @@ int main(void) {
 
     printf("negative tests: PASS\n");
 
-    /* ---- Invoke round-trip tests (mirror kernel V2_INVOKE handler) ---- */
+    /* ---- Invoke round-trip tests (mirror kernel V2_INVOKE handler) ----
+     * Actor is thread 1: thread 0's whole table holds init roots
+     * (V2_FRAMES_MAX=32 == V2_CAP_SLOTS), so the host PT_ALLOC finds its
+     * first empty slot on thread 1. */
     {
         v2_caps_t st;
         v2_caps_init(&st, 2);
         int rc;
 
         /* PT_ALLOC: allocate a frame, mint RW cap */
-        rc = frame_alloc_slot(&st, 0);
+        rc = frame_alloc_slot(&st, 1);
         assert(rc == V2_OK);
         int allocated_slot = -1;
         for (int i = 0; i < V2_CAP_SLOTS; i++) { /* bound: V2_CAP_SLOTS */
-            if (st.caps[0][i].valid && !st.caps[0][i].root) {
+            if (st.caps[1][i].valid && !st.caps[1][i].root) {
                 allocated_slot = i;
                 break;
             }
         }
         assert(allocated_slot >= 0);
-        assert(st.caps[0][allocated_slot].rights == V2_RIGHT_RW);
+        assert(st.caps[1][allocated_slot].rights == V2_RIGHT_RW);
 
-        /* MINT: attenuate RW -> R only (dst 17: slots 0..15 hold the
-         * init roots and 16 the fresh alloc, so 14 would collide). */
-        rc = v2_mint(&st, 0, (unsigned long)allocated_slot, V2_RIGHT_R, 17);
+        /* MINT: attenuate RW -> R only (dst 17 is free on thread 1, so
+         * the success is genuinely about rights, not slot reuse). */
+        rc = v2_mint(&st, 1, (unsigned long)allocated_slot, V2_RIGHT_R, 17);
         assert(rc == V2_OK);
-        assert(st.caps[0][17].rights == V2_RIGHT_R);
-        assert(st.caps[0][17].root == 0);
+        assert(st.caps[1][17].rights == V2_RIGHT_R);
+        assert(st.caps[1][17].root == 0);
 
         /* MAP: map frame via RW cap */
-        rc = v2_map(&st, 0, (unsigned long)allocated_slot, 0x100);
+        rc = v2_map(&st, 1, (unsigned long)allocated_slot, 0x100);
         assert(rc == V2_OK);
 
         /* WRITE: write via cap+mapping */
-        rc = v2_write(&st, 0, 0x100, 0xDEADBEEF);
+        rc = v2_write(&st, 1, 0x100, 0xDEADBEEF);
         assert(rc == V2_OK);
-        assert(st.fdata[st.caps[0][allocated_slot].obj] == 0xDEADBEEF);
+        assert(st.fdata[st.caps[1][allocated_slot].obj] == 0xDEADBEEF);
 
         /* READ: read back */
         uint64_t val = 0;
-        rc = v2_read(&st, 0, 0x100, &val);
+        rc = v2_read(&st, 1, 0x100, &val);
         assert(rc == V2_OK);
         assert(val == 0xDEADBEEF);
 
         /* W^X: mint with X rights rejected (dst 18 is free, so the
          * rejection is genuinely about rights, not an occupied slot). */
-        rc = v2_mint(&st, 0, (unsigned long)allocated_slot, V2_RIGHT_X, 18);
+        rc = v2_mint(&st, 1, (unsigned long)allocated_slot, V2_RIGHT_X, 18);
         assert(rc == V2_ERR_INVALID);
 
         /* UNMAP: remove mapping */
-        rc = v2_unmap(&st, 0, 0x100);
+        rc = v2_unmap(&st, 1, 0x100);
         assert(rc == V2_OK);
 
-        /* GRANT: copy cap to thread 1 */
-        rc = v2_grant(&st, 0, (unsigned long)allocated_slot, 1, 0);
+        /* GRANT: copy cap within thread 1 (thread 0's table is all
+         * roots with no empty dst; same-thread grant exercises the
+         * copy-clears-root rule identically). */
+        rc = v2_grant(&st, 1, (unsigned long)allocated_slot, 1, 3);
         assert(rc == V2_OK);
-        assert(st.caps[1][0].valid == 1);
-        assert(st.caps[1][0].obj == st.caps[0][allocated_slot].obj);
-        assert(st.caps[1][0].rights == V2_RIGHT_RW);
+        assert(st.caps[1][3].valid == 1);
+        assert(st.caps[1][3].obj == st.caps[1][allocated_slot].obj);
+        assert(st.caps[1][3].rights == V2_RIGHT_RW);
+        assert(st.caps[1][3].root == 0);
 
-        /* REVOKE: destroy thread 1's cap (and the source cap itself) */
-        rc = v2_revoke(&st, 0, (unsigned long)allocated_slot);
+        /* REVOKE: destroy the granted copy (and the source cap itself) */
+        rc = v2_revoke(&st, 1, (unsigned long)allocated_slot);
         assert(rc == V2_OK);
-        assert(st.caps[1][0].valid == 0); /* granted cap destroyed */
+        assert(st.caps[1][3].valid == 0); /* granted cap destroyed */
 
         printf("invoke round-trip: PASS\n");
     }

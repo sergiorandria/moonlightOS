@@ -30,6 +30,7 @@ ELFS=(
     "ls.elf"
     "cat.elf"
     "vault.elf"
+    "cryptblk.elf"
 )
 REQUIRED="mem_server.elf"
 

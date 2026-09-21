@@ -76,6 +76,10 @@ static void kputdec(unsigned long v) {
  * free region above the image (< 0x80800000). S-only identity map via
  * l0_frames, wired at l1_t[t][8] (VPN[1] of 0x81000000) in every VSpace. */
 #define V2_FRAME_PHYS_BASE 0x81000000UL
+/* Pool window (Task 4): 32x4K = 128K, trivially inside both the l0_frames
+ * identity map (512 pages = 2M) and the free region above the image. */
+_Static_assert((unsigned long)V2_FRAMES_MAX * 4096UL <= 512UL * 4096UL,
+               "frame pool must fit the l0_frames identity map");
 #define NTHREADS 10 /* bound for all thread loops (<= V2_CAP_THREADS) */
 /* Threads: 0 A, 1 B, 2 mem_server, 3 qrexec, 4 AdminVM, 5 firewall,
  * 6 net, 7 CAP stub, 8 vault, 9 cryptblk. Growing NTHREADS forces
@@ -97,6 +101,7 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
 #define VIRTIO0_BASE 0x10001000UL
 #define VIRTIO_NTRANSPORTS 8
 #define VIRTIO_DEV_NET 1u
+#define VIRTIO_DEV_BLK 2u
 #define PLIC_BASE 0x0c000000UL
 /* PLIC hart-0 contexts (sifive_plic, stride 0x80 enables / 0x1000 claim):
  * the M-context set is reached via delegation, the S-context set signals
@@ -110,17 +115,21 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
 #define PLIC_CLAIM_M 0x0c200004UL
 #define PLIC_CLAIM_S 0x0c201004UL
 #define NET_IRQ_BIT 0x1UL /* notify bit the scause=9 handler raises on tid 6 */
+#define BLK_IRQ_BIT 0x2UL /* notify bit the scause=9 handler raises on tid 9 */
 
 /* Phase-2 NIC IRQ (1+transport index), discovered at boot; 0xFFFFFFFF
  * when no modern net transport exists (handler then matches nothing). */
 static uint32_t net_virtio_irq = 0xFFFFFFFFUL;
+/* FDE block IRQ (1+transport index), discovered at boot; 0xFFFFFFFF
+ * when no modern blk transport exists (handler then matches nothing). */
+static uint32_t blk_virtio_irq = 0xFFFFFFFFUL;
 
 /* V2_INV_WRITE/READ move exactly one 64-bit word: the caps.h model is
  * word-per-frame (fdata[f] = val), so the real store/load mirrors exactly
  * what the model records and fdata can never diverge from the
  * real frame (Write-Through Mirror). This bounds every new copy loop and
- * keeps every frame access within the 8-frame region (frame <
- * V2_FRAMES_MAX, max offset 7*4096 + V2_WORD_BYTES <= 32768). */
+ * keeps every frame access within the 32-frame region (frame <
+ * V2_FRAMES_MAX, max offset 31*4096 + V2_WORD_BYTES <= 131080). */
 #define V2_WORD_BYTES 8 /* bound: bytes per WRITE/READ invoke (one word) */
 
 /* Per-thread Sv39 VSpaces. root_pt_t = root (index VPN[2]), l1_t = level-1
@@ -138,6 +147,10 @@ static uint64_t l0_frames[512] __attribute__((aligned(4096)));
  * 0, asserted at boot). Zero-initialized except [0..7]: the transport
  * pages, RW, never X. */
 static uint64_t l0_netmmio[512] __attribute__((aligned(4096)));
+/* FDE block U-leaf: same single-leaf pattern as the NIC, for tid 9 only
+ * (wired at l1_t[9][6] = UVA 0x80C00000; every other l1_t[t][6] stays 0,
+ * asserted at boot). The 8 transport pages, RW, never X. */
+static uint64_t l0_blkmmio[512] __attribute__((aligned(4096)));
 
 static uint64_t pte_leaf(uint64_t paddr, uint64_t flags) {
     return ((paddr >> 12) << 10) | flags | PTE_V;
@@ -173,6 +186,12 @@ static void pagetable_init(void) {
     for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
         l0_netmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
                                  PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+    /* FDE block U-leaf: the same 8 transport pages for tid 9 (BLK_UVA
+     * 0x80C00000 = VPN[1] 6, VPN[0] 0..7: the driver scans for the
+     * virtio-blk device, never assuming a transport). W^X: RW, never X. */
+    for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
+        l0_blkmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
+                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* Per-thread VSpaces: shared kernel/leaf/frame/UART regions are wired
      * through each thread's own l1_t; the per-thread frame window
      * (l0_u_t) stays zero until Task 3 maps frames. */
@@ -187,6 +206,11 @@ static void pagetable_init(void) {
          * (asserted at boot: "NETMMIO: tid=6 only"). */
         if (t == 6)
             l1_t[t][5] = pte_table(l0_netmmio);
+        /* FDE block: the transport U-leaf exists ONLY in tid 9's tables
+         * (BLK_UVA 0x80C00000 = VPN[1] 6). Every other l1_t[t][6] stays 0
+         * (asserted at boot: "BLKMMIO: tid=9 only"). */
+        if (t == 9)
+            l1_t[t][6] = pte_table(l0_blkmmio);
         root_pt_t[t][0] = pte_table(l1_m);
         root_pt_t[t][2] = pte_table(l1_t[t]);
     }
@@ -285,7 +309,7 @@ static void v2_sfence_all(void)
  * (l1_t[t][8]). fdata stays the caps.h model shadow: v2_write/v2_read
  * still update it first, so host-side coherence holds. These helpers run
  * ONLY after the model op returned V2_OK (fail closed), never cross the
- * 8-frame region (frame < V2_FRAMES_MAX; len <= V2_WORD_BYTES <= 4096),
+ * 32-frame region (frame < V2_FRAMES_MAX; len <= V2_WORD_BYTES <= 4096),
  * and are byte-accurate through volatile pointers so the copy is never
  * optimized away. */
 static void v2_real_write(unsigned long frame, const uint8_t *src, size_t len)
@@ -600,12 +624,16 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             uint32_t s = *(volatile uint32_t *)PLIC_CLAIM_S;
             uint32_t m = *(volatile uint32_t *)PLIC_CLAIM_M;
             uint32_t src = 0;
+            int blk = 0;
             /* Either context may carry the delivery (measured: S does);
-             * one marker per trap even if both fired. */
+             * one marker per trap even if both fired. Net and blk are
+             * handled independently so one trap can serve both devices. */
             if (s == net_virtio_irq)
                 src = s;
             else if (m == net_virtio_irq)
                 src = m;
+            if (s == blk_virtio_irq || m == blk_virtio_irq)
+                blk = 1;
             if (src != 0) {
                 threads[6].notify |= NET_IRQ_BIT;
                 /* Wake only genuine WAIT waiters (NOTIFY discipline);
@@ -616,7 +644,19 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     threads[6].wait_kind = V2_WK_NONE;
                 }
                 kputs("NET: irq ok\n");
-            } else {
+            }
+            if (blk) {
+                /* No per-IRQ print: a 4K sector op raises up to 8 blk
+                 * IRQs, so a print here would flood the transcript; the
+                 * ELF's badge check after WAIT is the delivery proof. */
+                threads[9].notify |= BLK_IRQ_BIT;
+                if (threads[9].state == T_BLOCKED &&
+                    threads[9].wait_kind == V2_WK_WAIT) {
+                    threads[9].state = T_RUNNABLE;
+                    threads[9].wait_kind = V2_WK_NONE;
+                }
+            }
+            if (src == 0 && !blk) {
                 kputs("IRQ: unexpected\n");
             }
             if (s != 0)
@@ -1528,6 +1568,28 @@ void kboot(void) {
         *(volatile uint32_t *)PLIC_THRESH_M = 0;
         *(volatile uint32_t *)PLIC_THRESH_S = 0;
     }
+    /* FDE block discovery: same scan-then-bind as the NIC above, keyed on
+     * the virtio-blk device id (never a hardcoded transport: QEMU
+     * attaches backends last-first). A found IRQ gets priority 1 + its
+     * enable bit with threshold 0 (any priority-1 IRQ fires); none found
+     * leaves blk_virtio_irq at 0xFFFFFFFF (handler matches nothing, the
+     * ELF parks fail-closed at probe, never spins). */
+    for (int ti = 0; ti < VIRTIO_NTRANSPORTS; ti++) { /* bound: 8 */
+        volatile uint32_t *tr = (volatile uint32_t *)
+            (VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
+        if (tr[0] == 0x74726976u && tr[1] == 2u &&
+            tr[2] == (uint32_t)VIRTIO_DEV_BLK) {
+            blk_virtio_irq = (uint32_t)(1 + ti);
+            break;
+        }
+    }
+    if (blk_virtio_irq != 0xFFFFFFFFUL) {
+        *(volatile uint32_t *)(PLIC_BASE + 4u * blk_virtio_irq) = 1;
+        *(volatile uint32_t *)PLIC_ENABLE_M |= (1U << blk_virtio_irq);
+        *(volatile uint32_t *)PLIC_ENABLE_S |= (1U << blk_virtio_irq);
+        *(volatile uint32_t *)PLIC_THRESH_M = 0;
+        *(volatile uint32_t *)PLIC_THRESH_S = 0;
+    }
 
     for (int i = 0; i < NTHREADS; i++) { /* bound: NTHREADS */
         for (int r = 0; r < 32; r++)
@@ -1677,9 +1739,7 @@ void kboot(void) {
      * Mirrors the S2/S3 loads above. On success the thread enters the
      * ELF image and prints VAULT: up from U-mode; on failure it stays
      * parked and the missing marker fails the smoke loudly (fail closed:
-     * nothing impersonates the vault). tid 9 stays parked: the cryptblk
-     * ELF arrives in Task 4 (normal for an unspawned slot under
-     * NTHREADS=10). */
+     * nothing impersonates the vault). */
     {
         const uint8_t *elf_data;
         uint32_t elf_size;
@@ -1696,34 +1756,66 @@ void kboot(void) {
             kputs("[spawn] vault ELF FAIL; parked\n");
         }
     }
+    /* FDE cryptblk: initrd index 9 into thread 9 (qube 7, labeled
+     * below). Mirrors the vault load above. On success the thread enters
+     * the ELF image and runs the unlock demo from U-mode (printing the
+     * CRYPT: markers); on failure it stays parked and the missing markers
+     * fail the smoke loudly (fail closed: nothing impersonates cryptblk).
+     * kboot only spawns + asserts here: the demo lives in the ELF. */
+    {
+        const uint8_t *elf_data;
+        uint32_t elf_size;
+        uint64_t entry = 0, brk = 0;
+        if (initrd_lookup(9, &elf_data, &elf_size) == 0 &&
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 9, &entry, &brk) == V2_OK &&
+            entry != 0) {
+            v2_pte_sync(9);
+            threads[9].regs[2] = u_sp[9];
+            threads[9].sepc = entry;
+            threads[9].state = T_RUNNABLE;
+            kputs("[spawn] cryptblk ELF ok\n");
+        } else {
+            kputs("[spawn] cryptblk ELF FAIL; parked\n");
+        }
+    }
     /* Qubes boot labels: mem_server (thread 2) owns qube 1, qrexec
      * (thread 3) owns qube 2, AdminVM (thread 4) owns qube 3, firewall
      * (thread 5) owns qube 4, net (thread 6) owns qube 5, vault
-     * (thread 8) owns qube 6; A/B/CAP stub stay in qube 0. Fresh
-     * QCREATE labels start at qube_next == 7 (Task 4 takes label 7 for
-     * cryptblk, reaching qube_next == 8 == V2_QUBES_MAX). */
+     * (thread 8) owns qube 6, cryptblk (thread 9) owns qube 7; A/B/CAP
+     * stub stay in qube 0. Fresh QCREATE labels start at qube_next == 8
+     * == V2_QUBES_MAX: the qube table is full (documented cap — any
+     * further qube forces a V2_QUBES_MAX bump + proof replay, Task 5). */
     qube_of[2] = 1;
     qube_of[3] = 2;
     qube_of[4] = 3;
     qube_of[5] = 4;
     qube_of[6] = 5;
     qube_of[8] = 6;
-    qube_next = 7;
+    qube_of[9] = 7;
+    qube_next = 8;
     kputs("QUB: qube0 qube1 up\n");
     /* NETQ label assert: fail closed (mismatch prints marker-free
      * "[demo] FAIL", so the smoke gate misses the marker and fails). */
-    if (qube_of[5] != 4 || qube_of[6] != 5 || qube_next != 7) {
+    if (qube_of[5] != 4 || qube_of[6] != 5 || qube_next != 8) {
         kputs("[demo] FAIL netq labels\n");
     } else {
         kputs("NETQ: labels ok\n");
     }
     /* VAULTQ label assert: vault (thread 8) owns qube 6 and the next
-     * fresh label is 7. Fail-closed like NETQ above; the one QX grant
-     * below is documented beside this assert. */
-    if (qube_of[8] != 6 || qube_next != 7) {
+     * fresh label is 8 (cryptblk took 7 below). Fail-closed like NETQ
+     * above; the one QX grant below is documented beside this assert. */
+    if (qube_of[8] != 6 || qube_next != 8) {
         kputs("[demo] FAIL vaultq labels\n");
     } else {
         kputs("VAULTQ: labels ok\n");
+    }
+    /* CRYPTQ label assert: cryptblk (thread 9) owns qube 7 and the next
+     * fresh label is 8 == V2_QUBES_MAX. Fail-closed like NETQ above;
+     * the FDE QX grants below are documented beside this assert. */
+    if (qube_of[9] != 7 || qube_next != 8) {
+        kputs("[demo] FAIL cryptq labels\n");
+    } else {
+        kputs("CRYPTQ: labels ok\n");
     }
     /* S3 QX boot grants: QX is holder-based (qube_has_qx scans the
      * sender's own table), so each cross-qube leg needs its sender to
@@ -1757,6 +1849,26 @@ void kboot(void) {
     if (v2_grant(&caps, 0, 9, 3, 9) != V2_OK || !qube_has_qx(3)) {
         kputs("[demo] FAIL vault qx grant\n");
     }
+    /* FDE cryptblk QX boot grants (Task 4): QX is holder-based, so each
+     * cross-qube sender holds its own QX cap; all land at slot >= 9
+     * (slot 8 stays free of QX-bit caps: MAP rejects QX, and the key/data
+     * GRANT+MAP paths need an empty dst — same shape as the S3 block).
+     *   qube0 -> cryptblk (tid 9 slot 9): the direct AppVM-FS path —
+     *     cryptblk's replies to qube-0 callers route cross-qube.
+     *   qrexec -> cryptblk (tid 9 slot 10): chain delegation mirroring
+     *     the S3 firewall->net grant (QX flows through v2_grant
+     *     unchanged) — the approved-T_DELIVER path.
+     *   qube0 -> vault (tid 8 slot 9): the T_KEY-notice path — the raw
+     *     gate needs QX on the SENDER, so the vault's keyless notice to
+     *     cryptblk requires this grant (Step-0 ratification necessity).
+     * The qrexec -> vault leg keeps its Task-3 grant (tid 3 holds QX).
+     * Fail-closed: any grant failure prints marker-free "[demo] FAIL". */
+    if (v2_grant(&caps, 0, 9, 9, 9) != V2_OK ||
+        v2_grant(&caps, 3, 9, 9, 10) != V2_OK ||
+        v2_grant(&caps, 0, 9, 8, 9) != V2_OK ||
+        !qube_has_qx(9) || !qube_has_qx(8) || !qube_has_qx(3)) {
+        kputs("[demo] FAIL crypt qx grants\n");
+    }
     /* NETMMIO leaf gate: the transport U-leaf exists ONLY in tid 6's
      * tables (l1_t[6][5]); any other mapping is a leak. Fail-closed:
      * mismatch prints marker-free "[demo] FAIL", so the smoke gate
@@ -1771,6 +1883,20 @@ void kboot(void) {
             kputs("NETMMIO: tid=6 only\n");
         else
             kputs("[demo] FAIL netmmio leak\n");
+    }
+    /* BLKMMIO leaf gate: the transport U-leaf exists ONLY in tid 9's
+     * tables (l1_t[9][6]); any other mapping is a leak. Fail-closed
+     * like NETMMIO above. */
+    {
+        int mmio_ok = (l1_t[9][6] != 0);
+        for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+            if (t != 9 && l1_t[t][6] != 0)
+                mmio_ok = 0;
+        }
+        if (mmio_ok)
+            kputs("BLKMMIO: tid=9 only\n");
+        else
+            kputs("[demo] FAIL blkmmio leak\n");
     }
     /* S2 demo transcript (runs once at boot, in-kernel test_cap_thread-style
      * sequence: straight-line, bounded, no loops, no IPC). It drives the
@@ -1966,12 +2092,14 @@ void kboot(void) {
         if (ds < 0 || v2_revoke(&caps, 7, (unsigned long)ds) != V2_OK) {
             kputs("[demo] FAIL revoke\n");
         } else {
-            /* FDE frame budget (Task 3): the 16-frame pool is fully
-             * spoken for at runtime (6 boot ELFs = 12 frames incl. the
-             * 3-page vault text, net TX+RX DMA = 2, CAP thread = 1).
-             * Revoke alone drops caps/mappings but leaves the bitmap
-             * marked used, so return the demo frame to the pool: it
-             * was zeroed at alloc and never WRITEn (model ops only),
+            /* FDE frame budget (Task 4: pool 16 -> 32, 31 usable):
+             * steady demand is ~25-27 frames: 7 boot ELFs = 20 image
+             * frames (mem 1 + qrexec 2 + adminvm 2 + fw 2 + net 2 +
+             * vault 3 + cryptblk 8) + net DMA 2 + cryptblk DMA 2 +
+             * CAP 1, plus transient key/record frames (freed after
+             * use). Revoke alone drops caps/mappings but leaves the
+             * bitmap marked used, so return the demo frame to the pool:
+             * it was zeroed at alloc and never WRITEn (model ops only),
              * and frame_alloc_slot re-zeroes on next alloc. */
             frame_free(ds);
         }
