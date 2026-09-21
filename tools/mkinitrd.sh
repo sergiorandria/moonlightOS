@@ -29,6 +29,7 @@ ELFS=(
     "moonsh.elf"
     "ls.elf"
     "cat.elf"
+    "vault.elf"
 )
 REQUIRED="mem_server.elf"
 

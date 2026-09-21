@@ -361,12 +361,22 @@ static uint8_t ustack_fw[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_net[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_qrexec[8192] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_adminvm[4096] __attribute__((section(".ustack"), aligned(16)));
+/* FDE stacks (Task 3): vault holds a KEK table + VMK slot + service frame
+ * on-stack (4KB mirrors the broker small frames); cryptblk holds FS +
+ * DMA-adjacent staging on-stack (8KB, qrexec 8K precedent). */
+static uint8_t ustack_vault[4096] __attribute__((section(".ustack"), aligned(16)));
+static uint8_t ustack_crypt[8192] __attribute__((section(".ustack"), aligned(16)));
 
 /* Boot assertion (Task 4 follow-up b): the qrexec U-stack window must fit
  * the policy frame with headroom; a short window fails the build, never
  * boots into a stack overflow. */
 _Static_assert(sizeof(ustack_qrexec) >= 8192,
                "qrexec U-stack must be >= 8KB (v2_qpolicy_t ~4.1KB)");
+/* FDE boot assertions (Task 3): vault frame + cryptblk staging minima. */
+_Static_assert(sizeof(ustack_vault) >= 4096,
+               "vault U-stack must be >= 4KB (KEK table + VMK slot)");
+_Static_assert(sizeof(ustack_crypt) >= 8192,
+               "cryptblk U-stack must be >= 8KB (FS + DMA staging)");
 
 uintptr_t ustack_a_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_b_top __attribute__((section(".udata"))) = 0;
@@ -376,6 +386,8 @@ uintptr_t ustack_qrexec_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_adminvm_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_fw_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_net_top __attribute__((section(".udata"))) = 0;
+uintptr_t ustack_vault_top __attribute__((section(".udata"))) = 0;
+uintptr_t ustack_crypt_top __attribute__((section(".udata"))) = 0;
 
 __attribute__((section(".utext"))) void user_stacks_init(void) {
     ustack_a_top = (uintptr_t)(ustack_a + sizeof(ustack_a));
@@ -386,4 +398,6 @@ __attribute__((section(".utext"))) void user_stacks_init(void) {
     ustack_adminvm_top = (uintptr_t)(ustack_adminvm + sizeof(ustack_adminvm));
     ustack_fw_top = (uintptr_t)(ustack_fw + sizeof(ustack_fw));
     ustack_net_top = (uintptr_t)(ustack_net + sizeof(ustack_net));
+    ustack_vault_top = (uintptr_t)(ustack_vault + sizeof(ustack_vault));
+    ustack_crypt_top = (uintptr_t)(ustack_crypt + sizeof(ustack_crypt));
 }

@@ -30,7 +30,11 @@
 
 #define V2_FRAMES_MAX 16
 #define V2_CAP_SLOTS 32
-#define V2_CAP_THREADS 8
+/* FDE growth (Task 3): 8 -> 10 threads (vault tid 8, cryptblk tid 9).
+ * Page tables (kboot root_pt_t/l1_t/l0_u_t), qube_of[], u_sp[] and the
+ * thread table all size with this; NTHREADS in kboot.c must stay <= here
+ * (enforced by _Static_assert at the NTHREADS definition). */
+#define V2_CAP_THREADS 10
 #define V2_VPN_SLOTS 32
 
 #define V2_RIGHT_R 0x1UL

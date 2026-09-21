@@ -166,6 +166,8 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "NET: link up" && echo "v2 smoke: net link" || { echo "v2 smoke: FAIL (no link)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "NET: tx ok" && echo "v2 smoke: net tx" || { echo "v2 smoke: FAIL (no tx)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "NET: irq ok" && echo "v2 smoke: net irq" || { echo "v2 smoke: FAIL (no irq)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "VAULT: up" && echo "v2 smoke: vault up" || { echo "v2 smoke: FAIL (no vault)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "VAULTQ: labels ok" && echo "v2 smoke: vaultq labels" || { echo "v2 smoke: FAIL (no vaultq)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "no runnable left; parking cpu" && echo "v2 smoke: clean park" || { echo "v2 smoke: FAIL (no clean park)"; QEMU_FAIL=1; }
     if [ "$QEMU_FAIL" = "0" ]; then
       QEMU_STATUS="PASS"

@@ -76,11 +76,11 @@ static void kputdec(unsigned long v) {
  * free region above the image (< 0x80800000). S-only identity map via
  * l0_frames, wired at l1_t[t][8] (VPN[1] of 0x81000000) in every VSpace. */
 #define V2_FRAME_PHYS_BASE 0x81000000UL
-#define NTHREADS 8 /* bound for all thread loops (<= V2_CAP_THREADS) */
+#define NTHREADS 10 /* bound for all thread loops (<= V2_CAP_THREADS) */
 /* Threads: 0 A, 1 B, 2 mem_server, 3 qrexec, 4 AdminVM, 5 firewall,
- * 6 net, 7 CAP stub. Growing NTHREADS forces WCET/table re-analysis:
- * threads[], qube_of[], u_sp[] size with it; root_pt_t/l1_t/l0_u_t
- * cover V2_CAP_THREADS. */
+ * 6 net, 7 CAP stub, 8 vault, 9 cryptblk. Growing NTHREADS forces
+ * WCET/table re-analysis: threads[], qube_of[], u_sp[] size with it;
+ * root_pt_t/l1_t/l0_u_t cover V2_CAP_THREADS. */
 _Static_assert(NTHREADS <= V2_CAP_THREADS,
                "NTHREADS must fit the caps model + page tables");
 
@@ -382,6 +382,7 @@ void user_stacks_init(void);
 extern uintptr_t ustack_a_top, ustack_b_top, ustack_m_top, ustack_cap_top;
 extern uintptr_t ustack_qrexec_top, ustack_adminvm_top;
 extern uintptr_t ustack_fw_top, ustack_net_top;
+extern uintptr_t ustack_vault_top, ustack_crypt_top;
 __attribute__((noreturn)) void u_enter(uctx_t *ctx);
 
 static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
@@ -1496,6 +1497,8 @@ void kboot(void) {
     u_sp[5] = (uint64_t)ustack_fw_top;
     u_sp[6] = (uint64_t)ustack_net_top;
     u_sp[7] = (uint64_t)ustack_cap_top;
+    u_sp[8] = (uint64_t)ustack_vault_top;
+    u_sp[9] = (uint64_t)ustack_crypt_top; /* Task 4 spawn reads it */
     pagetable_init();
     uintptr_t root = (uintptr_t)root_pt_t[0];
     uint64_t satp = (8UL << 60) | ((root >> 12) & 0xFFFFFFFFFFFUL);
@@ -1670,23 +1673,57 @@ void kboot(void) {
             kputs("[spawn] net ELF FAIL; parked\n");
         }
     }
+    /* FDE vault: initrd index 8 into thread 8 (qube 6, labeled below).
+     * Mirrors the S2/S3 loads above. On success the thread enters the
+     * ELF image and prints VAULT: up from U-mode; on failure it stays
+     * parked and the missing marker fails the smoke loudly (fail closed:
+     * nothing impersonates the vault). tid 9 stays parked: the cryptblk
+     * ELF arrives in Task 4 (normal for an unspawned slot under
+     * NTHREADS=10). */
+    {
+        const uint8_t *elf_data;
+        uint32_t elf_size;
+        uint64_t entry = 0, brk = 0;
+        if (initrd_lookup(8, &elf_data, &elf_size) == 0 &&
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 8, &entry, &brk) == V2_OK &&
+            entry != 0) {
+            v2_pte_sync(8);
+            threads[8].regs[2] = u_sp[8];
+            threads[8].sepc = entry;
+            threads[8].state = T_RUNNABLE;
+            kputs("[spawn] vault ELF ok\n");
+        } else {
+            kputs("[spawn] vault ELF FAIL; parked\n");
+        }
+    }
     /* Qubes boot labels: mem_server (thread 2) owns qube 1, qrexec
      * (thread 3) owns qube 2, AdminVM (thread 4) owns qube 3, firewall
-     * (thread 5) owns qube 4, net (thread 6) owns qube 5; A/B/CAP stub
-     * stay in qube 0. Fresh QCREATE labels start at qube_next == 6. */
+     * (thread 5) owns qube 4, net (thread 6) owns qube 5, vault
+     * (thread 8) owns qube 6; A/B/CAP stub stay in qube 0. Fresh
+     * QCREATE labels start at qube_next == 7 (Task 4 takes label 7 for
+     * cryptblk, reaching qube_next == 8 == V2_QUBES_MAX). */
     qube_of[2] = 1;
     qube_of[3] = 2;
     qube_of[4] = 3;
     qube_of[5] = 4;
     qube_of[6] = 5;
-    qube_next = 6;
+    qube_of[8] = 6;
+    qube_next = 7;
     kputs("QUB: qube0 qube1 up\n");
     /* NETQ label assert: fail closed (mismatch prints marker-free
      * "[demo] FAIL", so the smoke gate misses the marker and fails). */
-    if (qube_of[5] != 4 || qube_of[6] != 5 || qube_next != 6) {
+    if (qube_of[5] != 4 || qube_of[6] != 5 || qube_next != 7) {
         kputs("[demo] FAIL netq labels\n");
     } else {
         kputs("NETQ: labels ok\n");
+    }
+    /* VAULTQ label assert: vault (thread 8) owns qube 6 and the next
+     * fresh label is 7. Fail-closed like NETQ above; the one QX grant
+     * below is documented beside this assert. */
+    if (qube_of[8] != 6 || qube_next != 7) {
+        kputs("[demo] FAIL vaultq labels\n");
+    } else {
+        kputs("VAULTQ: labels ok\n");
     }
     /* S3 QX boot grants: QX is holder-based (qube_has_qx scans the
      * sender's own table), so each cross-qube leg needs its sender to
@@ -1706,6 +1743,19 @@ void kboot(void) {
         v2_grant(&caps, 5, 9, 6, 9) != V2_OK ||
         !qube_has_qx(0) || !qube_has_qx(5) || !qube_has_qx(6)) {
         kputs("[demo] FAIL qx boot grants\n");
+    }
+    /* FDE vault QX boot grant (exactly one): qrexec (thread 3) needs a QX
+     * cap so its approved T_DELIVERs reach the vault (thread 8, qube 6)
+     * through the raw gate (cross-qube handoff needs QX on the sender).
+     * Same shape as the S3 grants above: qube0's QX-augmented slot-9 root
+     * delegates verbatim into the broker's slot 9 (slot 8 stays free of
+     * QX-bit caps: MAP rejects QX, and the live data-plane GRANT+MAP
+     * path needs an empty dst). The vault takes no direct calls and the
+     * AdminVM rewrap/format calls also route via qrexec ask, so this one
+     * leg covers every Task-3 deliver path (see the VAULTQ assert above).
+     * Fail-closed: any grant failure prints marker-free "[demo] FAIL". */
+    if (v2_grant(&caps, 0, 9, 3, 9) != V2_OK || !qube_has_qx(3)) {
+        kputs("[demo] FAIL vault qx grant\n");
     }
     /* NETMMIO leaf gate: the transport U-leaf exists ONLY in tid 6's
      * tables (l1_t[6][5]); any other mapping is a leak. Fail-closed:
@@ -1915,6 +1965,15 @@ void kboot(void) {
          * every granted copy system-wide, mappings included). */
         if (ds < 0 || v2_revoke(&caps, 7, (unsigned long)ds) != V2_OK) {
             kputs("[demo] FAIL revoke\n");
+        } else {
+            /* FDE frame budget (Task 3): the 16-frame pool is fully
+             * spoken for at runtime (6 boot ELFs = 12 frames incl. the
+             * 3-page vault text, net TX+RX DMA = 2, CAP thread = 1).
+             * Revoke alone drops caps/mappings but leaves the bitmap
+             * marked used, so return the demo frame to the pool: it
+             * was zeroed at alloc and never WRITEn (model ops only),
+             * and frame_alloc_slot re-zeroes on next alloc. */
+            frame_free(ds);
         }
     }
     kputs("v2: entering U-mode mem_server\n");

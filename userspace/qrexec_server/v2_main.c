@@ -53,6 +53,9 @@
 #define RPC_NET_FWD 4
 #define RPC_FILTER_RELOAD 5
 #define RPC_NET_DONE 6
+#define RPC_VAULT_UNWRAP 7
+#define RPC_VAULT_REWRAP 8
+#define RPC_VOL_FORMAT 9
 
 #define FW_QUBE 4
 #define NET_QUBE 5
@@ -153,10 +156,14 @@ void qrexec_main(void)
     int admin_known = 0;
 
     /* Boot policy table: keys.sign ASK, clipboard DENY, net.send ASK,
-     * filter.reload ASK. First match wins. dst is always QREXEC_QUBE:
-     * the broker collapses dst (qube_decide(&pol, sqb, QREXEC_QUBE, rpc)),
-     * so rows addressed to FW/NET/WILD can never match. */
-    pol.nrules = 4;
+     * filter.reload ASK, vault.unwrap ASK (src 0), vault.rewrap ASK
+     * (src 3/AdminVM), vol.format ASK (src 3/AdminVM). First match wins.
+     * dst is always QREXEC_QUBE: the broker collapses dst
+     * (qube_decide(&pol, sqb, QREXEC_QUBE, rpc)), so rows addressed to
+     * FW/NET/WILD can never match. The FDE rows pin the requester src
+     * per rpc (unwrap: qube 0; rewrap/format: qube 3) because T_DELIVER
+     * carries no src: the vault/cryptblk distinguish requesters by rpc. */
+    pol.nrules = 7;
     pol.npending = 0;
     pol.naudit = 0;
     pol.rules[0] = (v2_qrule_t){.src = 0, .dst = QREXEC_QUBE,
@@ -171,9 +178,18 @@ void qrexec_main(void)
     pol.rules[3] = (v2_qrule_t){.src = 3, .dst = QREXEC_QUBE,
                                 .rpc = RPC_FILTER_RELOAD,
                                 .decision = V2_QDEC_ASK};
+    pol.rules[4] = (v2_qrule_t){.src = 0, .dst = QREXEC_QUBE,
+                                .rpc = RPC_VAULT_UNWRAP,
+                                .decision = V2_QDEC_ASK};
+    pol.rules[5] = (v2_qrule_t){.src = 3, .dst = QREXEC_QUBE,
+                                .rpc = RPC_VAULT_REWRAP,
+                                .decision = V2_QDEC_ASK};
+    pol.rules[6] = (v2_qrule_t){.src = 3, .dst = QREXEC_QUBE,
+                                .rpc = RPC_VOL_FORMAT,
+                                .decision = V2_QDEC_ASK};
 
     u_puts("QREXEC: up\n");
-    u_puts("AUD: boot nrules=4\n");
+    u_puts("AUD: boot nrules=7\n");
 
     for (;;) { /* bound: inf - service loop */
         uint64_t buf[4];
