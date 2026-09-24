@@ -87,7 +87,7 @@ minted at creation by AdminVM; the label travels on every IPC (like
 |---|---|---|
 | Xen VM boundary | H-ext two-stage `satp` + per-qube VSpace + PMP + CHERI bounds per thread | [TODO] S1-deferred (VSpace+cap isolation shipped instead; see S1 BUILT note in §11) |
 | dom0 | AdminVM (U-mode server, no ambient caps) | [HAVE] S2: `userspace/adminvm/v2_main.c` |
-| qrexec + policy | `qrexec_server`: typed RPC over Endpoints, policy table, confirm path | [HAVE] S2: `userspace/qrexec_server/v2_main.c` |
+| qrexec + policy | `qrexec_server`: typed RPC over Endpoints, policy table, confirm path | [HAVE] S2: `userspace/qrexec_server/v2_main.c`; live T_CALL legs BUILT 2026-09-24 (markers `QREXEC: admin registered` + `VAULT: live ok` + `AUD: deny rpc=2`, see §11 S2 note) |
 | NetVM/FirewallVM split | `net` qube (`userspace/net/v2_main.c` → `userspace/build/net.elf`, initrd 4, thread 6, qube 5) + `firewall` filter server (`userspace/firewall/fw.h` + `userspace/firewall/v2_main.c` → `userspace/build/firewall.elf`, initrd 3, thread 5, qube 4); host tests `tests/test_netfw.c` + `tests/test_qargs.c`; proofs `kernel/isabelle/Qubes_C.thy` | [HAVE] S3 (USB HCI still TODO) |
 | Encrypted storage | `cryptblk` qube (blk MMIO+IRQ, sector AEAD, `/dev/blk0` ciphertext + `/` plaintext views: `userspace/cryptblk/v2_main.c` → `userspace/build/cryptblk.elf`, initrd 9, thread 9, qube 7) + `vault` qube (KEKs/VMK, per-label slot release: `userspace/vault/v2_main.c` → `userspace/build/vault.elf`, initrd 8, thread 8, qube 6); crypto `userspace/crypt/`; host tests `tests/test_aead.c` + `tests/test_crypt.c`; proofs `kernel/isabelle/Qubes_D.thy` | [HAVE] FDE (templates/overlays/disposables/updates/backup stay TODO) |
 | USBVM | `usb` qube + new USB HCI driver (bulk-only first, no isochronous) | [TODO] S3 |
@@ -240,8 +240,22 @@ usb         AdminVM     device.attach ask   "attach USB device?"
     `v2_user.ld` `ALIGN(4096)` fix for the second LOAD). Smoke markers
     `QREXEC: ask` / `QREXEC: allow` / `QREXEC: deny` + `AUD: 3 entries`; semantics pinned by
     `c_decide_eq` (`Qubes_B.thy`). Demo RPCs are arg-less (T_DECIDE
-    forwards zeros); live T_CALL→ASK→DECIDE→DELIVER is future work
-    (see Roadmap below).
+    forwards zeros).
+  - Live T_CALL→ASK→DECIDE→DELIVER BUILT 2026-09-24 (deferred-A):
+    per-thread EPs (`V2_NEP 10`, `eps[]`, RECV-own-EP rule,
+    `kernel/kboot.c`; host tests `tests/test_v2ipc.c`; proofs
+    `ep_separation_send` / `ep_separation_recv` + `no_cross_deliver`
+    in `V2_C.thy`); broker `svc_of_qube` + as-built `rpc_svc` routing
+    with collapsed-dst `QREXEC_QUBE` retired
+    (`userspace/qrexec_server/v2_main.c`); grants (tid-3 FDE line
+    reused + qube0→admin tid 4 slot 9); admin HELLO→EP3 / RECV EP4 /
+    `NOTIFY(0,2)` / WAIT (`userspace/adminvm/v2_main.c`); thread-A
+    SEND+RECV legs (`kernel/user.c`); vault rpc-switch
+    (`userspace/vault/v2_main.c`); smoke markers `QREXEC: admin
+    registered` + `VAULT: live ok` + `AUD: deny rpc=2` (`verify.sh
+    [4/4]`). Refinements + closed holes (EP0 misdelivery, dead admin
+    registration, collapsed-dst misrouting) + B/C/D remainder in
+    `V2_DESIGN.md` §9 deferred-A entry.
 - **S3 — Net/firewall/USB split.** `net` qube (existing driver), `firewall`
   filter server, USB HCI driver + `usb` qube. *Demo:* AppVM web fetch
   through the chain; USB attach prompt.
@@ -282,11 +296,15 @@ usb         AdminVM     device.attach ask   "attach USB device?"
   policy engine and all untrusted-input parsers.
 - **S7 — Boot trust + release.** DICE wired, sealed vault, recovery flow,
   reproducible release artifacts, first versioned release.
-- **Deferred past S2 (honest future work, not built):** live end-to-end
-  T_CALL→ASK→DECIDE→DELIVER traffic over EP0 (needs a qube-0 client
-  holding QX or a same-qube harness); audit-cap `V2_AUDIT_MAX=64`
-  overflow modeling (spec audit lists are unbounded);
-  qube-lifecycle alias follow-ups; demo-convention brittleness (minor).
+- **Deferred past S2 (honest future work, not built):** (B) audit-cap
+  `V2_AUDIT_MAX=64` overflow modeling (spec audit lists are unbounded;
+  proof owner: Qubes_A/B extension, S6 replay); (C) qube-lifecycle
+  alias follow-ups (kernel owner: QDESTROY/caps follow-ups); (D)
+  demo-convention brittleness (minor; harness owner:
+  `verify.sh`/`run_qemu.sh` hardening). Deferred-A (live T_CALL→
+  ASK→DECIDE→DELIVER traffic) BUILT 2026-09-24 — see the S2 note
+  above; it closed EP0 misdelivery, dead admin registration, and
+  collapsed-dst misrouting.
 
 ## 12. Hardware + emulation requirements
 

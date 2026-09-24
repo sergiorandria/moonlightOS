@@ -62,24 +62,66 @@ Lowest-numbered-Runnable (mirrors the proven `V2_A.sched_step`). Timer
 preemption is the SBI timer interrupt (`scause=5`, 100ms @ 10MHz). Terminal
 state is `wfi` when no thread is Runnable (prints `no runnable left; parking cpu`).
 
-### IPC (Stage 2)
+### IPC (Stage 2, addressed per-thread 2026-09-24)
 
-Blocking rendezvous on a static endpoint `EP0` with FIFO send/recv queues
-(mirrors `V2_C`):
+One endpoint per thread (`V2_NEP 10`, `kernel/ipc.h`; `static v2_ep_t
+eps[V2_NEP]` in `kernel/kboot.c`, `_Static_assert`ed against
+`V2_CAP_THREADS`): EP i is owned by tid i (A0 B1 mem2 qrexec3 admin4
+fw5 net6, scratch7 unused, vault8 cryptblk9). Blocking rendezvous with
+per-EP FIFO send/recv queues (mirrors endpoint-indexed `V2_C`):
 
-- `V2_SEND(ep, u_ptr, len)`: validate endpoint + range → SUM-window
-  `u_copy_in` → deliver to oldest waiter (resume sender, stamp sender id,
-  flag truncation) or queue + block.
-- `V2_RECV(ep, u_buf, cap)`: validate → deliver oldest queued sender or
-  park `(ptr, cap)` + block.
+- `V2_SEND(ep, u_ptr, len)`: validate `ep < V2_NEP` (+ `ep < NTHREADS`,
+  fail closed) → raw gate with `d = ep` → SUM-window `u_copy_in` →
+  deliver to the oldest waiter OF THAT EP (resume sender, stamp sender
+  id, flag truncation) or queue + block.
+- `V2_RECV(ep, u_buf, cap)`: require `ep == cur` FIRST (RECV-own-EP
+  rule — `V2_ERR_INVALID` with no state change, no waiter registered)
+  → deliver the oldest queued sender on EP `ep` or park `(ptr, cap)` +
+  block. The RECV-side raw gate stays as defense in depth.
 - `V2_NOTIFY(target, bits)`: OR-accumulate into `notify`; wake only a
-  `WAIT`-blocked thread (rendezvous blocks untouched).
+  `WAIT`-blocked thread (rendezvous blocks untouched). The wake path
+  pre-delivers pending bits as the woken WAIT's return (`regs[10] =
+  notify`, pending preserved — level-triggered parties observe zero
+  change).
 - `V2_WAIT()`: take pending notify bits, or block until notified.
+- QDESTROY sweeps all EPs (per-EP compaction loop × `V2_NEP`, bound
+  comment).
 
 Sender ids are **kernel-stamped** (never user-supplied). Truncation returns
 an explicit overflow flag (`ovf`), never silent cut. The copy discipline is
 validate-then-copy through a bounded loop with `SUM` toggled only for that
 loop.
+
+Proved by `ep_separation_send` / `ep_separation_recv` (ops on EP i
+leave every EP j≠i bit-identical) + `no_cross_deliver` (RECV returns
+only own-EP bytes) in `kernel/isabelle/V2_C.thy` (0 sorry, 0 axioms,
+snoop/foreign mutants + eval pins); host-tested by the extended
+`tests/test_v2ipc.c` (gate + cross-EP invisibility + per-EP waiter
+pairing + per-EP queue-full isolation, `verify.sh [1f]`); smoke-pinned
+byte-identical ping-pong (`B00pn`/`A10pg`/`W1` unchanged).
+
+### Live qrexec legs (S2/S3 deferred-A, built 2026-09-24)
+
+Thread A drives two real call/response legs through the broker
+(`kernel/user.c`, immediates only, marker-free park on deviation):
+after `W1` it WAITs for the admin handshake (bit 2), then
+SEND+RECVs `T_CALL(keys.sign)` → `[1] = R_PENDING` (ask enqueued) and
+`T_CALL(clipboard)` → `[-1] = R_DENY` (deny arm sends no forward).
+Handshake (`userspace/adminvm/v2_main.c`): HELLO→EP3, RECV EP4 for the
+broker's `[R_OK]` reply (without this RECV the broker's reply SEND
+would wedge it against admin's WAIT), then `NOTIFY(tid 0, bit 2)` and
+the WAIT loop. Broker routing (`userspace/qrexec_server/v2_main.c`):
+`svc_of_qube[8] = {0,2,3,4,5,6,8,9}` + as-built `rpc_svc[10] =
+{0,6,6,5,0,4,0,6,6,7}` with collapsed-dst `QREXEC_QUBE` retired;
+approved keys.sign delivers to `svc_of_qube[6] = 8` (vault EP8), where
+the rpc-switch (`userspace/vault/v2_main.c`: rpc 1 → `VAULT: live ok`
+with no state change, rpc 7 → existing handoff) prints the end-to-end
+marker — honest because boot unlock uses rpc 7. Grants
+(`kernel/kboot.c`, fail-closed): thread-A T_CALL reuses the FDE tid-3
+slot-9 line; one grant added, qube0→admin (tid 4 slot 9). Smoke
+markers (`verify.sh [4/4]`): `QREXEC: admin registered` (genuinely
+live — R_OK consumed + NOTIFY observed via the downstream chain) +
+`VAULT: live ok` + `AUD: deny rpc=2`.
 
 ### Qubes labels + raw gate (S1, built)
 
@@ -233,18 +275,20 @@ validates the ABI headers).
 `tools/verify.sh` is the single source of truth:
 
 1. **Host unit tests**: ABI regression (uintptr_t = 8), sched_server, vfs,
-   shell, driver host-sims (uart/plic/timer/rtc/power), freestanding libc
-   (test_libc + newlibc + batch4/5/6), v2 IPC + caps (host-compiled from
-   `ipc.h`/`caps.h`), qube labels + policy (`test_qlabels`,
-   `test_qube_policy` from `qube.h`), ask args (`test_qargs`), firewall +
-   net plane (`test_netfw` over `fw.h`), FDE crypto + layout/slots
-   (`test_aead` KATs over `userspace/crypt/`, `test_crypt` over
-   `cryptblk/layout.h` + `slot.h`).
+    shell, driver host-sims (uart/plic/timer/rtc/power), freestanding libc
+    (test_libc + newlibc + batch4/5/6), v2 IPC + caps (host-compiled from
+    `ipc.h`/`caps.h`; `test_v2ipc` extended with EP-gate + cross-EP
+    isolation), qube labels + policy (`test_qlabels`,
+    `test_qube_policy` from `qube.h`), ask args (`test_qargs`), firewall +
+    net plane (`test_netfw` over `fw.h`), FDE crypto + layout/slots
+    (`test_aead` KATs over `userspace/crypt/`, `test_crypt` over
+    `cryptblk/layout.h` + `slot.h`).
 2. **Production gates**: linker layout (no PROGBITS in `[_bss,_bss_end)`),
    `user.c` rodata ban (immediates-only U-mode code).
 3. **Isabelle**: `isabelle build -D kernel/isabelle -v` (session V2 =
-   V2_A + V2_B + V2_C + V2_D + Qubes_A + Qubes_B + Qubes_C + Qubes_D; anti-vacuity gate: no sorry,
-   no `≡ True` invariants).
+    V2_A + V2_B + V2_C (endpoint-indexed: `ep_separation_send` /
+    `ep_separation_recv` + `no_cross_deliver`) + V2_D + Qubes_A + Qubes_B + Qubes_C + Qubes_D; anti-vacuity gate: no sorry,
+    no `≡ True` invariants).
 4. **Kernel build**: `make -C kernel` (clang, rv64imac, freestanding).
 5. **QEMU smoke** (single cmdline: virtio-net-device + user netdev +
    `virtio-mmio.force-legacy=off`): boots OpenSBI → kernel, asserts `satp Sv39 on`,
@@ -256,7 +300,9 @@ validates the ABI headers).
    `[spawn] firewall/net ELF ok`, `NETQ: labels ok`, `FW: allow` /
    `FW: deny`, `FW: up`, `NET: up`, `LEAK: denied`, `SPOOF: ignored`,
    `AUD:`, `NETMMIO: tid=6 only`, `NET: link up`, `NET: tx ok`,
-   `NET: irq ok`, `[spawn] vault/cryptblk ELF ok`, `VAULT: up`,
+    `NET: irq ok`, `QREXEC: admin registered` (live handshake),
+    `VAULT: live ok` (thread-A ask leg), `AUD: deny rpc=2` (thread-A
+    deny leg), `[spawn] vault/cryptblk ELF ok`, `VAULT: up`,
    `VAULTQ: labels ok`, `CRYPTQ: labels ok`, `CRYPT: up` / `locked` /
    `unlock ok` / `rw ok`, `CRYPT: wrong-key denied` / `leak denied` /
    `no volume`, `CRYPT: formatted|volume ok` (format-if-absent

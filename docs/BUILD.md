@@ -124,8 +124,20 @@ A10pg
 W1
 MEM-SRV
 MEM / CAP / OK invoke reports, DU: vpn0 mirrored, NP
+QREXEC: admin registered # live handshake (admin HELLO->EP3, RECV EP4 [R_OK], NOTIFY(0,2); thread A WAITs bit 2 post-W1)
+VAULT: live ok # thread-A ask leg: keys.sign T_CALL->ASK->DECIDE->DELIVER to EP8
+AUD: deny rpc=2 # thread-A deny leg: clipboard DENY (R_DENY consumed by A)
 no runnable left; parking cpu
 ```
+
+Live-traffic handshake note: after `W1`, thread A blocks in a second
+`V2_WAIT` for bit 2; admin SENDs `HELLO`→EP3, RECVs EP4 for the
+broker's `[R_OK]` reply (without this RECV the broker's reply SEND
+would wedge it against admin's WAIT below), then `NOTIFY`s tid 0 bit 2
+and enters its WAIT loop. Thread A then drives two SEND+RECV pairs
+over EP3 (keys.sign → `[1]` R_PENDING; clipboard → `[-1]` R_DENY —
+reply words, never the `usend` return). Any deviation parks A
+marker-free and the `[4/4]` gate FAILs on the missing markers above.
 
 FDE honesty notes: the smoke unlock uses `TEST_KEYS` vectors compiled
 behind a build flag (smoke-only — release passphrase entry is

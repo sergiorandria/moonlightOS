@@ -408,6 +408,85 @@ per-function where not).
     semantics, documented); no journaling (crash between data/tag
     writes surfaces as tag-mismatch `EIO` = detected, never silent);
     file sharing across qubes stays deny-by-default.
+- **Live qrexec traffic (S2/S3 deferred-A).**
+  - BUILT 2026-09-24: Phase 1 addressed endpoints + Phase 2 thread-A
+    live ask+deny legs. Single entry `tools/verify.sh`: host PASS
+    (incl. extended `test_v2ipc`), gates PASS, kernel PASS, Isabelle
+    PASS, QEMU PASS 44/44 incl. the 3 new markers, zero FAIL, no new
+    SKIP (trailer `PARTIAL` is the pre-existing CHERI-toolchain SKIP
+    only).
+  - Phase 1 (commits `942c2c5` addressed EP gate + isolation tests,
+    `8f1e0a4` per-thread endpoint array + own-EP rule, `53367cc`
+    U-mode parties onto own EPs + broker svc table, `72181e7` V2_C
+    endpoint-indexed + separation proofs): one endpoint per thread —
+    `V2_NEP 10` (`kernel/ipc.h`, `_Static_assert`ed against
+    `V2_CAP_THREADS` in `kernel/kboot.c`), `static v2_ep_t
+    eps[V2_NEP]` indexed by EP, RECV restricted to the caller's own EP
+    (`ep != cur` → `V2_ERR_INVALID`, fail closed before any queue
+    touch), SEND validated (`ep < V2_NEP`, `ep < NTHREADS`) + the
+    existing raw gate with `d = dst EP`, QDESTROY sweeping all EPs.
+    EP ids == boot tids (A0 B1 mem2 qrexec3 admin4 fw5 net6, scratch7
+    unused, vault8 cryptblk9). Host-pinned by the extended
+    `tests/test_v2ipc.c` (gate + cross-EP invisibility + per-EP waiter
+    pairing + per-EP queue-full isolation, `verify.sh [1f]`,
+    `test_v2ipc: ALL PASS`); smoke-pinned byte-identical
+    (`B00pn`/`A10pg`/`W1` unchanged). Broker routing:
+    `svc_of_qube[8] = {0,2,3,4,5,6,8,9}` +
+    as-built `rpc_svc[10] = {0,6,6,5,0,4,0,6,6,7}` (keys.sign→vault 6,
+    clipboard→vault 6 + DENY, net.send→net 5, filter.reload→fw 4,
+    unwrap/rewrap→vault 6, format→cryptblk 7; rpc 4/6 INVALID with no
+    row), all in `userspace/qrexec_server/v2_main.c`, with the S2-era
+    collapsed-dst (`QREXEC_QUBE = 1` = mem's qube) retired and deleted.
+    Proven in `kernel/isabelle/V2_C.thy` (replayed endpoint-indexed,
+    0 sorry, 0 axioms): `ep_separation_send` / `ep_separation_recv`
+    (ops on EP i leave every EP j≠i bit-identical) + `no_cross_deliver`
+    (RECV returns only own-EP bytes), with snoop/foreign mutants +
+    eval pins; all pre-existing integrity lemmas replayed with one
+    extra index.
+  - Phase 2 (commit `978d69e` thread-A live ask+deny legs + markers):
+    grants — the thread-A T_CALL leg REUSEs the FDE tid-3 slot-9 line
+    (`v2_grant` fails on an occupied dst, `kernel/caps.h`), and one
+    grant is added, qube0→admin (tid 4 slot 9) (`kernel/kboot.c`,
+    fail-closed `[demo] FAIL` on failure); handshake — admin
+    HELLO→EP3, RECV EP4 for the broker's `[R_OK]` reply, then
+    `NOTIFY(tid 0, bit 2)` and the WAIT loop (`userspace/adminvm/
+    v2_main.c`, `ADMIN_LIVE_BIT 2`); legs — thread A WAITs post-`W1`
+    for bit 2, then two SEND+RECV call/response pairs over EP3
+    (`kernel/user.c`, immediates only, marker-free park on deviation:
+    SEND must return `V2_OK`, replies `[1] = R_PENDING` after keys.sign
+    and `[-1] = R_DENY` after clipboard — reply words, never the
+    syscall return); vault rpc-switch (`userspace/vault/v2_main.c`:
+    rpc 1 → `VAULT: live ok` with no state change and no handoff,
+    rpc 7 → existing T_KEY handoff, else silent drop — honest because
+    boot unlock uses rpc 7); admin put-back arm stays
+    dormant-but-harmless (reachable only on EP4 misdelivery, which
+    separation makes unstatable). One-line kernel fix the legs exposed:
+    NOTIFY wake-delivery (`kernel/kboot.c`: `threads[t].regs[10] =
+    threads[t].notify`, pending preserved — a woken WAIT now returns
+    fresh bits per the UABI instead of the stale blocked-with value;
+    level-triggered parties observe zero change). Gated markers in
+    `verify.sh [4/4]`: `QREXEC: admin registered` (genuinely live —
+    R_OK consumed + NOTIFY observed via the downstream chain) +
+    `VAULT: live ok` + `AUD: deny rpc=2`.
+  - CLOSED HOLES (latent, now unstatable by construction): (a) EP0
+    misdelivery — every SEND paired with the oldest waiter regardless
+    of destination (the S3/FDE `T_KEY`/`T_ASK` SENDs carried the same
+    latent misdelivery, masked only because those handoffs never ran);
+    (b) dead admin registration — HELLO raw-gate-denied, admin
+    WAIT-blocked forever, the broker path never ran at all; (c)
+    collapsed-dst misrouting — every deliver resolved to
+    `svc_of_qube[1] = 2` = mem_server, so the vault marker was
+    unreachable.
+  - KNOWN DEFERRED / honest remainder (not built): (B) audit-cap
+    `V2_AUDIT_MAX=64` overflow modeling — spec audit lists are
+    unbounded (proof owner: Qubes_A/B extension, S6 replay); (C)
+    qube-lifecycle alias follow-ups (kernel owner: QDESTROY/caps
+    follow-ups); (D) demo-convention brittleness — marker-text coupling
+    between ELFs and the smoke gate (harness owner:
+    `verify.sh`/`run_qemu.sh` hardening). Live AppVM→firewall→net
+    traffic stays ungated (`NET: fwd ok` specified but no phantom
+    assert — S3 entry above); RX-from-wire, USB HCI + `usb` qube, and
+    §7 non-goals unchanged.
 
 ## 10. Open questions (decided late, deliberately)
 
@@ -419,5 +498,6 @@ per-function where not).
    in Stage 3).
 4. Whether `Seal` survives as a syscall or becomes an `Invoke` op
    (spec churn only — decide in Stage 0, freeze after).
-5. Live T_CALL→ASK→DECIDE→DELIVER traffic + audit-cap modeling +
-   lifecycle aliases (future work, see §9 KNOWN DEFERRED).
+5. Audit-cap modeling + qube-lifecycle aliases (future work, see §9
+   live-traffic KNOWN DEFERRED items B/C); live T_CALL→ASK→DECIDE→
+   DELIVER traffic BUILT 2026-09-24 (deferred-A entry in §9).
