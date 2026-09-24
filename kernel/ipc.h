@@ -20,6 +20,7 @@
 #define V2_MSG_MAX 4
 #define V2_IPC_Q 16
 #define V2_EP0 0
+#define V2_NEP 10 /* one endpoint per thread (EP i owned by tid i); rides V2_CAP_THREADS */
 #define V2_THREADS_MAX 8
 
 #define V2_OK 0
@@ -52,7 +53,7 @@ typedef struct {
     int recv_len;
 } v2_ep_t;
 
-static inline int v2_ep_ok(unsigned long ep) { return ep == V2_EP0; }
+static inline int v2_ep_ok(unsigned long ep) { return ep < (unsigned long)V2_NEP; }
 
 static inline int v2_len_ok(unsigned long len) { return len <= (unsigned long)V2_MSG_MAX; }
 

@@ -20,7 +20,6 @@ int main(void) {
 
     /* Endpoint + length gates. */
     CHECK(v2_ep_ok(0));
-    CHECK(!v2_ep_ok(1));
     CHECK(!v2_ep_ok(99));
     CHECK(v2_len_ok(0) && v2_len_ok(4));
     CHECK(!v2_len_ok(5));
@@ -94,6 +93,35 @@ int main(void) {
     v2_ep_init(&ep);
     CHECK(v2_q_send(&ep, 1, w, 0) == V2_OK);
     CHECK(v2_q_take_send(&ep, &s) == V2_OK && s.len == 0 && s.sender == 1);
+
+    /* Addressed EPs: gate + cross-EP isolation (Phase 1). */
+    CHECK(v2_ep_ok(0) && v2_ep_ok(9));
+    CHECK(!v2_ep_ok(10));
+    CHECK(!v2_ep_ok(99));
+    {
+        v2_ep_t epa, epb;
+        v2_ep_init(&epa);
+        v2_ep_init(&epb);
+        w[0] = 41; w[1] = 42;
+        CHECK(v2_q_send(&epa, 3, w, 2) == V2_OK);
+        /* EP-B sees nothing: cross-EP invisibility. */
+        CHECK(v2_q_take_send(&epb, &s) == V2_ERR_OVERFLOW);
+        /* EP-A round-trips its own bytes, sender stamped. */
+        CHECK(v2_q_take_send(&epa, &s) == V2_OK);
+        CHECK(s.sender == 3 && s.len == 2 && s.words[0] == 41 && s.words[1] == 42);
+        /* Waiter pairing is per-EP: oldest waiter OF THAT EP. */
+        CHECK(v2_q_wait(&epa, 8) == V2_OK);
+        CHECK(v2_q_wait(&epb, 9) == V2_OK);
+        CHECK(v2_q_take_waiter(&epa, &tid) == V2_OK && tid == 8);
+        CHECK(v2_q_take_waiter(&epb, &tid) == V2_OK && tid == 9);
+        /* Queue-full on one EP leaves the other working. */
+        v2_ep_init(&epa);
+        v2_ep_init(&epb);
+        for (int i = 0; i < V2_IPC_Q; i++)
+            CHECK(v2_q_send(&epa, 0, w, 1) == V2_OK);
+        CHECK(v2_q_send(&epa, 0, w, 1) == V2_ERR_OVERFLOW);
+        CHECK(v2_q_send(&epb, 0, w, 1) == V2_OK);
+    }
 
     printf("test_v2ipc: ALL PASS\n");
     return 0;
