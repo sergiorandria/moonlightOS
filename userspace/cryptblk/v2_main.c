@@ -372,11 +372,11 @@ static uint64_t u_rdtime(void)
     return t;
 }
 
-static void u_reply(long v)
+static void u_reply(unsigned long dst, long v)
 {
     uint64_t resp[1];
     resp[0] = (uint64_t)v;
-    u_send(0, resp, 1);
+    u_send(dst, resp, 1);
 }
 
 static void blk_fence(void)
@@ -1225,7 +1225,7 @@ static long key_consume(crypt_state_t *st, unsigned long slot)
         /* Cross-qube ack: needs our QX (boot grant, kernel/kboot.c). A
          * failed SEND fails closed with the VMK wiped: an unacked vault
          * wipes + revokes on its own expiry. */
-        if (u_send(0, ack, 4) != 0) {
+        if (u_send(8, ack, 4) != 0) {
             crypt_wipe(st->vmk, sizeof(st->vmk));
             st->vmk_valid = 0;
             return -1;
@@ -1463,10 +1463,10 @@ void cryptblk_main(void)
         unsigned long sqb = 0;
         unsigned long ovf = 0;
         unsigned long tag;
-        long n = u_recv(0, buf, 4, &snd, &sqb, &ovf);
+        long n = u_recv(9, buf, 4, &snd, &sqb, &ovf);
 
         if (n < 1) {
-            u_reply(R_INVALID);
+            u_reply(snd, R_INVALID);
             continue;
         }
         tag = (unsigned long)buf[0];
@@ -1478,14 +1478,14 @@ void cryptblk_main(void)
             if (op == (unsigned long)CR_FS_OPEN && b == 0) {
                 long nfd = fs_open(&st, a, sqb, snd);
                 if (nfd < 0) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 {
                     uint64_t rp[2];
                     rp[0] = 0;
                     rp[1] = (uint64_t)nfd;
-                    u_send(0, rp, 2);
+                    u_send(snd, rp, 2);
                 }
                 continue;
             }
@@ -1495,12 +1495,12 @@ void cryptblk_main(void)
                 uint64_t w;
                 unsigned long k;
                 if (idx != 0 || b >= 512UL || !st.vmk_valid) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 if (sec_read(&st, (unsigned long)st.files[0].start,
                              st.io) != 0) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 w = 0;
@@ -1511,7 +1511,7 @@ void cryptblk_main(void)
                     uint64_t rp[2];
                     rp[0] = 0;
                     rp[1] = w;
-                    u_send(0, rp, 2);
+                    u_send(snd, rp, 2);
                 }
                 continue;
             }
@@ -1521,17 +1521,17 @@ void cryptblk_main(void)
                 int idx = fd_lookup(&st, a, snd);
                 unsigned long off;
                 if (idx != 0 || !st.vmk_valid) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 off = st.fds[a].off;
                 if (off + 8UL > 4096UL) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 if (sec_read(&st, (unsigned long)st.files[0].start,
                              st.io) != 0) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 {
@@ -1542,25 +1542,25 @@ void cryptblk_main(void)
                 }
                 if (sec_write(&st, (unsigned long)st.files[0].start,
                               st.io) != 0) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 crypt_wipe(st.io, sizeof(st.io));
                 st.fds[a].off = off + 8UL;
-                u_reply(0);
+                u_reply(snd, 0);
                 continue;
             }
             if (op == (unsigned long)CR_FS_CLOSE && b == 0) {
                 if (fs_close(&st, a, snd) != 0)
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                 else
-                    u_reply(0);
+                    u_reply(snd, 0);
                 continue;
             }
             if (op == (unsigned long)CR_FS_STAT && b == 0) {
                 int idx = fd_lookup(&st, a, snd);
                 if (idx < 0) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 {
@@ -1569,7 +1569,7 @@ void cryptblk_main(void)
                     rp[1] = (uint64_t)st.files[idx].owner;
                     rp[2] = st.files[idx].start;
                     rp[3] = st.files[idx].len;
-                    u_send(0, rp, 4);
+                    u_send(snd, rp, 4);
                 }
                 continue;
             }
@@ -1580,11 +1580,11 @@ void cryptblk_main(void)
                 uint64_t w;
                 unsigned long k;
                 if (b >= 512UL) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 if (blk4k_read(&st, a, st.io) != 0) {
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 w = 0;
@@ -1595,11 +1595,11 @@ void cryptblk_main(void)
                     uint64_t rp[2];
                     rp[0] = 0;
                     rp[1] = w;
-                    u_send(0, rp, 2);
+                    u_send(snd, rp, 2);
                 }
                 continue;
             }
-            u_reply(R_INVALID);
+            u_reply(snd, R_INVALID);
             continue;
         }
 

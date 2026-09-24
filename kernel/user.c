@@ -145,7 +145,7 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
     ping[1] = 'n';
     uputc('A');
     uputc('\n');
-    usend(0, ping, 2);
+    usend(1, ping, 2);
     n = urecv(0, out, 4, &snd, &qb, &ovf);
     uputc('A');
     uputc((char)('0' + snd)); /* kernel-stamped sender: must be 1 */
@@ -168,7 +168,7 @@ __attribute__((section(".utext"), noinline)) void user_b_main(void) {
     long n;
     pong[0] = 'p';
     pong[1] = 'g';
-    n = urecv(0, buf, 4, &snd, &qb, &ovf);
+    n = urecv(1, buf, 4, &snd, &qb, &ovf);
     uputc('B');
     uputc((char)('0' + snd)); /* kernel-stamped sender: must be 0 */
     uputc((char)('0' + ovf)); /* must be 0: ping fits */
@@ -191,11 +191,11 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
 
     /* Main loop: wait for requests, handle them, reply */
     for (;;) { /* bound: ∞ — service loop */
-        n = urecv(0, buf, 4, &snd, &qb, &ovf);
+    n = urecv(2, buf, 4, &snd, &qb, &ovf);
         if (n < 1) {
             /* Empty or invalid: reply error */
             uint64_t resp[1] = { (uint64_t)RESP_ERR };
-            usend(0, resp, 1);
+            usend(snd, resp, 1);
             continue;
         }
 
@@ -228,7 +228,7 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
         }
 
         uint64_t resp[1] = { (uint64_t)rc };
-        usend(0, resp, 1);
+        usend(snd, resp, 1);
     }
 }
 

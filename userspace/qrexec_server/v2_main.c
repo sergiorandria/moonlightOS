@@ -43,6 +43,12 @@
 #define T_HELLO 4
 #define T_DELIVER 5
 
+/* Deliver-target table: dst qube -> service tid (= its EP). q0 (demo
+ * qube) maps to 0 and is never a deliver target: no allow/ask row has
+ * dst qube 0 (boot policy + FDE rows 7-9 audited). Mirrors boot wiring;
+ * reviewer checks against kboot qube_of assignments. */
+static const unsigned long svc_of_qube[8] = {0, 2, 3, 4, 5, 6, 8, 9};
+
 #define R_OK 0L
 #define R_PENDING 1L
 #define R_DENY (-1L)
@@ -139,11 +145,11 @@ static long u_notify(unsigned long t, unsigned long bits)
     return u_ecall3(V2_NOTIFY, (long)t, (long)bits, 0);
 }
 
-static void u_reply(long v)
+static void u_reply(unsigned long dst, long v)
 {
     uint64_t resp[1];
     resp[0] = (uint64_t)v;
-    u_send(0, resp, 1);
+    u_send(dst, resp, 1);
 }
 
 void qrexec_main(void)
@@ -196,10 +202,10 @@ void qrexec_main(void)
         unsigned long snd = 0;
         unsigned long sqb = 0;
         unsigned long ovf = 0;
-        long n = u_recv(0, buf, 4, &snd, &sqb, &ovf);
+        long n = u_recv(3, buf, 4, &snd, &sqb, &ovf);
 
         if (n < 1) {
-            u_reply(R_DENY);
+            u_reply(snd, R_DENY);
             continue;
         }
 
@@ -209,7 +215,7 @@ void qrexec_main(void)
             admin_tid = snd;
             admin_known = 1;
             u_puts("QREXEC: admin registered\n");
-            u_reply(R_OK);
+            u_reply(snd, R_OK);
             continue;
         }
 
@@ -225,6 +231,7 @@ void qrexec_main(void)
                     unsigned long rpc = pol.pending[idx].rpc;
                     unsigned long a0 = pol.pending[idx].arg0;
                     unsigned long a1 = pol.pending[idx].arg1;
+                    unsigned long dstq = pol.pending[idx].dst;
                     int arc = qube_decide_idx(&pol, idx, approve);
                     (void)arc;
                     if (approve) {
@@ -233,11 +240,18 @@ void qrexec_main(void)
                         fwd[1] = rpc;
                         fwd[2] = a0;
                         fwd[3] = a1;
-                        /* Backpressure: blocks until a service RECVs. */
-                        u_send(0, fwd, 4);
-                        u_puts("AUD: allow rpc=");
-                        u_putdec((long)rpc);
-                        u_putc('\n');
+                        if (dstq >= 8UL || dstq == 0UL) {
+                            /* Never a service: deny-audit, no SEND. */
+                            u_puts("AUD: deny rpc=");
+                            u_putdec((long)rpc);
+                            u_putc('\n');
+                        } else {
+                            /* Backpressure: blocks until a service RECVs. */
+                            u_send(svc_of_qube[dstq], fwd, 4);
+                            u_puts("AUD: allow rpc=");
+                            u_putdec((long)rpc);
+                            u_putc('\n');
+                        }
                     } else {
                         u_puts("AUD: deny rpc=");
                         u_putdec((long)rpc);
@@ -256,7 +270,7 @@ void qrexec_main(void)
 
         if (buf[0] != (uint64_t)T_CALL || n < 2) {
             u_puts("QREXEC: drop unknown\n");
-            u_reply(R_DENY);
+            u_reply(snd, R_DENY);
             continue;
         }
 
@@ -275,18 +289,30 @@ void qrexec_main(void)
             u_putc('\n');
 
             if (dec == V2_QDEC_ALLOW) {
+                /* Policy-lookup dst (collapsed): the decide above ran
+                 * against QREXEC_QUBE, so delivery targets its EP. */
+                unsigned long dstq = (unsigned long)QREXEC_QUBE;
                 uint64_t fwd[4];
                 int k;
                 for (k = 0; k < 4; k++) /* bound: 4 (message words) */
                     fwd[k] = k < n ? buf[k] : 0;
                 fwd[0] = T_DELIVER;
-                qube_audit(&pol, sqb, QREXEC_QUBE, rpc, 1);
-                /* Forward first (backpressure), then reply to caller. */
-                u_send(0, fwd, 4);
-                u_puts("AUD: allow rpc=");
-                u_putdec((long)rpc);
-                u_putc('\n');
-                u_reply(R_OK);
+                if (dstq >= 8UL || dstq == 0UL) {
+                    /* Never a service: deny-audit, no SEND. */
+                    qube_audit(&pol, sqb, QREXEC_QUBE, rpc, 0);
+                    u_puts("AUD: deny rpc=");
+                    u_putdec((long)rpc);
+                    u_putc('\n');
+                    u_reply(snd, R_DENY);
+                } else {
+                    qube_audit(&pol, sqb, QREXEC_QUBE, rpc, 1);
+                    /* Forward first (backpressure), then reply to caller. */
+                    u_send(svc_of_qube[dstq], fwd, 4);
+                    u_puts("AUD: allow rpc=");
+                    u_putdec((long)rpc);
+                    u_putc('\n');
+                    u_reply(snd, R_OK);
+                }
             } else if (dec == V2_QDEC_ASK) {
                 v2_qask_t ask;
                 int erc;
@@ -309,19 +335,19 @@ void qrexec_main(void)
                     if (admin_known)
                         u_notify(admin_tid, pol.npending);
                     /* Blocks until the AdminVM RECVs the ask. */
-                    u_send(0, na, 4);
-                    u_reply(R_PENDING);
+                    u_send(4, na, 4);
+                    u_reply(snd, R_PENDING);
                 } else {
                     /* Queue full: ask_enqueue already deny-audited. */
                     u_puts("AUD: deny ask-overflow\n");
-                    u_reply(R_DENY);
+                    u_reply(snd, R_DENY);
                 }
             } else {
                 qube_audit(&pol, sqb, QREXEC_QUBE, rpc, 0);
                 u_puts("AUD: deny rpc=");
                 u_putdec((long)rpc);
                 u_putc('\n');
-                u_reply(R_DENY);
+                u_reply(snd, R_DENY);
             }
         }
     }

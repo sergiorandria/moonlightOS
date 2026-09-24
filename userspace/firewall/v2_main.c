@@ -155,11 +155,11 @@ static long u_invoke(long op, long a1, long a2, long a3)
     return u_ecall4(V2_INVOKE, op, a1, a2, a3);
 }
 
-static void u_reply(long v)
+static void u_reply(unsigned long dst, long v)
 {
     uint64_t resp[1];
     resp[0] = (uint64_t)v;
-    u_send(0, resp, 1);
+    u_send(dst, resp, 1);
 }
 
 void firewall_main(void)
@@ -190,10 +190,10 @@ void firewall_main(void)
         unsigned long sqb = 0;
         unsigned long ovf = 0;
         unsigned long tag;
-        long n = u_recv(0, buf, 4, &snd, &sqb, &ovf);
+        long n = u_recv(5, buf, 4, &snd, &sqb, &ovf);
 
         if (n < 1) {
-            u_reply(R_INVALID);
+            u_reply(snd, R_INVALID);
             continue;
         }
         tag = (unsigned long)buf[0];
@@ -220,7 +220,7 @@ void firewall_main(void)
                 int rc;
                 if (sqb != (unsigned long)ADMIN_QUBE) {
                     u_puts("FW: reload kept\n");
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 if (slot != (unsigned long)FW_IN_SLOT || len < 1 ||
@@ -228,7 +228,7 @@ void firewall_main(void)
                     u_invoke(V2_INV_MAP, (long)slot,
                              (long)FW_SCRATCH_MAP_VPN, 0) != 0) {
                     u_puts("FW: reload kept\n");
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 bp = (const uint8_t *)FW_SCRATCH_VA;
@@ -237,7 +237,7 @@ void firewall_main(void)
                 u_invoke(V2_INV_UNMAP, (long)FW_SCRATCH_MAP_VPN, 0, 0);
                 if (rc < 0) {
                     u_puts("FW: reload kept\n");
-                    u_reply(R_INVALID);
+                    u_reply(snd, R_INVALID);
                     continue;
                 }
                 for (j = 0; j < (unsigned long)rc; j++) {
@@ -248,10 +248,10 @@ void firewall_main(void)
                 }
                 nrules = (unsigned long)rc;
                 u_puts("FW: reload ok\n");
-                u_reply(R_OK);
+                u_reply(snd, R_OK);
                 continue;
             }
-            u_reply(R_INVALID);
+            u_reply(snd, R_INVALID);
             continue;
         }
 
@@ -281,7 +281,7 @@ void firewall_main(void)
                 len > (unsigned long)FW_PKT_MAX ||
                 u_invoke(V2_INV_MAP, (long)slot,
                          (long)FW_SCRATCH_MAP_VPN, 0) != 0) {
-                u_reply(R_INVALID);
+                u_reply(snd, R_INVALID);
                 continue;
             }
             pkt = (const uint8_t *)FW_SCRATCH_VA;
@@ -300,7 +300,7 @@ void firewall_main(void)
                     fwd[2] = (uint64_t)len;
                     fwd[3] = h;
                     /* Handoff: blocks until net RECVs (backpressure). */
-                    if (u_send(0, fwd, 4) == 0) {
+                    if (u_send(6, fwd, 4) == 0) {
                         u_puts("FW: allow\n");
                         u_invoke(V2_INV_UNMAP,
                                  (long)FW_SCRATCH_MAP_VPN, 0, 0);
@@ -309,18 +309,18 @@ void firewall_main(void)
                 }
                 /* Forwarding failed: fail closed, no allow marker. */
                 u_invoke(V2_INV_UNMAP, (long)FW_SCRATCH_MAP_VPN, 0, 0);
-                u_reply(R_INVALID);
+                u_reply(snd, R_INVALID);
                 continue;
             }
             if (dec == FW_ASK) {
                 /* no prompter path from firewall; ASK rows document intent, resolve as deny */
                 u_invoke(V2_INV_UNMAP, (long)FW_SCRATCH_MAP_VPN, 0, 0);
-                u_reply(R_INVALID);
+                u_reply(snd, R_INVALID);
                 u_puts("FW: deny\n");
                 continue;
             }
             u_invoke(V2_INV_UNMAP, (long)FW_SCRATCH_MAP_VPN, 0, 0);
-            u_reply(R_INVALID);
+            u_reply(snd, R_INVALID);
             u_puts("FW: deny\n");
         }
     }

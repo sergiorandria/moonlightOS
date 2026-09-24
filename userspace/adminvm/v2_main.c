@@ -114,7 +114,7 @@ void adminvm_main(void)
 
     /* Register with the broker; blocks until qrexec RECVs. */
     hello[0] = T_HELLO;
-    u_send(0, hello, 1);
+    u_send(3, hello, 1);
 
     for (;;) { /* bound: inf - WAIT loop */
         uint64_t buf[4];
@@ -128,12 +128,12 @@ void adminvm_main(void)
         (void)sqb;
         (void)ovf;
 
-        n = u_recv(0, buf, 4, &snd, &sqb, &ovf);
+        n = u_recv(4, buf, 4, &snd, &sqb, &ovf);
         if (n < 4 || buf[0] != (uint64_t)T_ASK) {
             /* Not ours: put it back for the broker (cooperative EP0).
              * Short/empty takes have nothing to return. */
             if (n >= 1)
-                u_send(0, buf, (unsigned long)n);
+                u_send(3, buf, (unsigned long)n);
             continue;
         }
 
@@ -158,7 +158,7 @@ void adminvm_main(void)
             dec[1] = idx;
             dec[2] = 1; /* approve */
             dec[3] = h; /* pinned hash: broker re-checks */
-            u_send(0, dec, 4);
+            u_send(3, dec, 4);
 
             u_puts("ADMIN: decided idx=");
             u_putdec((long)idx);

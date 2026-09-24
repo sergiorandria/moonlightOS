@@ -198,11 +198,11 @@ static long u_invoke(long op, long a1, long a2, long a3)
     return u_ecall4(V2_INVOKE, op, a1, a2, a3);
 }
 
-static void u_reply(long v)
+static void u_reply(unsigned long dst, long v)
 {
     uint64_t resp[1];
     resp[0] = (uint64_t)v;
-    u_send(0, resp, 1);
+    u_send(dst, resp, 1);
 }
 
 static long u_yield(void)
@@ -282,7 +282,7 @@ static long key_release(unsigned long slot, const uint8_t *vmk32)
     note[1] = (uint64_t)slot;
     note[2] = 0;
     note[3] = 0;
-    if (u_send(0, note, 4) != 0) {
+    if (u_send(9, note, 4) != 0) {
         u_invoke(V2_INV_UNMAP, (long)VAULT_SCRATCH_VPN, 0, 0);
         (void)u_invoke(V2_INV_REVOKE, c0, 0, 0);
         return -1;
@@ -300,9 +300,9 @@ static long key_release(unsigned long slot, const uint8_t *vmk32)
             unsigned long snd = 0;
             unsigned long sqb = 0;
             unsigned long ovf = 0;
-            long n = u_recv(0, ack, 4, &snd, &sqb, &ovf);
+            long n = u_recv(8, ack, 4, &snd, &sqb, &ovf);
             if (n >= 1 && ack[0] == (uint64_t)T_CALL) {
-                u_reply(R_INVALID);
+                u_reply(snd, R_INVALID);
             } else if (n >= 2 && ack[0] == (uint64_t)T_KEY_ACK &&
                        (unsigned long)ack[1] == slot &&
                        sqb == (unsigned long)CRYPT_QUBE) {
@@ -361,10 +361,10 @@ void vault_main(void)
         unsigned long sqb = 0;
         unsigned long ovf = 0;
         unsigned long tag;
-        long n = u_recv(0, buf, 4, &snd, &sqb, &ovf);
+        long n = u_recv(8, buf, 4, &snd, &sqb, &ovf);
 
         if (n < 1) {
-            u_reply(R_INVALID);
+            u_reply(snd, R_INVALID);
             continue;
         }
         tag = (unsigned long)buf[0];
@@ -373,7 +373,7 @@ void vault_main(void)
             /* DENY-direct (firewall precedent, cited above): direct
              * calls never carry approval. No T_CALL form is honored. */
             u_puts("VAULT: deny\n");
-            u_reply(R_INVALID);
+            u_reply(snd, R_INVALID);
             continue;
         }
 

@@ -112,14 +112,14 @@ void mem_server_main(void)
         unsigned long snd = 0;
         unsigned long qb = 0;
         unsigned long ovf = 0;
-        long n = u_recv(0, buf, 4, &snd, &qb, &ovf);
+        long n = u_recv(2, buf, 4, &snd, &qb, &ovf);
         long req;
         long rc = RESP_ERR;
 
         if (n < 1) {
             uint64_t resp[1];
             resp[0] = (uint64_t)RESP_ERR;
-            u_send(0, resp, 1);
+            u_send(snd, resp, 1);
             continue;
         }
 
@@ -137,7 +137,7 @@ void mem_server_main(void)
         {
             uint64_t resp[1];
             resp[0] = (uint64_t)rc;
-            u_send(0, resp, 1);
+            u_send(snd, resp, 1);
         }
     }
 }

@@ -464,7 +464,7 @@ void net_main(void)
         unsigned long snd = 0;
         unsigned long sqb = 0;
         unsigned long ovf = 0;
-        long n = u_recv(0, buf, 4, &snd, &sqb, &ovf);
+        long n = u_recv(6, buf, 4, &snd, &sqb, &ovf);
 
         /* Only a full T_FWD from the firewall qube is actionable.
          * Everything else (short takes, other tags, spoofed sender)
@@ -501,7 +501,7 @@ void net_main(void)
             /* Completion handoff: blocks until the firewall RECVs.
              * Cross-qube gate needs our QX (Step-5 boot grant); without
              * it SEND fails INVALID here, fail closed, loop continues. */
-            u_send(0, done, 4);
+            u_send(5, done, 4);
         }
     }
 }
