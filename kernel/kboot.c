@@ -370,7 +370,7 @@ typedef struct {
     int state; /* 0 = Runnable, 1 = Parked, 2 = Blocked (IPC) */
     /* IPC (mirrors V2_C wk/sendq/recvq): RECV-blocked threads park their
      * validated (ptr, cap) here for later copy-out; queued senders live
-     * in ep0.sendq (kernel memory, no U pointers retained -> no TOCTOU). */
+     * in eps[ep].sendq (kernel memory, no U pointers retained -> no TOCTOU). */
     uintptr_t ipc_ptr;
     uint64_t ipc_cap;
     uint64_t notify;   /* pending signal bits (OR-accumulate) */
@@ -388,7 +388,9 @@ static uint8_t qube_of[NTHREADS]; /* qube label per thread (qube.h) */
 static unsigned long qube_next = 2; /* next fresh label; 0/1 taken at boot */
 static int cur = 0;
 static unsigned long tick = 0;
-static v2_ep_t ep0;
+static v2_ep_t eps[V2_NEP];
+_Static_assert(V2_NEP <= V2_CAP_THREADS,
+               "endpoint count rides the thread cap (EP i owned by tid i)");
 static v2_caps_t caps;
 
 uctx_t *cur_ctx; /* read by trap.S */
@@ -707,11 +709,16 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                 return;
             }
+            if (ep >= (unsigned long)NTHREADS) {
+                threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
+                return;
+            }
+            v2_ep_t *e = &eps[ep];
             u_copy_in(kb, up, ln);
             /* Raw gate (peek before dequeue: fail-closed, no state lost on
              * reject). Cross-qube handoff needs QX on the sender. */
-            if (ep0.recv_len > 0) {
-                unsigned long peek = ep0.recvq[ep0.recv_head];
+            if (e->recv_len > 0) {
+                unsigned long peek = e->recvq[e->recv_head];
                 if (peek >= (unsigned long)NTHREADS ||
                     !qube_raw_ok(qube_of, (unsigned long)NTHREADS,
                                  (unsigned long)cur, peek,
@@ -721,7 +728,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     return;
                 }
             }
-            if (v2_q_take_waiter(&ep0, &r) == V2_OK && r < (unsigned long)NTHREADS) {
+            if (v2_q_take_waiter(e, &r) == V2_OK && r < (unsigned long)NTHREADS) {
                 unsigned long cap = (unsigned long)threads[r].ipc_cap;
                 unsigned long nw = ln < cap ? ln : cap;
                 unsigned long ovf = ln > cap ? 1 : 0;
@@ -744,7 +751,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 sbi_putchar('\n');
                 enter_thread((int)r);
             }
-            if (v2_q_send(&ep0, (unsigned long)cur, kb, ln) != V2_OK) {
+            if (v2_q_send(e, (unsigned long)cur, kb, ln) != V2_OK) {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_OVERFLOW;
                 return;
             }
@@ -772,12 +779,17 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                 return;
             }
+            if (ep != (unsigned long)cur) {
+                threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
+                return;
+            }
+            v2_ep_t *e = &eps[ep];
             /* Raw gate (peek before dequeue: fail-closed, no state lost on
              * reject). Queued sends gate at delivery: the destination is
              * unknown at send time, so the sender's qube is derived here
              * via qube_of[slot.sender] (v2_slot_t stays as-is). */
-            if (ep0.send_len > 0) {
-                unsigned long psrc = ep0.sendq[ep0.send_head].sender;
+            if (e->send_len > 0) {
+                unsigned long psrc = e->sendq[e->send_head].sender;
                 if (psrc >= (unsigned long)NTHREADS ||
                     !qube_raw_ok(qube_of, (unsigned long)NTHREADS, psrc,
                                  (unsigned long)cur, qube_has_qx(psrc))) {
@@ -786,7 +798,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     return;
                 }
             }
-            if (v2_q_take_send(&ep0, &slot) == V2_OK) {
+            if (v2_q_take_send(e, &slot) == V2_OK) {
                 unsigned long nw = slot.len < cap ? slot.len : cap;
                 unsigned long ovf = slot.len > cap ? 1 : 0;
                 unsigned long sq = slot.sender < (unsigned long)NTHREADS
@@ -817,7 +829,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             threads[cur].ipc_cap = cap;
             threads[cur].state = T_BLOCKED;
             threads[cur].wait_kind = V2_WK_RECV;
-            if (v2_q_wait(&ep0, (unsigned long)cur) != V2_OK) {
+            if (v2_q_wait(e, (unsigned long)cur) != V2_OK) {
                 /* Unreachable at NTHREADS=2 (recvq never full here);
                  * fail closed rather than lose the waiter. */
                 threads[cur].state = T_RUNNABLE;
@@ -1361,34 +1373,37 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 /* Drop queued IPC entries owned by the qube (compact both
                  * queues in place; other qubes' entries are preserved). */
                 {
-                    int w = 0;
-                    for (int i = 0; i < ep0.send_len; i++) { /* bound: V2_IPC_Q */
-                        int idx = (ep0.send_head + i) % V2_IPC_Q;
-                        unsigned long s = ep0.sendq[idx].sender;
+                    for (int e = 0; e < V2_NEP; e++) { /* bound: V2_NEP (10) */
+                        v2_ep_t *ep = &eps[e];
+                        int w = 0;
+                    for (int i = 0; i < ep->send_len; i++) { /* bound: V2_IPC_Q */
+                        int idx = (ep->send_head + i) % V2_IPC_Q;
+                        unsigned long s = ep->sendq[idx].sender;
                         if (s < (unsigned long)NTHREADS &&
                             qube_of[s] == (uint8_t)label)
                             continue; /* drop: sender dies below */
                         if (w != i) {
-                            int dst = (ep0.send_head + w) % V2_IPC_Q;
-                            ep0.sendq[dst] = ep0.sendq[idx];
+                            int dst = (ep->send_head + w) % V2_IPC_Q;
+                            ep->sendq[dst] = ep->sendq[idx];
                         }
                         w++;
                     }
-                    ep0.send_len = w;
+                    ep->send_len = w;
                     w = 0;
-                    for (int i = 0; i < ep0.recv_len; i++) { /* bound: V2_IPC_Q */
-                        int idx = (ep0.recv_head + i) % V2_IPC_Q;
-                        unsigned long tid = ep0.recvq[idx];
+                    for (int i = 0; i < ep->recv_len; i++) { /* bound: V2_IPC_Q */
+                        int idx = (ep->recv_head + i) % V2_IPC_Q;
+                        unsigned long tid = ep->recvq[idx];
                         if (tid < (unsigned long)NTHREADS &&
                             qube_of[tid] == (uint8_t)label)
                             continue; /* drop: waiter dies below */
                         if (w != i) {
-                            int dst = (ep0.recv_head + w) % V2_IPC_Q;
-                            ep0.recvq[dst] = ep0.recvq[idx];
+                            int dst = (ep->recv_head + w) % V2_IPC_Q;
+                            ep->recvq[dst] = ep->recvq[idx];
                         }
                         w++;
                     }
-                    ep0.recv_len = w;
+                    ep->recv_len = w;
+                    }
                 }
                 /* Revoke-drain caps, clear the whole frame window in
                  * hardware, park the threads. */
@@ -1522,7 +1537,8 @@ case 13: /* Load page fault */
 
 void kboot(void) {
     kputs("v2 stage2: S-mode entry (OpenSBI)\n");
-    v2_ep_init(&ep0);
+    for (int e = 0; e < V2_NEP; e++) /* bound: V2_NEP (10) */
+        v2_ep_init(&eps[e]);
     frame_pool_init();
     qube_init(qube_of, (unsigned long)NTHREADS); /* all threads start in qube 0 */
     initrd_init();
