@@ -10,7 +10,8 @@ integrity, `ipc.h`/`test_v2ipc.c`), S2/S3/FDE servers + Qubes_C/D
 **Decides:** per-thread endpoints (`V2_NEP` = 10, EP i owned by tid i);
 RECV restricted to own EP; SEND validated + raw-gated to dst EP;
 broker `svc_of_qube` table; V2_C endpoint-indexed with separation
-theorem; then thread-A live ask+deny legs
+theorem; then thread-A live ask+deny legs synchronized by an
+admin→A NOTIFY handshake (HELLO-first preserved)
 **Constraints (binding):** microkernel intact; NTHREADS stays 10;
 Qubes isolation intact; `verify.sh` single entry (new markers in
 `[4/4]`, no new SKIP); C subset (bound comments, no float/fptr);
@@ -149,34 +150,58 @@ for test-harness convenience violates YAGNI.
 
 ## Phase 2 — Live legs on addressed EPs (rev-1 design, adapted)
 
-Client: thread A (qube 0) + one boot-minted QX grant (qube 0 →
-qrexec), same S3/FDE grant shape, asserted fail-closed. No bound
-changes. Legs: `keys.sign` ask → `T_DELIVER` to vault EP8 → vault
-prints `VAULT: live ok` (rpc==1-gated; boot unlock uses rpc 7);
-`clipboard` → DENY → `AUD: deny rpc=2`. User.c constraint honored:
-no literals/globals in thread A (legs print nothing; immediates
-only). Vault deliver-switch: 1 → marker, 7 → handoff, else INVALID
-(rpc constants from the existing row tables).
+Ground truth from the 2026-09-24 boot transcript (rev-2 correction):
+`QREXEC: admin registered` NEVER prints today — admin's HELLO SEND is
+raw-gate DENIED (admin qube 3 holds no QX; `QUB: xread denied` right
+after `ADMIN: up`), admin blocks in WAIT forever, and the broker,
+vault, firewall, net servers sit RECV-blocked. The live broker path
+has never run at all. Consequences pinned for this phase:
 
-Deadlock re-check under addressing (the rev-1 hole, now closed):
-- A SENDs T_CALL→EP3: broker may not wait yet → queues + A blocks.
-  Broker RECVs EP3 → takes it. No other consumer can see EP3.
-- Broker SENDs T_ASK→EP4: admin may still be pre-registration.
-  Admin startup change (REQUIRED, was implicit before): admin RECVs
-  FIRST (blocks), takes T_ASK, THEN SENDs HELLO (broker RECVs EP3,
-  registers, `QREXEC: admin registered` still prints — grep-gated,
-  order-insensitive), then processes the already-held ask → SENDs
-  `T_DECIDE`→EP3 → broker delivers → vault EP8 → marker. No cycle:
-  each SEND has exactly one eventual waiter; single-flight.
-- Broker `u_notify(admin_tid)` pre-registration: guarded by
-  existing `admin_known` check (skipped, harmless — admin is already
-  RECV-waiting by construction).
-- Clipboard leg: broker DENYs with no SEND; A gets `R_DENY`, parks.
-- Vault second-handoff: keys.sign deliver does NOT enter the handoff
-  (rpc-switch) — re-entrancy question dissolves.
+- TWO new QX grants (holder-based gate needs QX on every cross-qube
+  sender): qube0 → qrexec (thread A's `T_CALL`s; A holds QX via the
+  existing qube0 slot-9 root augment) and qube0 → admin (HELLO +
+  `T_DECIDE`, tid 4 slot 9). Broker/vault/cryptblk/firewall/net keep
+  their S3/FDE grants. No bound changes.
+- HELLO-first is PRESERVED (no admin loop redesign): with addressing,
+  admin SENDs HELLO→EP3 and either pairs with the waiting broker or
+  queues + blocks until it RECVs — both orders work. The old deadlock
+  (broker-SENDs-T_ASK vs admin-SENDs-HELLO) cannot recur: nothing SENDs
+  until A calls, and by then admin is registered (see handshake).
+- HANDSHAKE (new, required): A must not call before admin registers
+  (else broker's `T_ASK` SEND has no waiter while admin is still
+  pre-registration → SEND/SEND embrace). After printing `W1`, A WAITs
+  a second time; admin, on HELLO `R_OK` reply, `NOTIFY`s tid 0 (new:
+  admin checks the reply it ignores today + a 5-line NOTIFY wrapper);
+  A wakes and runs the legs. If admin never registers, A parks
+  marker-free → gate FAILs (fail closed, never half-open).
+- Vault deliver-switch (unchanged from rev 1): rpc==1 → print
+  `VAULT: live ok`, no state change, no handoff; rpc==7 → existing
+  handoff; else INVALID. Boot unlock uses rpc 7, so the marker is
+  honest. Admin's cooperative put-back arm stays (dead but harmless —
+  minimal diff; it can only trigger on EP4 misdelivery, which Phase 1
+  makes unstatable).
+- User.c constraint honored: thread A prints nothing new (immediates
+  only, no literals); legs assert on reply codes (`R_PENDING`=1 after
+  ask-enqueue, `R_DENY`=-1 after clipboard) and park marker-free on
+  any deviation.
 
-Markers/gates (`verify.sh [4/4]`, +2 lines): `VAULT: live ok`,
-`AUD: deny rpc=2`. Missing ⇒ FAIL. In-kernel model demo untouched.
+Markers/gates (`verify.sh [4/4]`, +3 lines): `QREXEC: admin registered`
+(now genuinely live — the first honest print of the broker path),
+`VAULT: live ok`, `AUD: deny rpc=2`. Missing ⇒ FAIL. In-kernel model
+demo untouched.
+
+### Phase 2 error handling (fail closed)
+
+| Case | Behavior |
+|---|---|
+| A calls before admin registers | Impossible by construction (A WAITs for the NOTIFY handshake) |
+| Admin never registers / never NOTIFYs | A WAITs forever → parks marker-free → gate FAILs |
+| New QX grants fail at boot | `[demo] FAIL` (S3/FDE shape), gate misses later markers → FAIL |
+| Ask queue full (shouldn't be: single-flight) | Broker replies `R_DENY`, A parks marker-free → FAIL |
+| `T_DECIDE` hash mismatch / bad idx | Broker deny-audits, no deliver, A parks marker-free → FAIL |
+| Vault receives rpc≠1/7 deliver | INVALID, no print, no state change |
+| Clipboard leg delivers (mustn't) | Defect by review (deny arm sends no forward; existing `test_qube_policy` deny pins); gate has no allow-marker so silence is the signal |
+| Reply code mismatch at A (`R_PENDING`≠1, `R_DENY`≠-1) | A parks marker-free → FAIL |
 
 ---
 
@@ -196,9 +221,13 @@ qube→tid resolution.
       EP-isolation green; `V2_C` replayed (+ separation theorems,
       mutants, evals) with 0 sorry; full suite green, no new markers,
       no new SKIP.
-- [ ] Phase 2: one QX grant; thread-A legs live; `VAULT: live ok` +
-      `AUD: deny rpc=2` gated; admin RECV-first + lazy registration;
-      vault rpc-switch; full suite green, zero FAIL, no new SKIP.
+- [ ] Phase 2: two QX grants (qube0→qrexec for A, qube0→admin for
+      HELLO/`T_DECIDE`), asserted fail-closed; admin HELLO-first +
+      NOTIFY(tid 0) on `R_OK`; thread-A WAIT-post-`W1` then live legs
+      (`R_PENDING`/`R_DENY`-checked, marker-free park on deviation);
+      vault rpc-switch; `QREXEC: admin registered` + `VAULT: live ok`
+      + `AUD: deny rpc=2` gated; full suite green, zero FAIL, no new
+      SKIP.
 - [ ] Docs: `V2_DESIGN.md` §9 / `QUBES_ISOLATION_PLAN.md` §11 deferred
       list shrinks (A flips to BUILT with paths + markers + lemma
       names); B/C/D stay listed with owners.
