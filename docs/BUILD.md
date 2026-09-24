@@ -35,8 +35,8 @@ does exactly this).
 ## 2. Userspace (freestanding ELFs + libc + drivers)
 
 ```bash
-make -C userspace        # build/hello.elf, build/moonsh.elf, build/linux_demo.elf, build/mem_server.elf, build/qrexec.elf, build/adminvm.elf, build/firewall.elf, build/net.elf, libc objects
-tools/mkinitrd.sh        # repack kernel/initrd_data.c + kernel/initrd.h (initrd order 0-4: mem_server.elf 0, qrexec.elf 1, adminvm.elf 2, firewall.elf 3, net.elf 4, then moonsh/ls/cat)
+make -C userspace        # build/hello.elf, build/moonsh.elf, build/linux_demo.elf, build/mem_server.elf, build/qrexec.elf, build/adminvm.elf, build/firewall.elf, build/net.elf, build/vault.elf, build/cryptblk.elf, libc objects
+tools/mkinitrd.sh        # repack kernel/initrd_data.c + kernel/initrd.h (initrd order 0-9: mem_server.elf 0, qrexec.elf 1, adminvm.elf 2, firewall.elf 3, net.elf 4, moonsh.elf 5, ls.elf 6, cat.elf 7, vault.elf 8, cryptblk.elf 9)
 make -C userspace drivers # freestanding rv64 -Werror compile gates for the 8 driver compartments
 make -C userspace clean
 ```
@@ -54,9 +54,9 @@ tools/verify.sh
 
 Stages: host unit tests (ABI regression, servers + shell, driver host-sims,
 freestanding libc, v2 IPC/caps, qube ask-args `test_qargs`, firewall/net
-`test_netfw`) → production gates (linker layout: no
+`test_netfw`, FDE `test_aead` KATs + `test_crypt` layout/slots) → production gates (linker layout: no
 PROGBITS inside the `[_bss,_bss_end)` clear range; `user.c` rodata ban) →
-Isabelle `kernel/isabelle` session (`V2` + `Qubes_A` + `Qubes_B` + `Qubes_C`, anti-vacuity gate) →
+Isabelle `kernel/isabelle` session (`V2` + `Qubes_A` + `Qubes_B` + `Qubes_C` + `Qubes_D`, anti-vacuity gate) →
 kernel build → QEMU text smoke. All `PASS` required before pushing
 (proofs/SMOKE may SKIP if the host lacks Isabelle/QEMU).
 
@@ -86,7 +86,21 @@ v2: satp Sv39 on, U-bit split (k U=0 / u U=1), SUM=0
 [spawn] adminvm ELF ok
 [spawn] firewall ELF ok
 [spawn] net ELF ok
+[spawn] vault ELF ok
+[spawn] cryptblk ELF ok
 QUB: qube0 qube1 up
+VAULT: up
+VAULTQ: labels ok
+CRYPTQ: labels ok
+CRYPT: up
+CRYPT: locked
+CRYPT: unlock ok
+CRYPT: rw ok
+CRYPT: wrong-key denied
+CRYPT: leak denied
+CRYPT: no volume
+CRYPT: formatted # first boot on a fresh image; later boots print `CRYPT: volume ok` (gate accepts either)
+BLKMMIO: tid=9 only
 NETQ: labels ok
 NETMMIO: tid=6 only
 QUB: xread denied
@@ -113,10 +127,17 @@ MEM / CAP / OK invoke reports, DU: vpn0 mirrored, NP
 no runnable left; parking cpu
 ```
 
+FDE honesty notes: the smoke unlock uses `TEST_KEYS` vectors compiled
+behind a build flag (smoke-only — release passphrase entry is
+manual-only); the threat model is KDF-only against a stolen disk
+(PBKDF2-HMAC-SHA256 600k, no Argon2 yet), with no rollback protection,
+a test-grade DRBG (no hardware RNG yet), plaintext filenames, and no
+re-encryption on revoke.
+
 ## 5. Isabelle
 
 ```bash
-isabelle build -D kernel/isabelle -v    # session V2 (V2_A .. V2_D, Qubes_A, Qubes_B, Qubes_C)
+isabelle build -D kernel/isabelle -v    # session V2 (V2_A .. V2_D, Qubes_A, Qubes_B, Qubes_C, Qubes_D)
 make -C kernel isabelle                 # same
 ```
 

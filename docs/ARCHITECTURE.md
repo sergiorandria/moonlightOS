@@ -83,9 +83,10 @@ loop.
 
 ### Qubes labels + raw gate (S1, built)
 
-Every thread carries a qube label (`qube_of[]` in `kboot.c`, 8 threads:
+Every thread carries a qube label (`qube_of[]` in `kboot.c`, 10 threads:
 0–1 demo, 2 mem_server qube 1, 3 qrexec qube 2, 4 AdminVM qube 3,
-5 firewall qube 4, 6 net qube 5, 7 CAP scratch).
+5 firewall qube 4, 6 net qube 5, 7 CAP scratch, 8 vault qube 6,
+9 cryptblk qube 7; `qube_next` ends at 8 == `V2_QUBES_MAX`).
 Cross-qube SEND/RECV fails closed with `V2_ERR_INVALID` plus
 `QUB: xread denied` unless the sender holds `V2_RIGHT_QX` (see
 `qube_raw_ok` in `kernel/qube.h`, host-tested by `tests/test_qlabels.c`).
@@ -140,6 +141,44 @@ cmdline with `-device virtio-net-device,netdev=n0 -netdev user,id=n0`
 plus `-global virtio-mmio.force-legacy=off` (modern transports; the
 `-global` also flips blk to modern mode, which the block driver already
 probes via `vmm_probe`).
+
+### FDE encrypted storage (built)
+
+Every disk byte is ciphertext: ChaCha20-Poly1305 per 4 KiB sector under
+a volume key (`userspace/crypt/sha256.h`, `aead.h`, `kdf.h`
+— PBKDF2-HMAC-SHA256 600k + test-grade ChaCha-DRBG, `crypt_util.h`
+stack wipe). The on-disk layout (`userspace/cryptblk/layout.h`:
+`CRYPT_MAGIC`, 2 header sectors with KDF params + ≤8 keyslot records,
+ciphertext sectors, 16B Poly1305 tag per sector) and slot lifecycle
+(`userspace/cryptblk/slot.h`: wrap/unwrap/wipe) are pure C,
+host-tested by `tests/test_aead.c` (RFC 8439 + RFC 6070 KATs) and
+`tests/test_crypt.c`.
+
+The `vault` qube (`userspace/vault/v2_main.c` →
+`userspace/build/vault.elf`, thread 8, qube 6) holds KEKs + the VMK in
+memory only and unwraps only slots whose label matches the
+kernel-stamped requester (qrexec rows `VAULT_UNWRAP 7` /
+`VAULT_REWRAP 8` / `VOL_FORMAT 9`). The VMK crosses to `cryptblk` by
+GRANT, never by SEND words: vault `PT_ALLOC`s a frame, `WRITE`s the 4
+key words, `GRANT`s R-only to cryptblk slot 20, `SEND`s the keyless
+`[T_KEY 8, slot, 0, 0]` notice; cryptblk maps slot 20, `READ`s,
+verifies a canary, acks `[T_KEY_ACK 10, slot, 0, 0]` (zero prints on
+the handoff path); vault waits tick-bounded (`rdtime` deadline +
+`YIELD`, park + `REVOKE` + wipe on expiry — never wedges).
+
+The `cryptblk` qube (`userspace/cryptblk/v2_main.c` →
+`userspace/build/cryptblk.elf`, thread 9, qube 7) is the ONLY qube
+with blk MMIO + IRQ (one U-leaf, tid-9-only, `BLKMMIO: tid=9 only`;
+completion via IRQ badge + `rdtime`/`YIELD` poll, never spin). It
+serves two views over one sector layer: `/dev/blk0` returns raw
+sectors (ciphertext — identical for every reader label) while the `/`
+tree returns decrypted bytes only for inodes whose owner-label matches
+the stamped caller (non-owner ⇒ NOTFOUND, no disk I/O). Tag mismatch
+⇒ `EIO` with zeroed buffer, never partial plaintext. Proved by
+`slot_release_only_to_label`, `ciphertext_view_independent`,
+`no_ambient_decrypt`, `c_slot_release_eq` in `Qubes_D.thy` (crypto
+strength via host KAT-correspondence, hash reasoning over the
+`pkt_hash` stand-in).
 
 ### Memory isolation
 
@@ -198,11 +237,13 @@ validates the ABI headers).
    (test_libc + newlibc + batch4/5/6), v2 IPC + caps (host-compiled from
    `ipc.h`/`caps.h`), qube labels + policy (`test_qlabels`,
    `test_qube_policy` from `qube.h`), ask args (`test_qargs`), firewall +
-   net plane (`test_netfw` over `fw.h`).
+   net plane (`test_netfw` over `fw.h`), FDE crypto + layout/slots
+   (`test_aead` KATs over `userspace/crypt/`, `test_crypt` over
+   `cryptblk/layout.h` + `slot.h`).
 2. **Production gates**: linker layout (no PROGBITS in `[_bss,_bss_end)`),
    `user.c` rodata ban (immediates-only U-mode code).
 3. **Isabelle**: `isabelle build -D kernel/isabelle -v` (session V2 =
-   V2_A + V2_B + V2_C + V2_D + Qubes_A + Qubes_B + Qubes_C; anti-vacuity gate: no sorry,
+   V2_A + V2_B + V2_C + V2_D + Qubes_A + Qubes_B + Qubes_C + Qubes_D; anti-vacuity gate: no sorry,
    no `≡ True` invariants).
 4. **Kernel build**: `make -C kernel` (clang, rv64imac, freestanding).
 5. **QEMU smoke** (single cmdline: virtio-net-device + user netdev +
@@ -215,7 +256,12 @@ validates the ABI headers).
    `[spawn] firewall/net ELF ok`, `NETQ: labels ok`, `FW: allow` /
    `FW: deny`, `FW: up`, `NET: up`, `LEAK: denied`, `SPOOF: ignored`,
    `AUD:`, `NETMMIO: tid=6 only`, `NET: link up`, `NET: tx ok`,
-   `NET: irq ok`, `no runnable left; parking cpu`. Missing markers fail the gate
+   `NET: irq ok`, `[spawn] vault/cryptblk ELF ok`, `VAULT: up`,
+   `VAULTQ: labels ok`, `CRYPTQ: labels ok`, `CRYPT: up` / `locked` /
+   `unlock ok` / `rw ok`, `CRYPT: wrong-key denied` / `leak denied` /
+   `no volume`, `CRYPT: formatted|volume ok` (format-if-absent
+   idempotence), `BLKMMIO: tid=9 only`,
+   `no runnable left; parking cpu`. Missing markers fail the gate
    (fail closed).
 
 CI (`verify.yml`, `cheri.yml`): the host-tests job runs `verify.sh`; the

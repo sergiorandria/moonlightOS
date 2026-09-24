@@ -348,6 +348,66 @@ per-function where not).
     ok` is specified but ungated — no phantom assert); USB HCI + `usb`
     qube; RX-from-wire CI assertions; firewall-compromise containment
     (S6).
+- **FDE — encrypted storage ("everything is an encrypted file").**
+  - BUILT 2026-09-24: `userspace/crypt/sha256.h` + `aead.h`
+    (ChaCha20-Poly1305) + `kdf.h` (PBKDF2-HMAC-SHA256 + ChaCha-DRBG,
+    test-grade, disclosed) + `crypt_util.h` (stack wipe, single-owner
+    DRBG); `userspace/cryptblk/layout.h` (`CRYPT_MAGIC` 0x43525950544D4F4E,
+    `SECTOR` 4096, `TAGS_PER_SECTOR` 256, `MAX_SLOTS` 8, `HEADER_SECTORS` 2)
+    + `slot.h` (wrap/unwrap/wipe); `userspace/vault/v2_main.c`
+    (KEK store, per-label unwrap, `T_KEY 8` one-time handoff by GRANT to
+    slot 20 — never SEND words — `T_KEY_ACK 10`, tick-bounded ack-wait
+    with park + `REVOKE` + wipe on expiry) + `userspace/cryptblk/v2_main.c`
+    (virtio-blk driver on the S3 net-driver pattern, sector AEAD layer,
+    minimal FS, `/dev/blk0` ciphertext + `/` plaintext views) built as
+    `userspace/build/vault.elf` + `userspace/build/cryptblk.elf`, packed
+    as initrd indexes 8–9 (`tools/mkinitrd.sh` order 0–9: mem_server,
+    qrexec, adminvm, firewall, net, moonsh, ls, cat, vault, cryptblk)
+    and SPAWNed at boot (`[spawn] vault/cryptblk ELF ok`, threads 8–9,
+    qubes 6–7). qrexec rows `VAULT_UNWRAP 7` / `VAULT_REWRAP 8` /
+    `VOL_FORMAT 9` (`nrules` 4→7). Host-tested by `tests/test_aead.c`
+    (RFC 8439 + RFC 6070 KATs, round-trip/tamper properties) +
+    `tests/test_crypt.c` (header parse, tag-region math, slot
+    wrap/unwrap/wipe, extents, dirents), gated in `verify.sh [1f]`.
+    Smoke markers `VAULT: up`, `VAULTQ: labels ok`, `CRYPTQ: labels ok`,
+    `CRYPT: up` / `locked` / `unlock ok` / `rw ok`,
+    `CRYPT: wrong-key denied` / `leak denied` / `no volume`,
+    `BLKMMIO: tid=9 only`, plus the idempotence pair
+    `CRYPT: formatted|volume ok`, all gated in `verify.sh [4/4]`.
+    Proved in `kernel/isabelle/Qubes_D.thy` (62 lemmas:
+    `slot_release_only_to_label`, `ciphertext_view_independent`,
+    `no_ambient_decrypt`, `c_slot_release_eq`, `q_slot_deliver` audit
+    pins, preservation, 10-thread/8-qube bound lemmas, mutants per
+    invariant, 0 sorry, 0 axioms). Crypto strength is
+    KAT-correspondence, not an axiom: the theory reasons over opaque
+    key nats + the `pkt_hash` stand-in (equality-gated delivery only);
+    ChaCha20-Poly1305/PBKDF2 correctness is pinned by the host KATs.
+  - REFINEMENTS vs the FDE spec/plan: (a) `T_KEY`-by-grant ratified
+    (`T_KEY_ACK=10`, grant-dst slot 20 — tag 10 is free in message-tag
+    space, `V2_INV_FORK=10` lives in the separate invoke-op namespace);
+    (b) NTHREADS/`V2_CAP_THREADS` 8→10 with `V2_FRAMES_MAX` 16→32
+    (cryptblk needs image ~5 + DMA 2 + demo 1 transient; pool still
+    fits the frame window, `_Static_assert`ed) — any further growth
+    forces a cap bump + WCET re-analysis + proof replay; qube_next
+    ends at 8 == `V2_QUBES_MAX`; (c) format-if-absent idempotence (gate
+    asserts `formatted|volume ok` since the disk persists across runs);
+    (d) `no volume` leg runs as a RAM-shadow header parse (no live-disk
+    mutation, no second boot); (e) TEST_KEYS vectors are smoke-only
+    (release passphrase entry is manual-only, documented in the ELF
+    header); (f) `FDE_MAGIC` pins use `simp`, not `eval` (giant-numeral
+    codegen blowup: two evals ran 140s+ without finishing; simp
+    closes the same goals in milliseconds).
+  - KNOWN DEFERRED / honest limits (not built): stolen-disk gate is the
+    KDF work factor only (PBKDF2 600k; no memory-hard KDF — Argon2
+    later, `KDF:` version field reserved in the header); no
+    rollback/replay protection (no monotonic counter without TPM);
+    test-grade DRBG (hardware-RNG wiring is future work, disclosed in
+    code + spec, never silent); filenames unencrypted (names visible
+    in directory sectors); no re-encryption on revoke (revoked qubes
+    lose future access; in-flight FDs keep working — LUKS-equivalent
+    semantics, documented); no journaling (crash between data/tag
+    writes surfaces as tag-mismatch `EIO` = detected, never silent);
+    file sharing across qubes stays deny-by-default.
 
 ## 10. Open questions (decided late, deliberately)
 

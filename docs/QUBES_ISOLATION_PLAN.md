@@ -89,6 +89,7 @@ minted at creation by AdminVM; the label travels on every IPC (like
 | dom0 | AdminVM (U-mode server, no ambient caps) | [HAVE] S2: `userspace/adminvm/v2_main.c` |
 | qrexec + policy | `qrexec_server`: typed RPC over Endpoints, policy table, confirm path | [HAVE] S2: `userspace/qrexec_server/v2_main.c` |
 | NetVM/FirewallVM split | `net` qube (`userspace/net/v2_main.c` → `userspace/build/net.elf`, initrd 4, thread 6, qube 5) + `firewall` filter server (`userspace/firewall/fw.h` + `userspace/firewall/v2_main.c` → `userspace/build/firewall.elf`, initrd 3, thread 5, qube 4); host tests `tests/test_netfw.c` + `tests/test_qargs.c`; proofs `kernel/isabelle/Qubes_C.thy` | [HAVE] S3 (USB HCI still TODO) |
+| Encrypted storage | `cryptblk` qube (blk MMIO+IRQ, sector AEAD, `/dev/blk0` ciphertext + `/` plaintext views: `userspace/cryptblk/v2_main.c` → `userspace/build/cryptblk.elf`, initrd 9, thread 9, qube 7) + `vault` qube (KEKs/VMK, per-label slot release: `userspace/vault/v2_main.c` → `userspace/build/vault.elf`, initrd 8, thread 8, qube 6); crypto `userspace/crypt/`; host tests `tests/test_aead.c` + `tests/test_crypt.c`; proofs `kernel/isabelle/Qubes_D.thy` | [HAVE] FDE (templates/overlays/disposables/updates/backup stay TODO) |
 | USBVM | `usb` qube + new USB HCI driver (bulk-only first, no isochronous) | [TODO] S3 |
 | GUI domain | `gui` server: per-qube Frame-capped surfaces + AdminVM chrome | [TODO] S4 |
 | TemplateVM + overlays | `vfs_server` extensions: ro root caps + per-qube rw overlay, COW | [TODO] S5 |
@@ -135,6 +136,18 @@ usb         AdminVM     device.attach ask   "attach USB device?"
 
 ## 7. Storage model (S5, extends `vfs_server`)
 
+- FDE BUILT 2026-09-24 (S5-storage partial — full-disk encryption now,
+  templates/overlays below still TODO): every disk byte is ciphertext
+  (ChaCha20-Poly1305 per 4 KiB sector under a volume key,
+  `userspace/crypt/`); per-qube keyslots (≤8, LUKS-like header) released
+  by label only (`vault` qube, `T_KEY`-by-grant handoff); `cryptblk`
+  serves raw ciphertext on `/dev/blk0` (label-independent) and plaintext
+  under `/home/<own-label>` post-unlock. Proofs `Qubes_D.thy`
+  (slot-release-only-to-label, ciphertext-view label-independence,
+  no-ambient-decrypt). Honest limits: KDF-only stolen-disk gate, no
+  rollback protection, test-grade DRBG, plaintext filenames, no
+  re-encryption on revoke, no journaling (fail-closed `EIO`). Details +
+  markers in `V2_DESIGN.md` §9 FDE entry.
 - Template root: read-only Frame caps, content-hash pinned at update time.
 - Private overlay: per-qube read-write, copy-on-write against the template.
 - DisposableVM: overlay is RAM-only, destroyed with the qube; nothing persists.
@@ -251,6 +264,17 @@ usb         AdminVM     device.attach ask   "attach USB device?"
     `V2_DESIGN.md` §9 S3 entry.
 - **S4 — GUI isolation.** Surfaces, trusted chrome, focus gesture,
   clipboard RPC. *Demo:* two qubes, spoofed prompt visibly untrusted.
+- **FDE — encrypted storage (S5-storage partial).**
+  - BUILT 2026-09-24: `userspace/crypt/` (ChaCha20-Poly1305, SHA-256,
+    PBKDF2, test-grade DRBG) + `userspace/cryptblk/layout.h`/`slot.h` +
+    `vault`/`cryptblk` ELFs (initrd 8–9, threads 8–9, qubes 6–7;
+    NTHREADS 8→10, `V2_FRAMES_MAX` 16→32); qrexec rows
+    `VAULT_UNWRAP 7`/`VAULT_REWRAP 8`/`VOL_FORMAT 9`; host tests
+    `test_aead` + `test_crypt`; smoke markers `VAULT:`/`CRYPT:`/`BLKMMIO:`;
+    proofs `kernel/isabelle/Qubes_D.thy` (0 sorry, 0 axioms,
+    KAT-correspondence). Refinements + honest limits in `V2_DESIGN.md`
+    §9 FDE entry. Templates/overlays/disposables/updates/backup below
+    stay `[TODO]`.
 - **S5 — Storage: templates/overlays/disposables/updates/backup.**
   *Demo:* disposable boots clean, template atomic flip + rollback.
 - **S6 — Hardening + proofs replay.** Confinement/IPC-integrity/temporal
