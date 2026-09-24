@@ -94,7 +94,16 @@ unreachable. Retired and replaced (single source of truth per RPC):
   cryptblk; net.send → 5; filter.reload → 4 — exact ids from the
   boot tables, reviewer checks each).
 - New `rpc_svc[]` table (rpc → service qube, indexed by rpc id with a
-  `<10` bounds-check else INVALID): the broker looks up
+  `<10` bounds-check else INVALID; AS-BUILT values verified against
+  the broker's own rpc defines — an earlier draft misnumbered two
+  entries):
+```
+rpc_svc[10] = {0, 6, 6, 5, 0, 4, 0, 6, 6, 7}
+```
+  (0 unused; 1 keys.sign→vault(6); 2 clipboard→vault(6)+DENY row;
+  3 net.send→net(5); 4 INVALID — wire tag, no row; 5
+  filter.reload→fw(4); 6 INVALID — wire tag, no row; 7 unwrap→vault;
+  8 rewrap→vault; 9 format→cryptblk(7)). The broker looks up
   `qube_decide(pol, stamped_src, rpc_svc[rpc], rpc)` — the PROVEN
   lookup, unchanged call shape, so `Qubes_B` (`c_decide_eq`,
   `c_q_call_refines`) still models the C exactly — and delivers to

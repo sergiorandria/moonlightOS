@@ -375,11 +375,14 @@ Then replace the fire-and-forget registration with a handshake (the broker's HEL
 ```c
 /* RPC -> service qube. Rows below address the SERVICE qube as dst;
  * the lookup key is rpc_svc[rpc]. Indexed by rpc id (<10, else
- * INVALID). Mirrors boot wiring; reviewer checks each entry. */
-static const unsigned long rpc_svc[10] = {0, 6, 6, 0, 0, 5, 4, 6, 6, 7};
-/* rpc: 0 unused | 1 keys.sign->vault(6) | 2 clipboard->vault(6)+DENY row
- * 3/4 unused | 5 net.send->net(5) | 6 filter.reload->fw(4)
- * 7 unwrap->vault(6) | 8 rewrap->vault(6) | 9 format->cryptblk(7) */
+ * INVALID). AS-BUILT values (verified against this file's rpc
+ * defines; Task-5 review): [1]=6 keys.sign->vault, [2]=6
+ * clipboard->vault (DENY row still fires), [3]=5 net.send->net,
+ * [4]=0 INVALID (wire tag, no row), [5]=4 filter.reload->fw,
+ * [6]=0 INVALID (wire tag, no row), [7,8]=6 unwrap/rewrap->vault,
+ * [9]=7 format->cryptblk. Mirrors boot wiring; reviewer checks
+ * each entry against the row table below. */
+static const unsigned long rpc_svc[10] = {0, 6, 6, 5, 0, 4, 0, 6, 6, 7};
 ```
 
 (Verify the rpc ids for net.send/filter.reload against the boot row table first — lines ~184-193 use `QREXEC_QUBE` dsts with specific rpc numbers; read them, do not guess. If any id above is wrong, set it from the file and report the correction.) Then: (a) rewrite every boot row's `.dst` from `QREXEC_QUBE` to its service qube per this table (keys.sign rows → 6, clipboard row → 6 with DENY, net.send → 5, filter.reload → 4, unwrap/rewrap → 6, format → 7); (b) change the three `qube_decide(&pol, sqb, QREXEC_QUBE, rpc)` call sites to resolve `svc = (rpc < 10) ? rpc_svc[rpc] : 8 /* invalid qube */` first (rpc ≥ 10 or svc == 0 with... careful: svc 0 is invalid (demo qube, never a deliver target) — treat `svc == 0 || svc >= 8` as INVALID + deny-audit, no SEND) and call `qube_decide(&pol, sqb, svc, rpc)`; (c) change the two deliver arms to send to `svc_of_qube[svc]` (same variable, not `svc_of_qube[dstq]`); (d) change the `qube_audit(..., QREXEC_QUBE, ...)` dst args to the resolved `svc` (honest audit); (e) delete `#define QREXEC_QUBE 1` iff no references remain (reviewer confirms via grep), else leave with a `/* stale: do not use for routing */` comment. Rewrite the `dst is always QREXEC_QUBE` comment block (~lines 167-168) to describe service-dst rows.
