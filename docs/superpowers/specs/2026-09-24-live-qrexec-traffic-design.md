@@ -82,28 +82,27 @@ RECVs ep=1. Same bytes, same markers (`B00pn`, `A10pg`, `W1` byte-
 identical). Broker SENDs `T_DELIVER`/`T_ASK` to dst service EPs (see
 §3); every server RECVs its own tid EP (one-constant edits).
 
-### 3. Broker `svc_of_qube` table (U-mode, qrexec-owned)
+### 3. Broker routing: rpc→service tables (rev 4 — collapsed-dst retired)
 
-The broker knows the dst *qube* (policy) but SEND needs a dst *tid*.
-Table (mirrors boot wiring; each non-demo qube has exactly one
-thread, so lowest-tid == only-tid == service):
+The S2-era convention (all rows `dst = QREXEC_QUBE = 1`, "collapsed-dst")
+is stale: qube 1 is mem's qube today, so `svc_of_qube[1] = 2` routes
+approved delivers to mem_server — the vault marker would be
+unreachable. Retired and replaced (single source of truth per RPC):
 
-```
-svc_of_qube[8] = {0, 2, 3, 4, 5, 6, 8, 9}
-                   ^  ^  ^  ^  ^  ^  ^  ^
-                 q0 q1 q2 q3 q4 q5 q6 q7
-```
-
-q0 (demo qube) maps to 0 and is never a deliver target (no allow/ask
-row has dst qube 0 — reviewer checks the row tables in
-`qrexec_server`, `qube.h` boot policy, and the FDE rows 7–9).
-`T_DELIVER` SENDs to `svc_of_qube[dst]`; out-of-range dst (≥8) or
-q0-targeted deliver ⇒ INVALID + deny-audit, no SEND. `T_ASK` SENDs to
-the admin EP (4) directly (unchanged constant, now addressed).
-
-Kernel alternative (Invoke op resolving qube→svc tid) REJECTED:
-U-mode table is 8 words, reviewed against boot wiring; a new syscall
-for test-harness convenience violates YAGNI.
+- Rows carry the SERVICE qube as dst (keys.sign → 6 vault;
+  clipboard → 6 vault with DENY; unwrap/rewrap → 6; format → 7
+  cryptblk; net.send → 5; filter.reload → 4 — exact ids from the
+  boot tables, reviewer checks each).
+- New `rpc_svc[]` table (rpc → service qube, indexed by rpc id with a
+  `<10` bounds-check else INVALID): the broker looks up
+  `qube_decide(pol, stamped_src, rpc_svc[rpc], rpc)` — the PROVEN
+  lookup, unchanged call shape, so `Qubes_B` (`c_decide_eq`,
+  `c_q_call_refines`) still models the C exactly — and delivers to
+  `svc_of_qube[rpc_svc[rpc]]`. Audit records the resolved service dst
+  (honest audit, not the collapsed constant).
+- `QREXEC_QUBE` deleted if unreferenced after the switch (reviewer
+  confirms), else left with a stale-convention comment ban.
+- `T_ASK` SEND→EP4 and `T_DELIVER` SEND→resolved EP unchanged.
 
 ### 4. V2_C model delta (exact)
 
@@ -167,13 +166,21 @@ has never run at all. Consequences pinned for this phase:
   queues + blocks until it RECVs — both orders work. The old deadlock
   (broker-SENDs-T_ASK vs admin-SENDs-HELLO) cannot recur: nothing SENDs
   until A calls, and by then admin is registered (see handshake).
-- HANDSHAKE (new, required): A must not call before admin registers
-  (else broker's `T_ASK` SEND has no waiter while admin is still
-  pre-registration → SEND/SEND embrace). After printing `W1`, A WAITs
-  a second time; admin, on HELLO `R_OK` reply, `NOTIFY`s tid 0 (new:
-  admin checks the reply it ignores today + a 5-line NOTIFY wrapper);
-  A wakes and runs the legs. If admin never registers, A parks
-  marker-free → gate FAILs (fail closed, never half-open).
+- HANDSHAKE (rev 4 — call/response + admin RECV, corrects the
+  `usend`-returns-reply error): `usend` returns `V2_OK` (0) on
+  handoff, never the broker's reply code — replies are separate
+  SENDs the client must RECV. So each leg is SEND (expect 0, park on
+  nonzero) + RECV EP0 for the one-word reply (`[1]` = R_PENDING,
+  `[-1]` = R_DENY; anything else → park marker-free). After printing
+  `W1`, A WAITs a second time; admin SENDs HELLO→EP3, then RECVs EP4
+  for the broker's `[R_OK]` reply (this closes a real deadlock: the
+  broker's HELLO-reply SEND would otherwise embrace admin's WAIT
+  forever); on `[0]` admin `NOTIFY`s tid 0 bit 2 (new 5-line NOTIFY
+  wrapper) and enters the WAIT loop, else it falls into WAIT without
+  notifying (A never wakes → FAIL, fail closed). A must not call
+  before the NOTIFY (else the broker's `T_ASK` SEND has no waiter
+  while admin is pre-registration). If admin never registers, A
+  parks marker-free → gate FAILs.
 - Vault deliver-switch (unchanged from rev 1): rpc==1 → print
   `VAULT: live ok`, no state change, no handoff; rpc==7 → existing
   handoff; else INVALID. Boot unlock uses rpc 7, so the marker is
@@ -181,9 +188,10 @@ has never run at all. Consequences pinned for this phase:
   minimal diff; it can only trigger on EP4 misdelivery, which Phase 1
   makes unstatable).
 - User.c constraint honored: thread A prints nothing new (immediates
-  only, no literals); legs assert on reply codes (`R_PENDING`=1 after
-  ask-enqueue, `R_DENY`=-1 after clipboard) and park marker-free on
-  any deviation.
+  only, no literals); legs assert on SEND return (0) then RECV'd
+  reply words (`[1]` after ask-enqueue, `[-1]` after clipboard) and
+  park marker-free on any deviation. NOTE: never check the broker's
+  reply in `usend`'s return — it carries only `V2_OK`/error.
 
 Markers/gates (`verify.sh [4/4]`, +3 lines): `QREXEC: admin registered`
 (now genuinely live — the first honest print of the broker path),
@@ -221,11 +229,14 @@ qube→tid resolution.
       EP-isolation green; `V2_C` replayed (+ separation theorems,
       mutants, evals) with 0 sorry; full suite green, no new markers,
       no new SKIP.
-- [ ] Phase 2: two QX grants (qube0→qrexec for A, qube0→admin for
-      HELLO/`T_DECIDE`), asserted fail-closed; admin HELLO-first +
-      NOTIFY(tid 0) on `R_OK`; thread-A WAIT-post-`W1` then live legs
-      (`R_PENDING`/`R_DENY`-checked, marker-free park on deviation);
-      vault rpc-switch; `QREXEC: admin registered` + `VAULT: live ok`
+- [ ] Phase 2: two QX grants (qube0→qrexec reused from FDE line for
+      tid 3 + new qube0→admin tid 4), asserted fail-closed; admin
+      HELLO→EP3, RECV EP4 for `[R_OK]`, NOTIFY(tid 0, bit 2), then
+      WAIT loop; thread-A WAIT-post-`W1` then SEND+RECV legs
+      (V2_OK-checked sends, `[1]`/`[-1]`-checked replies, marker-free
+      park on deviation); broker `rpc_svc` routing (collapsed-dst
+      retired, rows carry service dsts, audit honest); vault
+      rpc-switch; `QREXEC: admin registered` + `VAULT: live ok`
       + `AUD: deny rpc=2` gated; full suite green, zero FAIL, no new
       SKIP.
 - [ ] Docs: `V2_DESIGN.md` §9 / `QUBES_ISOLATION_PLAN.md` §11 deferred
