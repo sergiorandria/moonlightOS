@@ -106,15 +106,38 @@ static long u_wait(void)
     return u_ecall3(V2_WAIT, 0, 0, 0);
 }
 
+/* Wake the live client (kernel thread A, tid 0) once the broker HELLO
+ * reply proves the broker is live. ADMIN_LIVE_BIT 2 is distinct from
+ * thread B's bit-1 ping notify, already consumed by A's first WAIT. */
+#define ADMIN_LIVE_BIT 2
+#define LIVE_CLIENT_TID 0
+
+static long u_notify(unsigned long t, unsigned long bits)
+{
+    return u_ecall3(V2_NOTIFY, (long)t, (long)bits, 0);
+}
+
 void adminvm_main(void)
 {
     uint64_t hello[1];
 
     u_puts("ADMIN: up\n");
 
-    /* Register with the broker; blocks until qrexec RECVs. */
+    /* Register with the broker, then wake the live client. SEND pairs
+     * with the broker's EP3 RECV (queues + blocks otherwise); the
+     * broker's [R_OK] reply needs THIS RECV — without it the reply
+     * SEND wedges the broker while we WAIT below. On [0] the broker
+     * is live, so notify the live client (thread 0, ADMIN_LIVE_BIT 2
+     * — distinct from thread B's bit-1 ping notify, already consumed
+     * by A's first WAIT); else fall into WAIT without notifying and
+     * the gate fails on the missing markers. */
     hello[0] = T_HELLO;
-    u_send(3, hello, 1);
+    if (u_send(3, hello, 1) == 0) {
+        uint64_t rep[4];
+        unsigned long s = 0, q = 0, o = 0;
+        if (u_recv(4, rep, 4, &s, &q, &o) >= 1 && rep[0] == 0)
+            u_notify(LIVE_CLIENT_TID, ADMIN_LIVE_BIT);
+    }
 
     for (;;) { /* bound: inf - WAIT loop */
         uint64_t buf[4];

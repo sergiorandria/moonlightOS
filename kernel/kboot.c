@@ -859,6 +859,15 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             if (threads[t].state == T_BLOCKED && threads[t].wait_kind == V2_WK_WAIT) {
                 threads[t].state = T_RUNNABLE;
                 threads[t].wait_kind = V2_WK_NONE;
+                /* Wake-delivery: a thread woken from WAIT resumes past
+                 * the ecall with whatever a0 it blocked with (stale).
+                 * Pre-deliver the pending bits as its WAIT return
+                 * (UABI: a0 = bits); pending is preserved, so a
+                 * re-WAIT still collects — level-triggered parties
+                 * (admin loop) observe zero behavior change. Without
+                 * this, the first woken-WAIT consumer (thread A live
+                 * legs, Task 5) sees a stale return and parks. */
+                threads[t].regs[10] = threads[t].notify;
                 woke = 1;
             }
             threads[cur].regs[10] = (uint64_t)V2_OK;
@@ -1861,6 +1870,12 @@ void kboot(void) {
      * path needs an empty dst). The vault takes no direct calls and the
      * AdminVM rewrap/format calls also route via qrexec ask, so this one
      * leg covers every Task-3 deliver path (see the VAULTQ assert above).
+     * Live-traffic second path (Task 5): thread A's T_CALL leg drives an
+     * approved keys.sign deliver along this same broker->vault grant —
+     * the broker (sender, tid 3) already holds QX via this line and
+     * thread A (sender, tid 0) holds QX via the S3 root above, so the
+     * live ask+deny legs REUSE this grant and add no second grant into
+     * tid 3 slot 9 (v2_grant fails on an occupied dst — caps.h).
      * Fail-closed: any grant failure prints marker-free "[demo] FAIL". */
     if (v2_grant(&caps, 0, 9, 3, 9) != V2_OK || !qube_has_qx(3)) {
         kputs("[demo] FAIL vault qx grant\n");
@@ -1884,6 +1899,18 @@ void kboot(void) {
         v2_grant(&caps, 0, 9, 8, 9) != V2_OK ||
         !qube_has_qx(9) || !qube_has_qx(8) || !qube_has_qx(3)) {
         kputs("[demo] FAIL crypt qx grants\n");
+    }
+    /* Live-traffic QX grant (deferred-A): QX is holder-based. Thread A's
+     * T_CALL leg reuses the FDE vault-grant line above
+     * (v2_grant(&caps, 0, 9, 3, 9)): v2_grant fails on an occupied dst
+     * (caps.h), so a second grant into tid 3 slot 9 ALWAYS fails — the
+     * FDE line's assert comment is extended to cover this leg instead.
+     * One grant is ADDED here:
+     *   qube0 -> admin (tid 4 slot 9): HELLO + T_DECIDE to the broker.
+     * Same slot-9 shape (user/admin tables hold no caps; MAP rejects
+     * QX-bit caps). Fail-closed like every grant block here. */
+    if (v2_grant(&caps, 0, 9, 4, 9) != V2_OK || !qube_has_qx(4)) {
+        kputs("[demo] FAIL live qx grants\n");
     }
     /* NETMMIO leaf gate: the transport U-leaf exists ONLY in tid 6's
      * tables (l1_t[6][5]); any other mapping is a leak. Fail-closed:

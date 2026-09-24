@@ -49,6 +49,19 @@
  * reviewer checks against kboot qube_of assignments. */
 static const unsigned long svc_of_qube[8] = {0, 2, 3, 4, 5, 6, 8, 9};
 
+/* RPC -> service qube. Rows below address the SERVICE qube as dst;
+ * the lookup key is rpc_svc[rpc]. Indexed by rpc id (<10, else
+ * INVALID). Mirrors boot wiring; reviewer checks each entry.
+ * Ids from this file's defines (NOT the stale S2 comment): net.send
+ * is RPC_NET_SEND 3 -> net qube 5; filter.reload is RPC_FILTER_RELOAD
+ * 5 -> fw qube 4; rpc 4/6 (NET_FWD/NET_DONE) have no boot row, so 0
+ * (INVALID, fail-closed). */
+static const unsigned long rpc_svc[10] = {0, 6, 6, 5, 0, 4, 0, 6, 6, 7};
+/* rpc: 0 unused | 1 keys.sign->vault(6) | 2 clipboard->vault(6)+DENY row
+ * 3 net.send->net(5) | 4 net.fwd: no row->INVALID | 5 filter.reload->fw(4)
+ * 6 net.done: no row->INVALID | 7 unwrap->vault(6) | 8 rewrap->vault(6)
+ * 9 format->cryptblk(7) */
+
 #define R_OK 0L
 #define R_PENDING 1L
 #define R_DENY (-1L)
@@ -65,8 +78,6 @@ static const unsigned long svc_of_qube[8] = {0, 2, 3, 4, 5, 6, 8, 9};
 
 #define FW_QUBE 4
 #define NET_QUBE 5
-
-#define QREXEC_QUBE 1
 
 static long u_ecall3(long sys, long a0, long a1, long a2)
 {
@@ -164,33 +175,35 @@ void qrexec_main(void)
     /* Boot policy table: keys.sign ASK, clipboard DENY, net.send ASK,
      * filter.reload ASK, vault.unwrap ASK (src 0), vault.rewrap ASK
      * (src 3/AdminVM), vol.format ASK (src 3/AdminVM). First match wins.
-     * dst is always QREXEC_QUBE: the broker collapses dst
-     * (qube_decide(&pol, sqb, QREXEC_QUBE, rpc)), so rows addressed to
-     * FW/NET/WILD can never match. The FDE rows pin the requester src
-     * per rpc (unwrap: qube 0; rewrap/format: qube 3) because T_DELIVER
-     * carries no src: the vault/cryptblk distinguish requesters by rpc. */
+     * dst is the SERVICE qube, resolved per call via rpc_svc[rpc]
+     * (qube_decide(&pol, sqb, svc, rpc)); the S2-era collapsed-dst
+     * (every row dst 1 = mem's qube, delivering to
+     * svc_of_qube[1] = mem_server) is retired. The FDE rows pin the
+     * requester src per rpc (unwrap: qube 0; rewrap/format: qube 3)
+     * because T_DELIVER carries no src: the vault/cryptblk distinguish
+     * requesters by rpc. */
     pol.nrules = 7;
     pol.npending = 0;
     pol.naudit = 0;
-    pol.rules[0] = (v2_qrule_t){.src = 0, .dst = QREXEC_QUBE,
+    pol.rules[0] = (v2_qrule_t){.src = 0, .dst = 6,
                                 .rpc = RPC_KEYS_SIGN,
                                 .decision = V2_QDEC_ASK};
-    pol.rules[1] = (v2_qrule_t){.src = V2_QWILD, .dst = V2_QWILD,
+    pol.rules[1] = (v2_qrule_t){.src = V2_QWILD, .dst = 6,
                                 .rpc = RPC_CLIPBOARD,
                                 .decision = V2_QDEC_DENY};
-    pol.rules[2] = (v2_qrule_t){.src = 0, .dst = QREXEC_QUBE,
+    pol.rules[2] = (v2_qrule_t){.src = 0, .dst = 5,
                                 .rpc = RPC_NET_SEND,
                                 .decision = V2_QDEC_ASK};
-    pol.rules[3] = (v2_qrule_t){.src = 3, .dst = QREXEC_QUBE,
+    pol.rules[3] = (v2_qrule_t){.src = 3, .dst = 4,
                                 .rpc = RPC_FILTER_RELOAD,
                                 .decision = V2_QDEC_ASK};
-    pol.rules[4] = (v2_qrule_t){.src = 0, .dst = QREXEC_QUBE,
+    pol.rules[4] = (v2_qrule_t){.src = 0, .dst = 6,
                                 .rpc = RPC_VAULT_UNWRAP,
                                 .decision = V2_QDEC_ASK};
-    pol.rules[5] = (v2_qrule_t){.src = 3, .dst = QREXEC_QUBE,
+    pol.rules[5] = (v2_qrule_t){.src = 3, .dst = 6,
                                 .rpc = RPC_VAULT_REWRAP,
                                 .decision = V2_QDEC_ASK};
-    pol.rules[6] = (v2_qrule_t){.src = 3, .dst = QREXEC_QUBE,
+    pol.rules[6] = (v2_qrule_t){.src = 3, .dst = 7,
                                 .rpc = RPC_VOL_FORMAT,
                                 .decision = V2_QDEC_ASK};
 
@@ -276,11 +289,26 @@ void qrexec_main(void)
 
         {
             unsigned long rpc = (unsigned long)buf[1];
+            /* Service-dst routing: the lookup key is rpc_svc[rpc].
+             * svc 0 is invalid (demo qube, never a deliver target);
+             * rpc >= 10 resolves to qube 8 (no such qube). Either way:
+             * INVALID + deny-audit, no deliver SEND (fail closed). The
+             * caller still gets R_DENY: it rendezvous-waits on EP0. */
+            unsigned long svc = (rpc < 10) ? rpc_svc[rpc] : 8;
             /* Pin the hash over the received words at call time
              * (24 bytes max, within the <= 512 caller-len bound). */
             uint64_t h = qube_fnv1a((const uint8_t *)&buf[1],
                                     (unsigned long)(n - 1) * 8UL);
-            int dec = qube_decide(&pol, sqb, QREXEC_QUBE, rpc);
+            int dec;
+            if (svc == 0 || svc >= 8) {
+                qube_audit(&pol, sqb, svc, rpc, 0);
+                u_puts("AUD: deny rpc=");
+                u_putdec((long)rpc);
+                u_putc('\n');
+                u_reply(snd, R_DENY);
+                continue;
+            }
+            dec = qube_decide(&pol, sqb, svc, rpc);
 
             u_puts("QREXEC: call src=");
             u_putdec((long)sqb);
@@ -289,9 +317,11 @@ void qrexec_main(void)
             u_putc('\n');
 
             if (dec == V2_QDEC_ALLOW) {
-                /* Policy-lookup dst (collapsed): the decide above ran
-                 * against QREXEC_QUBE, so delivery targets its EP. */
-                unsigned long dstq = (unsigned long)QREXEC_QUBE;
+                /* Service-dst deliver: the decide above ran against
+                 * the resolved svc, so delivery targets its EP. The
+                 * guard below is dead by construction (svc is 1..7
+                 * here) but stays fail-closed if the table is edited. */
+                unsigned long dstq = svc;
                 uint64_t fwd[4];
                 int k;
                 for (k = 0; k < 4; k++) /* bound: 4 (message words) */
@@ -299,15 +329,15 @@ void qrexec_main(void)
                 fwd[0] = T_DELIVER;
                 if (dstq >= 8UL || dstq == 0UL) {
                     /* Never a service: deny-audit, no SEND. */
-                    qube_audit(&pol, sqb, QREXEC_QUBE, rpc, 0);
+                    qube_audit(&pol, sqb, svc, rpc, 0);
                     u_puts("AUD: deny rpc=");
                     u_putdec((long)rpc);
                     u_putc('\n');
                     u_reply(snd, R_DENY);
                 } else {
-                    qube_audit(&pol, sqb, QREXEC_QUBE, rpc, 1);
+                    qube_audit(&pol, sqb, svc, rpc, 1);
                     /* Forward first (backpressure), then reply to caller. */
-                    u_send(svc_of_qube[dstq], fwd, 4);
+                    u_send(svc_of_qube[svc], fwd, 4);
                     u_puts("AUD: allow rpc=");
                     u_putdec((long)rpc);
                     u_putc('\n');
@@ -317,7 +347,7 @@ void qrexec_main(void)
                 v2_qask_t ask;
                 int erc;
                 ask.src = sqb;
-                ask.dst = QREXEC_QUBE;
+                ask.dst = svc;
                 ask.rpc = rpc;
                 ask.hash = h;
                 ask.arg0 = n >= 3 ? (unsigned long)buf[2] : 0;
@@ -343,7 +373,7 @@ void qrexec_main(void)
                     u_reply(snd, R_DENY);
                 }
             } else {
-                qube_audit(&pol, sqb, QREXEC_QUBE, rpc, 0);
+                qube_audit(&pol, sqb, svc, rpc, 0);
                 u_puts("AUD: deny rpc=");
                 u_putdec((long)rpc);
                 u_putc('\n');

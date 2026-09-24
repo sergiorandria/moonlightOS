@@ -155,6 +155,33 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
     uputc('W');
     uputc((char)('0' + bits)); /* must be 1 */
     uputc('\n');
+    /* Live qrexec legs (deferred-A): wait for the admin handshake
+     * (ADMIN_LIVE_BIT 2), then drive ask + deny over EP3 as
+     * SEND + RECV call/response pairs. */
+    bits = uwait();
+    if (bits != 2)
+        upark();
+    {
+        uint64_t call[4];
+        uint64_t rep[4];
+        unsigned long s = 0, q = 0, o = 0;
+        long n;
+        call[0] = 1; /* T_CALL */
+        call[1] = 1; /* keys.sign */
+        call[2] = 0;
+        call[3] = 0;
+        if (usend(3, call, 4) != 0)
+            upark();
+        n = urecv(0, rep, 4, &s, &q, &o);
+        if (n < 1 || rep[0] != 1) /* R_PENDING: ask enqueued */
+            upark();
+        call[1] = 2; /* clipboard */
+        if (usend(3, call, 4) != 0)
+            upark();
+        n = urecv(0, rep, 4, &s, &q, &o);
+        if (n < 1 || rep[0] != (uint64_t)-1) /* R_DENY: denied */
+            upark();
+    }
     upark();
 }
 

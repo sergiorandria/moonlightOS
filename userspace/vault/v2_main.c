@@ -92,6 +92,10 @@
 #define VAULT_REWRAP 8
 #define VOL_FORMAT 9
 
+/* keys.sign live-traffic probe (qrexec S2 ASK row, rpc 1): NOT an
+ * unwrap — prints the end-to-end marker only. */
+#define KEYSSIGN_LIVE 1UL
+
 #define QREXEC_QUBE 2
 #define VAULT_QUBE 6
 #define CRYPT_QUBE 7
@@ -495,6 +499,15 @@ void vault_main(void)
             } else {
                 u_puts("VAULT: deny\n");
             }
+            continue;
+        }
+
+        if ((unsigned long)buf[1] == KEYSSIGN_LIVE) { /* keys.sign:
+            * live-traffic probe (S2 row), NOT an unwrap — print the
+            * end-to-end marker, no state change, no handoff (handoff
+            * runs only for VAULT_UNWRAP). Boot unlock uses rpc 7, so
+            * this marker is honest. */
+            u_puts("VAULT: live ok\n");
             continue;
         }
 
