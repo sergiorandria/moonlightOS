@@ -1,6 +1,6 @@
 # Moonlight v2 — Design: a verifiable RISC-V CHERI microkernel
 
-Status: DESIGN + Stages 0–3 built (see §9 for per-stage BUILT notes).
+Status: DESIGN + Stages 0–3 and S4a built (see §9 for per-stage BUILT notes).
 Every section ends with what must exist before the next begins. Only §9
 stage entries marked BUILT are claimed as built. The v2/ tree was merged
 into the repo root on 2026-09-14: this repo is now the single codebase.
