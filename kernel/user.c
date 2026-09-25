@@ -182,6 +182,58 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
         if (n < 1 || rep[0] != (uint64_t)-1) /* R_DENY: denied */
             upark();
     }
+    /* S4a display legs: clear + 3 bars through the gui server.
+     * Words pack lanes (xy = x<<16|y, wh = w<<16|h); 800x600 needs
+     * <=10 bits per lane. Color is 32-bit XRGB in the low 32 bits of
+     * word 3 (the server casts buf[3] to uint32_t). Legs: fullscreen
+     * black clear + 3 full-width 100px bars (red y=100, green y=250,
+     * blue y=400). Geometry is server-validated (rect_fill_ok over the
+     * 800-wide stride paint walk: idx = (y+row)*800+(x+col), byte
+     * offset idx*4). Each leg: SEND EP10 (expect 0) + RECV EP0
+     * (expect [R_OK=0]); any deviation parks marker-free (no
+     * "GUI: fill ok" ever prints). */
+    {
+        uint64_t fill[4];
+        uint64_t rep[4];
+        unsigned long s = 0, q = 0, o = 0;
+        long n;
+        fill[0] = 6;
+        fill[1] = (0UL << 16) | 0UL;
+        fill[2] = (800UL << 16) | 600UL;
+        fill[3] = 0x00000000UL;
+        if (usend(10, fill, 4) != 0)
+            upark();
+        n = urecv(0, rep, 4, &s, &q, &o);
+        if (n < 1 || rep[0] != 0)
+            upark();
+        fill[0] = 6;
+        fill[1] = (0UL << 16) | 100UL;
+        fill[2] = (800UL << 16) | 100UL;
+        fill[3] = 0x00FF0000UL;
+        if (usend(10, fill, 4) != 0)
+            upark();
+        n = urecv(0, rep, 4, &s, &q, &o);
+        if (n < 1 || rep[0] != 0)
+            upark();
+        fill[0] = 6;
+        fill[1] = (0UL << 16) | 250UL;
+        fill[2] = (800UL << 16) | 100UL;
+        fill[3] = 0x0000FF00UL;
+        if (usend(10, fill, 4) != 0)
+            upark();
+        n = urecv(0, rep, 4, &s, &q, &o);
+        if (n < 1 || rep[0] != 0)
+            upark();
+        fill[0] = 6;
+        fill[1] = (0UL << 16) | 400UL;
+        fill[2] = (800UL << 16) | 100UL;
+        fill[3] = 0x000000FFUL;
+        if (usend(10, fill, 4) != 0)
+            upark();
+        n = urecv(0, rep, 4, &s, &q, &o);
+        if (n < 1 || rep[0] != 0)
+            upark();
+    }
     upark();
 }
 

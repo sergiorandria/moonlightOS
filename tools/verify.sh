@@ -191,6 +191,12 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "BLKMMIO: tid=9 only" && echo "v2 smoke: blkmmio leaf" || { echo "v2 smoke: FAIL (no blkmmio)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUI: up" && echo "v2 smoke: gui up" || { echo "v2 smoke: FAIL (no gui up)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUIMMIO: tid=10 only" && echo "v2 smoke: guimmio leaf" || { echo "v2 smoke: FAIL (no guimmio)"; QEMU_FAIL=1; }
+    # S4a display pattern (Task 5): thread-A drives 4 FILL legs through
+    # the gui server (words: tag 6, xy=x<<16|y, wh=w<<16|h, 32-bit XRGB
+    # color in the low 32 bits) — fullscreen black clear + full-width
+    # 100px red/green/blue bars at y=100/250/400. First validated FILL
+    # prints "GUI: fill ok" once; any leg deviation parks marker-free.
+    echo "$V2LOG" | grep -q "GUI: fill ok" && echo "v2 smoke: gui fill" || { echo "v2 smoke: FAIL (no gui fill)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "QREXEC: admin registered" && echo "v2 smoke: admin live" || { echo "v2 smoke: FAIL (no admin registered)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "VAULT: live ok" && echo "v2 smoke: vault live" || { echo "v2 smoke: FAIL (no vault live)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "AUD: deny rpc=2" && echo "v2 smoke: live deny" || { echo "v2 smoke: FAIL (no live deny)"; QEMU_FAIL=1; }
