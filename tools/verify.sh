@@ -191,6 +191,7 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "QREXEC: admin registered" && echo "v2 smoke: admin live" || { echo "v2 smoke: FAIL (no admin registered)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "VAULT: live ok" && echo "v2 smoke: vault live" || { echo "v2 smoke: FAIL (no vault live)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "AUD: deny rpc=2" && echo "v2 smoke: live deny" || { echo "v2 smoke: FAIL (no live deny)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "AUD: full ok" && echo "v2 smoke: audit full" || { echo "v2 smoke: FAIL (no audit full)"; QEMU_FAIL=1; }
     # Format-leg union gate (Task 4 idempotent provision: first-ever boot
     # on a fresh image prints "CRYPT: formatted", later boots reuse the
     # header and print "CRYPT: volume ok"; the disk persists across runs,

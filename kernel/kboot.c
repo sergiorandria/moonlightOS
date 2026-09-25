@@ -2015,6 +2015,36 @@ void kboot(void) {
             kputdec(demo.naudit);
             kputs(" entries\n");
         }
+        /* Audit-full self-test (deferred-B): model the cap rule on a
+         * local policy — 64 appends ok, 65th OVERFLOW with entries
+         * intact, helper refuses at cap and appends below it. */
+        {
+            v2_qpolicy_t fulltest;
+            int fq;
+            fulltest.nrules = 0;
+            fulltest.npending = 0;
+            fulltest.naudit = 0;
+            for (fq = 0; fq < 64; fq++) { /* bound: V2_AUDIT_MAX */
+                if (qube_audit(&fulltest, 0, 6, 1, 1) != 0)
+                    kputs("[demo] FAIL audit fill\n");
+            }
+            if (fulltest.naudit != 64 ||
+                qube_audit(&fulltest, 0, 6, 1, 1) != -2 ||
+                fulltest.naudit != 64 ||
+                qube_audit_allow(&fulltest, 0, 6, 1) != -2 ||
+                qube_audit_room(&fulltest) != 0) {
+                kputs("[demo] FAIL audit cap\n");
+            } else {
+                fulltest.naudit = 63;
+                if (!qube_audit_room(&fulltest) ||
+                    qube_audit_allow(&fulltest, 0, 6, 1) != 0 ||
+                    fulltest.naudit != 64) {
+                    kputs("[demo] FAIL audit room\n");
+                } else {
+                    kputs("AUD: full ok\n");
+                }
+            }
+        }
     }
     /* S3 Phase-1 demo (model-level: straight-line, bounded, no IPC).
      * Drives the real fw_decide + qube_fnv1a + qube_raw_ok + qube_audit

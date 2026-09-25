@@ -133,6 +133,25 @@ static inline int qube_audit(v2_qpolicy_t *q, unsigned long s, unsigned long d,
     return 0; /* V2_OK */
 }
 
+/* Audit room for fail-closed allow (deferred-B): nonzero iff an
+ * allow record fits. Deny paths never consult this (denial is the
+ * safe direction and needs no record). */
+static inline int qube_audit_room(const v2_qpolicy_t *q)
+{
+    return q && q->naudit < V2_AUDIT_MAX;
+}
+
+/* Check-and-append for allow arms: OVERFLOW with zero state change
+ * when full (the caller must NOT actuate), else the allow record.
+ * Split from room-check because qube_decide_idx appends itself. */
+static inline int qube_audit_allow(v2_qpolicy_t *q, unsigned long s,
+                                   unsigned long d, unsigned long r)
+{
+    if (!qube_audit_room(q))
+        return -2; /* V2_ERR_OVERFLOW */
+    return qube_audit(q, s, d, r, 1);
+}
+
 /* Ask enqueue: full ==> Deny-audit + V2_ERR_OVERFLOW, old state kept. */
 static inline int qube_ask_enqueue(v2_qpolicy_t *q, const v2_qask_t *ask)
 {

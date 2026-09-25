@@ -34,6 +34,27 @@ int main(void) {
     CHECK(qube_decide_idx(&q, V2_PENDING_MAX, 1) == -1); /* bad index no-op */
     /* destroy drops inflight + audits deny */
     CHECK(qube_destroy_drop(&q, 0) == 0 && q.npending == 0);
+    /* Audit cap: fail-closed allow (deferred-B). Fill via qube_audit. */
+    {
+        v2_qpolicy_t full = {0};
+        int i, rc;
+        for (i = 0; i < 64; i++) /* bound: V2_AUDIT_MAX */
+            CHECK(qube_audit(&full, 0, 6, 1, 1) == 0);
+        CHECK(full.naudit == 64);
+        /* 65th drops with entries intact. */
+        CHECK(qube_audit(&full, 0, 6, 1, 1) == -2);
+        CHECK(full.naudit == 64);
+        CHECK(full.audit[63].src == 0 && full.audit[63].rpc == 1);
+        /* Helper refuses at cap, appends below cap. */
+        CHECK(qube_audit_allow(&full, 0, 6, 1) == -2);
+        CHECK(full.naudit == 64);
+        CHECK(qube_audit_room(&full) == 0);
+        full.naudit = 63;
+        CHECK(qube_audit_room(&full) != 0);
+        CHECK(qube_audit_allow(&full, 0, 6, 1) == 0);
+        CHECK(full.naudit == 64);
+        (void)rc;
+    }
     printf("PASS: test_qube_policy\n");
     return 0;
 }

@@ -245,30 +245,39 @@ void qrexec_main(void)
                     unsigned long a0 = pol.pending[idx].arg0;
                     unsigned long a1 = pol.pending[idx].arg1;
                     unsigned long dstq = pol.pending[idx].dst;
-                    int arc = qube_decide_idx(&pol, idx, approve);
-                    (void)arc;
-                    if (approve) {
-                        uint64_t fwd[4];
-                        fwd[0] = T_DELIVER;
-                        fwd[1] = rpc;
-                        fwd[2] = a0;
-                        fwd[3] = a1;
-                        if (dstq >= 8UL || dstq == 0UL) {
-                            /* Never a service: deny-audit, no SEND. */
-                            u_puts("AUD: deny rpc=");
-                            u_putdec((long)rpc);
-                            u_putc('\n');
-                        } else {
-                            /* Backpressure: blocks until a service RECVs. */
-                            u_send(svc_of_qube[dstq], fwd, 4);
-                            u_puts("AUD: allow rpc=");
-                            u_putdec((long)rpc);
-                            u_putc('\n');
-                        }
-                    } else {
+                    if (!qube_audit_room(&pol)) {
+                        /* Audit full: dequeue as deny (record best-effort),
+                         * deny-shape print, no SEND, no reply. */
+                        (void)qube_decide_idx(&pol, idx, 0);
                         u_puts("AUD: deny rpc=");
                         u_putdec((long)rpc);
                         u_putc('\n');
+                    } else {
+                        int arc = qube_decide_idx(&pol, idx, approve);
+                        (void)arc;
+                        if (approve) {
+                            uint64_t fwd[4];
+                            fwd[0] = T_DELIVER;
+                            fwd[1] = rpc;
+                            fwd[2] = a0;
+                            fwd[3] = a1;
+                            if (dstq >= 8UL || dstq == 0UL) {
+                                /* Never a service: deny-audit, no SEND. */
+                                u_puts("AUD: deny rpc=");
+                                u_putdec((long)rpc);
+                                u_putc('\n');
+                            } else {
+                                /* Backpressure: blocks until a service RECVs. */
+                                u_send(svc_of_qube[dstq], fwd, 4);
+                                u_puts("AUD: allow rpc=");
+                                u_putdec((long)rpc);
+                                u_putc('\n');
+                            }
+                        } else {
+                            u_puts("AUD: deny rpc=");
+                            u_putdec((long)rpc);
+                            u_putc('\n');
+                        }
                     }
                 } else {
                     /* Hash mismatch or bad index: drop, deny-audit,
@@ -335,13 +344,20 @@ void qrexec_main(void)
                     u_putc('\n');
                     u_reply(snd, R_DENY);
                 } else {
-                    qube_audit(&pol, sqb, svc, rpc, 1);
-                    /* Forward first (backpressure), then reply to caller. */
-                    u_send(svc_of_qube[svc], fwd, 4);
-                    u_puts("AUD: allow rpc=");
-                    u_putdec((long)rpc);
-                    u_putc('\n');
-                    u_reply(snd, R_OK);
+                    if (qube_audit_allow(&pol, sqb, svc, rpc) != 0) {
+                        /* Audit full: deny-shape print, R_DENY, no SEND. */
+                        u_puts("AUD: deny rpc=");
+                        u_putdec((long)rpc);
+                        u_putc('\n');
+                        u_reply(snd, R_DENY);
+                    } else {
+                        /* Forward first (backpressure), then reply to caller. */
+                        u_send(svc_of_qube[svc], fwd, 4);
+                        u_puts("AUD: allow rpc=");
+                        u_putdec((long)rpc);
+                        u_putc('\n');
+                        u_reply(snd, R_OK);
+                    }
                 }
             } else if (dec == V2_QDEC_ASK) {
                 v2_qask_t ask;
