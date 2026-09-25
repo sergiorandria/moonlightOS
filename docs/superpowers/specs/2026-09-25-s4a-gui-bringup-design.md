@@ -26,9 +26,11 @@ Qubes bound lemmas pinning 10 threads / 8 qubes; add PCI-scan bound
 lemmas (`pci_scan_covers`, config-space exactness) in the style of
 `mmio_scan_covers`. Mutants per new invariant; 0 sorry.
 
-**Demos (QEMU text markers, fail-closed):** `GUI: up` (server mapped
-the LFB and painted), `GUIMMIO: tid=10 only` (U-leaf exclusivity
-asserted at boot like `NETMMIO`/`BLKMMIO`).
+**Demos (QEMU text markers, fail-closed):** `GUI: up` (server bound
+the display and serves), `GUIMMIO: tid=10 only` (U-leaf exclusivity
+asserted at boot like `NETMMIO`/`BLKMMIO`), `GUI: fill ok` (first
+client `FILL` served — proves the L2 path; the test pattern itself
+is 4 client FILLs, nothing server-painted).
 
 ---
 
@@ -51,17 +53,32 @@ asserted at boot like `NETMMIO`/`BLKMMIO`).
 
 ---
 
-## 3. Architecture
+## 3. Architecture — layered, microkernel-faithful
 
 ```
-QEMU bochs-display (PCI) <--ECAM scan-- gui ELF (tid 10, qube 8)
-                                          |-- LFB U-leaf (tid-10-only,
-                                          |   W never X, BAR-sized)
-                                          |-- paints 3 bars + border
-                                          |-- parks (no IPC in S4a)
-Kernel (S-mode): unchanged roles — ECAM window map (like MMIO
-leaves), cap enforcement, label stamps, spawn. No new syscalls.
+Layer                    Owner          Hardware touch   IPC
+L0 address mechanics     kernel         maps leaves only  none (existing gates)
+L1 display server        gui ELF t10/q8 Binds PCI, owns   serves FILL on EP10,
+                                        LFB leaf         replies R_OK/R_DENY
+L2 paint client          thread A       NONE — pixels    SENDs FILL to EP10,
+                        (qube 0)        only via server  RECVs reply on EP0
+L3+ (S4b/c, not built)  future ELFs    via server RPCs  new RPCs, own bumps
 ```
+
+Microkernel invariants (binding — this stage must not break them):
+- Exactly one hardware path: LFB + ECAM windows map ONLY into tid
+  10's tables (boot-asserted `GUIMMIO: tid=10 only`, same shape as
+  `NETMMIO`/`BLKMMIO`); kernel holds no display code (no PCI
+  structs, no pixel math — mechanics only); no ambient caps (the
+  server's reach comes from boot-minted mappings, reviewable at the
+  wiring site).
+- All cross-layer traffic is addressed IPC with kernel-stamped
+  senders: client→server `FILL` on EP10 (raw-gated qube0→qube8 via
+  one QX grant, S3/FDE shape), server→client `R_OK`/`R_DENY` reply
+  to stamped `snd` on EP0 (live-stage call/response discipline).
+- Least privilege per layer: the client cannot name a pixel except
+  through validated `FILL` rects; the server cannot touch any other
+  qube's memory; S4b/c add RPCs — never mappings.
 
 Cap bump set (all-or-nothing, each with its assert/proof):
 `V2_CAP_THREADS`/`NTHREADS` 10→11, `V2_NEP`/`max_eps` 10→11,
@@ -69,7 +86,8 @@ Cap bump set (all-or-nothing, each with its assert/proof):
 (image ~5 + headroom; the 448-page LFB is MMIO-leaf range, never
 pool frames). WCET re-analysis note ships with the bump (any growth
 forces it — same rule as FDE). Initrd index 10, EP 10 owned by tid
-10. No QX grants (no cross-qube IPC yet).
+10. One QX grant: qube0→gui (tid 10 slot 9 — covers A's FILLs;
+holder-based, so the server's replies ride the same grant).
 
 ---
 
@@ -89,17 +107,37 @@ not built).
 
 ### 4.2 gui server (`userspace/gui/v2_main.c` + `gui_start.S`)
 
-Freestanding ELF, own qube: ECAM scan → bind → `PT_ALLOC`+`MAP` the
-LFB range at a scratch vpn (single mapping, UNMAP after paint? NO —
-keep mapped; S4b composites into it. UNMAP discipline returns in
-S4b) → paint: border + 3 horizontal bars (red/green/blue, exact
-pixel values in code, derivable: `0x00FF0000` etc.) → `GUI: up` →
-park. No RECV loop (no IPC yet — a parked server holds no waiter,
-so EP10 stays empty and cannot misdeliver). 8K stack (qrexec
-precedent: driver + staging). No prints in the map/paint path
-except the two markers (grep-gate discipline like `T_KEY`).
+Freestanding ELF, own qube: ECAM scan → bind → map LFB at a scratch
+vpn (stays mapped; S4b composites into it) → `GUI: up` → RECV loop
+on own EP10 serving one RPC. The server paints NOTHING itself —
+every pixel on screen arrives through a validated `FILL` (maximally
+layered: even the test pattern is client-driven):
 
-### 4.3 Boot wiring (mirrors FDE/vault Task-3 shape)
+```
+FILL [6, xy, wh, color]  client -> server (xy = x<<16|y, wh = w<<16|h;
+                         800×600 needs ≤10/11 bits per lane)
+  server: validate 0<=x, x+w<=800, 0<=y, y+h<=600 (wrap-safe) → fill
+          → reply R_OK; else reply R_DENY, no pixels touched.
+  anything else → R_DENY (INVALID), no state change.
+```
+
+First valid FILL additionally prints `GUI: fill ok` (proves the
+client path ran; the boot paint is server-local). 8K stack (qrexec
+precedent). No prints in the map/paint path except the markers
+(grep-gate discipline like `T_KEY`). Tag 6 is free in message-tag
+space (T_KEY 8, T_KEY_ACK 10 live elsewhere — reviewer checks).
+
+### 4.3 L2 client: thread A drives the pattern (no new thread)
+
+After the clipboard leg parks... no — A extends its live-legs tail:
+post-`W1` WAIT (admin handshake, unchanged), keys.sign leg, clipboard
+leg, then 4 FILL legs to EP10 (border + 3 bars, immediates-only
+rects baked as words, no literals per the `user.c` constraint),
+each SEND (expect 0) + RECV EP0 (expect `[R_OK]`), marker-free park
+on any deviation — the live-stage call/response discipline verbatim.
+QX grant qube0→gui covers the cross-qube SENDs (§3).
+
+### 4.4 Boot wiring (mirrors FDE/vault Task-3 shape)
 
 `kernel/user.c`: `ustack_gui[8192]` + top + init. `kernel/kboot.c`:
 spawn initrd 10→tid 10, `qube_of[10]=8`, `qube_next=9`,
@@ -114,9 +152,11 @@ tid=10 only` leaf assert (same shape as `NETMMIO`/`BLKMMIO`).
 ## 5. Data flow (boot)
 
 1. Kernel spawns 0–10; in-kernel demos run (unchanged).
-2. Gui ELF runs: scan → bind → map → paint → `GUI: up` → park.
+2. Gui ELF runs: scan → bind → map → `GUI: up` → RECV-waits EP10.
 3. Boot asserts print `GUIQ: labels ok`, `GUIMMIO: tid=10 only`.
-4. Everything else identical (serial primary; all prior markers).
+4. Thread A (post-handshake, post-qrexec-legs): 4 FILL legs → first
+   valid one prints `GUI: fill ok` on the server → A parks.
+5. Everything else identical (serial primary; all prior markers).
 
 ---
 
@@ -128,18 +168,23 @@ tid=10 only` leaf assert (same shape as `NETMMIO`/`BLKMMIO`).
 | BAR size absurd / MAP fails | Park marker-free → FAIL |
 | Wrong resolution (not 800×600×32?) | Server programs VBE for 800×600×32 explicitly; mismatch → park (no scaling code — minimal) |
 | LFB write fault | Park (mapping was wrong — the leaf assert catches it first) |
-| Any other thread touches LFB | Impossible by construction (single leaf, tid-10-only, asserted) |
+| FILL rect out-of-bounds / wrap-around | `R_DENY`, zero pixels touched (validate-then-paint; wrap-safe arithmetic) |
+| Unknown tag on EP10 | `R_DENY` (INVALID), no state change |
+| FILL from non-qube-0 sender | Raw gate denies at SEND (no QX) — server never sees it |
+| Server not yet waiting when A calls | Rendezvous queues + A blocks (single-flight; no race) |
 
 ---
 
 ## 7. Testing
 
-- Host unit (`tests/test_gui.c`, `verify.sh [1f]`): bar/rect math
-  (offsets, stride 800, bounds reject, border geometry) over a
-  malloc'd shadow buffer; PCI config-address math (bus/dev/fn →
-  offset); BAR size validation edges.
-- QEMU smoke (`[4/4]`, +2 lines): `GUI: up`, `GUIMMIO: tid=10 only`.
-  Missing ⇒ FAIL. All prior markers unchanged.
+- Host unit (`tests/test_gui.c`, `verify.sh [1f]`): FILL validation
+  matrix (in-bounds accept, edge-exact accept, x+w overflow reject,
+  zero-size, wrap-around via `x+w < x` reject), pixel-offset math
+  (stride 800, `y*stride+x` bounds), PCI config-address math
+  (bus/dev/fn → offset), BAR size validation edges — over a
+  malloc'd shadow buffer + pure helpers.
+- QEMU smoke (`[4/4]`, +3 lines): `GUI: up`, `GUIMMIO: tid=10 only`,
+  `GUI: fill ok`. Missing ⇒ FAIL. All prior markers unchanged.
 - Production gates unchanged. No key material anywhere near this
   stage; no log-content gate needed.
 - Isabelle: `V2_C` replay (`max_eps` 11) + Qubes bound-lemma replay
@@ -159,9 +204,10 @@ multi-bus PCI scan, resolution negotiation, cursor, power management.
 
 ## 9. Exit criteria
 
-- [ ] PCI scan + bochs bind + LFB leaf + pattern + park, all
-      fail-closed; `GUI: up`, `GUIQ: labels ok`,
-      `GUIMMIO: tid=10 only` green.
+- [ ] PCI scan + bochs bind + LFB leaf + FILL service + QX grant,
+      all fail-closed; `GUI: up`, `GUIQ: labels ok`,
+      `GUIMMIO: tid=10 only`, `GUI: fill ok` green; thread-A 4-FILL
+      pattern (border + 3 bars) is the only screen content.
 - [ ] Full bump set with asserts + WCET note + proof replay green.
 - [ ] Host pattern/config tests green; `verify.sh` full-pass (new
       tests in `[1f]`, markers in `[4/4]`, single cmdline, no SKIP).
