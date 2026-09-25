@@ -35,15 +35,23 @@ unbounded, so model and C disagree silently.
 
 ### Components
 
-- `kernel/qube.h`: new helper beside `qube_audit` —
-  `qube_audit_allow(q, s, d, r)`: if `naudit >= V2_AUDIT_MAX` return
-  OVERFLOW with zero state change, else `qube_audit(...)`. Ten lines,
-  same header style, bound-free (single comparison).
+- `kernel/qube.h`: helper pair beside `qube_audit`
+  (single comparison each, header style, bound-free):
+  `qube_audit_room(q)` = nonzero iff `q && naudit < V2_AUDIT_MAX`;
+  `qube_audit_allow(q, s, d, r)` = room-check-then-append (OVERFLOW
+  with zero state change when full, else the allow record). Split
+  rationale: the allow-forward arm needs check-AND-append (replaces
+  its `qube_audit(...,1)` — no double record), while the approve arm
+  needs room-check WITHOUT appending (`qube_decide_idx` appends
+  itself).
 - Broker (`userspace/qrexec_server/v2_main.c`), exactly the two
-  allow-actuating arms (allow-forward, approve-deliver): call the
-  helper; nonzero → reply DENY, no `T_DELIVER` SEND, no new marker.
-  Deny arms unchanged (audit write stays best-effort; denial is the
-  safe direction and needs no record).
+  allow-actuating arms: allow-forward swaps its allow-record call for
+  the helper — nonzero → existing deny-shape print
+  (`AUD: deny rpc=`), `R_DENY` reply, no `T_DELIVER` SEND;
+  approve-deliver checks room BEFORE `qube_decide_idx` — no room →
+  `qube_decide_idx(idx, 0)` (dequeue, deny-record best-effort),
+  deny-shape print, no SEND, no reply (decider never waits).
+  Deny arms unchanged.
 - kboot in-kernel self-test (S2-demo precedent, local `demo`
   struct): fill `naudit` to 64 via `qube_audit`, assert the 65th
   returns OVERFLOW with entries intact, assert helper refuses →
@@ -116,9 +124,11 @@ edit reuses a live blocked server's slot.
 6. `V2_C.thy` snoop lemma: assert `ok1` (or `_`).
 7. Broker T_DECIDE invalid-dst branch: add `qube_audit(...,0)` for
    consistency with the ALLOW arm.
-8. Empty-take reply edge (`u_reply(snd)` with `snd==0`): `continue`
-   without SEND (reviewed unreachable — RECV blocks rather than
-   returning 0; behavior-preserving, flagged for the reviewer).
+8. Empty-take reply edge: REJECTED on implementation (correctly —
+   the path is reachable: zero-length SEND is legal per `v2_len_ok`,
+   RECV can return 0 with a live stamped sender, and bare `continue`
+   would drop the reply and hang a rendezvous waiter). Current
+   queuing behavior STANDS; no change.
 9. `V2_C.thy` double-notify eval pins (take-and-clear, second WAIT
    re-blocks) — UABI wake-delivery KAT for the `regs[10]=pending`
    fix.
