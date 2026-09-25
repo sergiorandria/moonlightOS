@@ -12,8 +12,10 @@ begin
    read/write sweep. Refinement relation: the C build clamps qubes to 8
    (c_max_qubes) while the spec allows 16 (max_qubes), so every C-bounded
    state is spec-bounded but not vice versa (mutant_b_c9 witnesses the
-   strictness); the pending bound (32) coincides. Audit is append-only in
-   both levels. All functions total. Zero axioms. *)
+   strictness); the pending bound (32) coincides. Audit is append-only up to
+   max_audit (64) in both levels: the C operators below take the same room
+   gating as Qubes_A arm-for-arm (Allow fail-closed, all other records
+   best-effort). All functions total. Zero axioms. *)
 
 (* ---- Raw rendezvous gate (mirrors qube_raw_ok) ---- *)
 
@@ -120,24 +122,31 @@ lemma c_decide_ask_ex:
 definition c_q_call :: "nat \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> qstate \<Rightarrow> qstate" where
   "c_q_call src dst rpc h st =
    (case c_decide (policy st) src dst rpc of
-      Allow \<Rightarrow> st\<lparr>audit := audit st @
-                         [\<lparr>osrc = src, odst = dst, orpc = rpc, oallow = True\<rparr>]\<rparr>
+      Allow \<Rightarrow> (if audit_room st
+                then st\<lparr>audit := audit st @
+                               [\<lparr>osrc = src, odst = dst, orpc = rpc, oallow = True\<rparr>]\<rparr>
+                else st)
     | Ask \<Rightarrow> (if length (pending st) < max_pending
                then st\<lparr>pending := pending st @
                               [\<lparr>asrc = src, adst = dst, arpc = rpc, ahash = h\<rparr>]\<rparr>
                else st\<lparr>audit := audit st @
-                              [\<lparr>osrc = src, odst = dst, orpc = rpc, oallow = False\<rparr>]\<rparr>)
+                              (if audit_room st
+                               then [\<lparr>osrc = src, odst = dst, orpc = rpc, oallow = False\<rparr>]
+                               else [])\<rparr>)
     | Deny \<Rightarrow> st\<lparr>audit := audit st @
-                        [\<lparr>osrc = src, odst = dst, orpc = rpc, oallow = False\<rparr>]\<rparr>)"
+                        (if audit_room st
+                         then [\<lparr>osrc = src, odst = dst, orpc = rpc, oallow = False\<rparr>]
+                         else [])\<rparr>)"
 
 (* Refinement: the C call path equals the spec transition. *)
 lemma c_q_call_refines:
   "c_q_call s d r h st = q_call s d r h st"
   by (simp add: c_q_call_def q_call_def c_decide_eq split: decision.split)
 
-(* Case split: Allow / Ask-suspend / Ask-full / Deny. *)
+(* Case split: Allow (room) / Ask-suspend / Ask-full (room) / Deny (room). *)
 lemma c_call_allow_ref:
   assumes "c_decide (policy st) s d r = Allow"
+      and "audit_room st"
   shows "audit (c_q_call s d r h st) =
            audit st @ [\<lparr>osrc = s, odst = d, orpc = r, oallow = True\<rparr>] \<and>
          pending (c_q_call s d r h st) = pending st"
@@ -145,6 +154,7 @@ lemma c_call_allow_ref:
 
 lemma c_call_deny_ref:
   assumes "c_decide (policy st) s d r = Deny"
+      and "audit_room st"
   shows "audit (c_q_call s d r h st) =
            audit st @ [\<lparr>osrc = s, odst = d, orpc = r, oallow = False\<rparr>] \<and>
          pending (c_q_call s d r h st) = pending st"
@@ -161,10 +171,18 @@ lemma c_call_ask_suspend_ref:
 lemma c_call_ask_full_ref:
   assumes "c_decide (policy st) s d r = Ask"
       and "\<not> length (pending st) < max_pending"
+      and "audit_room st"
   shows "audit (c_q_call s d r h st) =
            audit st @ [\<lparr>osrc = s, odst = d, orpc = r, oallow = False\<rparr>] \<and>
          pending (c_q_call s d r h st) = pending st"
   using assms by (simp add: c_q_call_refines q_call_def c_decide_eq)
+
+(* Full audit blocks Allow at the C level (fail-closed, via refinement). *)
+lemma c_full_blocks_allow:
+  assumes "length (audit st) \<ge> max_audit"
+      and "c_decide (policy st) s d r = Allow"
+  shows "c_q_call s d r h st = st"
+  using assms by (simp add: c_q_call_refines c_decide_eq audit_full_blocks_allow)
 
 (* Executable pins: C-level Allow, Deny, and full-queue Ask-to-Deny. *)
 lemma c_demo_allow_audit:
@@ -183,6 +201,33 @@ lemma c_demo_ask_full_denies:
               replicate 32 \<lparr>asrc = 0, adst = 0, arpc = 0, ahash = 0\<rparr>\<rparr>)) =
    [\<lparr>osrc = q_work, odst = q_vault, orpc = rpc_sign, oallow = False\<rparr>]"
   by eval
+
+(* ---- C decide path (mirrors qube_decide_idx) ---- *)
+
+(* Dequeue-then-best-effort-audit: the entry is always removed, the
+   verdict record lands iff room (the approve-deliver full path dequeues
+   as deny with no actuation). *)
+definition c_q_decide :: "nat \<Rightarrow> bool \<Rightarrow> qstate \<Rightarrow> qstate" where
+  "c_q_decide i approve st =
+   (if i < length (pending st) then
+      let a = pending st ! i in
+      st\<lparr>pending := pending_del i (pending st),
+          audit := audit st @
+                   (if audit_room st
+                    then [\<lparr>osrc = asrc a, odst = adst a, orpc = arpc a, oallow = approve\<rparr>]
+                    else [])\<rparr>
+    else st)"
+
+(* Refinement: the C decide path equals the spec transition. *)
+lemma c_q_decide_refines:
+  "c_q_decide i a st = q_decide i a st"
+  by (simp add: c_q_decide_def q_decide_def)
+
+(* Deny still proceeds at the C level: dequeue is unconditional. *)
+lemma c_decide_always_dequeues:
+  "i < length (pending st) \<Longrightarrow>
+   pending (c_q_decide i a st) = pending_del i (pending st)"
+  by (simp add: c_q_decide_refines decide_always_dequeues)
 
 (* ---- C destroy sweep (mirrors qube_destroy_drop) ---- *)
 
@@ -208,27 +253,29 @@ lemma c_dropped_eq:
 
 definition c_q_destroy :: "nat \<Rightarrow> qstate \<Rightarrow> qstate" where
   "c_q_destroy q st =
-   (let dropped = c_dropped q (pending st) in
+   (let dropped = c_dropped q (pending st);
+        newrecs = map (\<lambda>a. \<lparr>osrc = asrc a, odst = adst a,
+                               orpc = arpc a, oallow = False\<rparr>) dropped in
     st\<lparr>qubes := filter (\<lambda>x. x \<noteq> q) (qubes st),
         pending := c_keep q (pending st),
-        audit := audit st @
-                 map (\<lambda>a. \<lparr>osrc = asrc a, odst = adst a,
-                               orpc = arpc a, oallow = False\<rparr>) dropped\<rparr>)"
+        audit := audit st @ take (max_audit - length (audit st)) newrecs\<rparr>)"
 
 (* Refinement: the C sweep equals the spec destroy. *)
 lemma c_q_destroy_refines:
   "c_q_destroy q st = q_destroy q st"
   by (simp add: c_q_destroy_def q_destroy_def c_keep_eq c_dropped_eq Let_def)
 
-(* Pending-filter + audit-append shape, stated for the C operator. *)
+(* Pending-filter + capped-audit shape, stated for the C operator. *)
 lemma c_destroy_filter:
   "pending (c_q_destroy q st) =
      filter (\<lambda>a. asrc a \<noteq> q \<and> adst a \<noteq> q) (pending st) \<and>
    audit (c_q_destroy q st) = audit st @
-     map (\<lambda>a. \<lparr>osrc = asrc a, odst = adst a,
-                   orpc = arpc a, oallow = False\<rparr>)
-         (filter (\<lambda>a. asrc a = q \<or> adst a = q) (pending st))"
-  by (simp add: c_q_destroy_refines q_destroy_def Let_def)
+     take (max_audit - length (audit st))
+       (map (\<lambda>a. \<lparr>osrc = asrc a, odst = adst a,
+                     orpc = arpc a, oallow = False\<rparr>)
+         (filter (\<lambda>a. asrc a = q \<or> adst a = q) (pending st)))"
+  by (simp add: c_q_destroy_refines q_destroy_def destroy_audit_capped
+                c_keep_eq Let_def)
 
 (* Destroy denies (never allows) in-flight asks at the C level. *)
 lemma c_destroy_denies:
@@ -320,10 +367,12 @@ lemma mutant_b_policy_bad: "\<not> c_policy_bounded mutant_b_policy"
 
 lemma b_invariants_nontrivial:
   "(\<exists>s. \<not> q_unique s) \<and> (\<exists>s. \<not> q_bounded s) \<and> (\<exists>s. \<not> p_bounded s) \<and>
+   (\<exists>s. \<not> a_bounded s) \<and>
    (\<exists>s. \<not> c_qbounded s) \<and> (\<exists>s. q_bounded s \<and> \<not> c_qbounded s) \<and>
    (\<exists>s. \<not> c_policy_bounded s) \<and>
    (\<exists>L s d. \<not> raw_ok L False s d)"
   using mutant_b_dup_bad mutant_b_many_bad mutant_b_pend_bad
+        mutant_audit_full_bad
         mutant_b_c9_bad mutant_b_c9_spec_ok mutant_b_policy_bad
         mutant_forge_bad
   by blast
