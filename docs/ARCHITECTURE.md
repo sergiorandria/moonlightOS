@@ -259,6 +259,67 @@ the stamped caller (non-owner ⇒ NOTFOUND, no disk I/O). Tag mismatch
 strength via host KAT-correspondence, hash reasoning over the
 `pkt_hash` stand-in).
 
+### Display layers (S4a, built)
+
+| Layer | Owner | Hardware touch | IPC |
+|---|---|---|---|
+| L0 address mechanics | kernel (`kernel/kboot.c`) | maps LFB + ECAM leaves ONLY into tid-10 tables, no display code | none (existing gates) |
+| L1 display server | gui ELF tid 10 / qube 8 (`userspace/gui/v2_main.c` → `userspace/build/gui.elf`, initrd 10) | binds bochs-display via bus-0 PCI scan, owns LFB leaf | serves FILL on EP10, replies R_OK/R_DENY |
+| L2 paint client | thread A qube 0 (`kernel/user.c`) | NONE — pixels only via server | SENDs FILL to EP10, RECVs reply on EP0 |
+| L3+ (S4b/c, not built) | future ELFs | via server RPCs only | new RPCs, own bumps |
+
+Microkernel invariants (binding): (a) exactly one hardware path —
+LFB (`GUI_LFB_UVA 0x80C00000` = `l1_t[10][6]`, one l0 table = 2 MB ≥
+`GUI_FB_MAX` 800×600×4) + ECAM (`GUI_ECAM_UVA 0x80E00000` =
+`l1_t[10][7]`, 16 pages RW for the BAR mask-probe) windows map ONLY
+into tid-10 tables, boot-asserted `GUIMMIO: tid=10 only` (same shape
+as `NETMMIO`/`BLKMMIO`); kernel holds no display code (no PCI structs,
+no pixel math — bus-0 BAR0 programming is guest PCI enumeration
+mechanics, S4b may move it into the ELF); (b) all cross-layer traffic
+is addressed IPC with kernel-stamped senders — per-thread EPs incl.
+EP10 (`V2_NEP 11`, `eps[]`, RECV-own-EP rule), client→server FILL on
+EP10 via one qube0→gui QX grant (tid 10 slot 9; A's FILLs ride tid-0's
+in-place QX root — S3 shape), server→client `R_OK 0`/`R_DENY -1` reply
+to stamped `snd` on EP0; svc/rpc tables unchanged; (c) least privilege
+per layer — client names pixels only through validated FILL rects,
+server touches no other qube's memory, S4b/c add RPCs never mappings.
+Bump set 11/11/9/40: `V2_CAP_THREADS`/`NTHREADS` 10→11,
+`V2_NEP`/`max_eps` 10→11, `V2_QUBES_MAX` 8→9 (`qube_next` ends at 9),
+`V2_FRAMES_MAX` 32→40 (LFB is MMIO-leaf range, never pool frames).
+Bochs + bus-0 PCI: `BOCHS_VEN 0x1234`/`BOCHS_DEV 0x1111` (QEMU source),
+`PCI_ECAM_BASE 0x30000000`, scan bus 0 only (dev<32 × fn<8), BAR0 LFB +
+BAR1 high-word-must-be-0, `pci_bar_ok` + `size >= GUI_FB_MAX` gate;
+fail-closed park marker-free on miss. Proved by `max_eps = 11` replay +
+`ep_separation_send`/`ep_separation_recv` + `no_cross_deliver` +
+`pci_scan_covers`-family (`pci_cfg_exact`, `pci_scan_reach_exact`,
+`pci_bus0_covers`, `pci_bus1_invisible`, `pci_bind_needs_scan`,
+`pci_bind_is_bochs`, `pci_bind_ex`, `pci_bar_gate`, `pci_demo_bar_ok`)
+in `kernel/isabelle/V2_C.thy` (0 sorry, 0 axioms, `simp`/`arith` only —
+no `eval` on giant numerals); host-tested by `tests/test_gui.c`
+(`verify.sh [1f]`); smoke-pinned by `GUI: up` + `GUIMMIO: tid=10 only`
++ `GUI: fill ok` (`verify.sh [4/4]`).
+
+### FILL protocol (S4a, built)
+
+`FILL [6, xy, wh, color]` client→server (`xy = x<<16|y`,
+`wh = w<<16|h`; 800×600 needs ≤10 bits per lane; color is 32-bit XRGB
+in the low 32 bits of word 3 — the server casts `buf[3]` to
+`uint32_t`): server validates `rect_fill_ok` (zero-size/wrap/edge/
+stride-overflow reject, wrap checked BEFORE compare) → per-pixel
+`rect_off` walk (`idx = (y+row)*800+(x+col)`, byte offset `idx*4`,
+`/* bound: GUI_W*GUI_H */`) into volatile `u32` MMIO stores → first
+valid prints `GUI: fill ok` once (`gui_announced` in `.bss`,
+`v2_user.ld` provides data sections) → `u_reply(snd, R_OK)`; OOB/wrap
+→ `R_DENY` with zero pixels touched; unknown tag → `R_DENY`
+(INVALID), no state change; `n<1` → silent drop (vault `not ours`
+shape). Tag `FILL 6` is free in message-tag space (`T_KEY 8` /
+`T_KEY_ACK 10` live elsewhere). L2 pattern (`kernel/user.c`, 4 legs,
+immediates only, no literals): fullscreen black clear (0,0,800,600) +
+red (0,100,800,100) + green (0,250,800,100) + blue (0,400,800,100);
+each leg SEND EP10 expect 0 + RECV EP0 expect `[R_OK=0]`, marker-free
+park on deviation. Server-paints-nothing: every on-screen pixel arrives
+through a validated FILL (even the test pattern is client-driven).
+
 ### Memory isolation
 
 Kernel text is `RX` (no W, no U); kernel data is `RW` (no U). User text is
@@ -321,16 +382,20 @@ validates the ABI headers).
     refuses at cap and appends below it), ask args (`test_qargs`), firewall +
     net plane (`test_netfw` over `fw.h`), FDE crypto + layout/slots
     (`test_aead` KATs over `userspace/crypt/`, `test_crypt` over
-    `cryptblk/layout.h` + `slot.h`).
+    `cryptblk/layout.h` + `slot.h`), S4a pixel + PCI math (`test_gui`
+    over `userspace/gui/rect.h` + `pci.h`: rect origin/last-pixel/
+    edge/wrap/stride-overflow, bus0/dev31/fn7 exactness, 16M BAR ok
+    + 0/oversize/unaligned rejects).
 2. **Production gates**: linker layout (no PROGBITS in `[_bss,_bss_end)`),
    `user.c` rodata ban (immediates-only U-mode code).
 3. **Isabelle**: `isabelle build -D kernel/isabelle -v` (session V2 =
     V2_A + V2_B + V2_C (endpoint-indexed: `ep_separation_send` /
-    `ep_separation_recv` + `no_cross_deliver`) + V2_D + Qubes_A + Qubes_B + Qubes_C + Qubes_D; anti-vacuity gate: no sorry,
+    `ep_separation_recv` + `no_cross_deliver`; S4a: `max_eps = 11` +
+    `pci_scan_covers`-family) + V2_D + Qubes_A + Qubes_B + Qubes_C + Qubes_D; anti-vacuity gate: no sorry,
     no `≡ True` invariants).
 4. **Kernel build**: `make -C kernel` (clang, rv64imac, freestanding).
 5. **QEMU smoke** (single cmdline: virtio-net-device + user netdev +
-   `virtio-mmio.force-legacy=off`): boots OpenSBI → kernel, asserts `satp Sv39 on`,
+   `virtio-mmio.force-legacy=off` + `-device bochs-display`): boots OpenSBI → kernel, asserts `satp Sv39 on`,
    `entering U-mode`, `B00pn`, `A10pg`, `W1`, `[spawn] mem_server ELF ok`,
    `MEM-SRV`, `MEM`/`CAP`/`OK` invoke reports, `DU: vpn0 mirrored`,
    `NP`, `[spawn] qrexec/adminvm ELF ok`, `QUB: qube0 qube1 up`
@@ -345,8 +410,10 @@ validates the ABI headers).
     deny leg), `[spawn] vault/cryptblk ELF ok`, `VAULT: up`,
    `VAULTQ: labels ok`, `CRYPTQ: labels ok`, `CRYPT: up` / `locked` /
    `unlock ok` / `rw ok`, `CRYPT: wrong-key denied` / `leak denied` /
-   `no volume`, `CRYPT: formatted|volume ok` (format-if-absent
-   idempotence), `BLKMMIO: tid=9 only`,
+    `no volume`, `CRYPT: formatted|volume ok` (format-if-absent
+   idempotence), `BLKMMIO: tid=9 only`, `[spawn] gui ELF ok`,
+   `GUIQ: labels ok`, `GUI: bochs bound`, `GUIMMIO: tid=10 only`,
+   `GUI: up`, `GUI: fill ok` (S4a 4-leg FILL pattern),
    `no runnable left; parking cpu`. Missing markers fail the gate
    (fail closed).
 

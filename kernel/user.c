@@ -191,7 +191,7 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
      * 800-wide stride paint walk: idx = (y+row)*800+(x+col), byte
      * offset idx*4). Each leg: SEND EP10 (expect 0) + RECV EP0
      * (expect [R_OK=0]); any deviation parks marker-free (no
-     * "GUI: fill ok" ever prints). */
+     * GUI: fill ok ever prints). */
     {
         uint64_t fill[4];
         uint64_t rep[4];

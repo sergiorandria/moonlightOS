@@ -583,6 +583,99 @@ per-function where not).
     (S6), §7 non-goals unchanged; demo-convention brittleness (D,
     harness owner: `verify.sh`/`run_qemu.sh` hardening).
 
+- **S4a — GUI bring-up (Qubes S4 partial, not Stage 4 time/console).**
+  - BUILT 2026-09-25: layered display stack — `userspace/gui/rect.h`
+    (`GUI_W 800`, `GUI_H 600`, `GUI_BPP 4`, `GUI_STRIDE 800*4`,
+    `GUI_FB_MAX 800*600*4`, `rect_off`/`rect_fill_ok`) +
+    `userspace/gui/pci.h` (`PCI_ECAM_BASE 0x30000000`,
+    `pci_cfg_off`/`pci_bar_ok`, `BOCHS_VEN 0x1234`/`BOCHS_DEV 0x1111`
+    fetched from QEMU source) + `userspace/gui/v2_main.c`
+    (L1 display server: bus-0 ECAM scan, bochs bind, FILL service on
+    EP10, `GUI_TID 10`/`GUI_QUBE 8`/`GUI_EP 10`, `FILL 6`,
+    `R_OK 0`/`R_DENY -1`) + `userspace/gui/gui_start.S`
+    (vault-start clone) built as `userspace/build/gui.elf`, packed as
+    initrd index 10 (`tools/mkinitrd.sh` order 0–10) and SPAWNed at
+    boot into tid 10 / qube 8 (`kernel/kboot.c`, `[spawn] gui ELF ok`)
+    + thread-A 4 FILL legs (`kernel/user.c`: fullscreen black clear
+    + 3 full-width 100px bars red y=100 / green y=250 / blue y=400,
+    geometry 800×600×4, `xy=x<<16|y`/`wh=w<<16|h`, 32-bit XRGB in
+    word 3 low 32 bits, each leg SEND EP10 expect 0 + RECV EP0 expect
+    `[R_OK=0]`, marker-free park on deviation). Host-tested by
+    `tests/test_gui.c` (`PASS: test_gui`, gated in `verify.sh [1f]`);
+    smoke-pinned by `GUI: up` + `GUIMMIO: tid=10 only` +
+    `GUI: fill ok` (gated in `verify.sh [4/4]`; boot also prints
+    `GUI: bochs bound` + `GUIQ: labels ok`). Proved in
+    `kernel/isabelle/V2_C.thy` (`max_eps = 11` replay: per-thread EPs
+    incl. EP10 pinned by `ep_separation_send`/`ep_separation_recv` +
+    `no_cross_deliver` (unchanged, still cited), gui reach by
+    `ipc_gui_ep_fits`/`ipc_send_ep11_rejects`, PCI scan by
+    `pci_cfg_exact`/`pci_scan_covers`/`pci_scan_reach_exact`/
+    `pci_bus0_covers`/`pci_bus1_invisible`/`pci_bind_needs_scan`/
+    `pci_bind_is_bochs`/`pci_bind_ex`/`pci_bar_gate`/
+    `pci_demo_bar_ok` + scan/BAR/bus-1 mutants, 0 sorry, 0 axioms) +
+    bound replay (`Qubes_B.thy` `c_max_qubes = 9`,
+    `Qubes_D.thy` `FDE_C_MAX_THREADS = 11`); svc/rpc tables unchanged.
+  - Layers (binding): L0 address mechanics (kernel maps leaves only,
+    no display code) / L1 display server (gui ELF tid 10 qube 8: binds
+    PCI, owns LFB leaf, serves FILL on EP10, replies R_OK/R_DENY) /
+    L2 paint client (thread A qube 0: no hardware touch — pixels only
+    via server, SENDs FILL to EP10, RECVs reply on EP0) / L3+ S4b/c
+    (future ELFs via server RPCs, own bumps — not built). Invariants:
+    (a) exactly one hardware path (LFB + ECAM windows ONLY in tid-10
+    tables, boot-asserted `GUIMMIO: tid=10 only`; kernel holds no
+    display code — no PCI structs, no pixel math — mechanics only);
+    (b) all cross-layer traffic is addressed IPC with kernel-stamped
+    senders (client→server FILL on EP10 via one qube0→gui QX grant,
+    server→client reply to stamped snd on EP0); (c) least privilege
+    per layer (client names pixels only through validated FILL rects;
+    server touches no other qube's memory; S4b/c add RPCs, never
+    mappings). Server-paints-nothing: every on-screen pixel arrives
+    through a validated FILL (even the test pattern is client-driven;
+    first-valid FILL prints `GUI: fill ok` once via `gui_announced`).
+  - Bump set 11/11/9/40 (all-or-nothing): `V2_CAP_THREADS`/`NTHREADS`
+    10→11, `V2_NEP`/`max_eps` 10→11 (EP10 must exist for the server's
+    RECV; `_Static_assert` 11<=11 holds; `V2_MSG_MAX 4`/`V2_IPC_Q 16`/
+    `V2_AUDIT_MAX 64` unchanged), `V2_QUBES_MAX` 8→9 (`qube_next`
+    ends at 9), `V2_FRAMES_MAX` 32→40 (gui image ~2 pages measured;
+    the LFB is MMIO-leaf range, never pool frames); next growth forces
+    WCET re-analysis + proof replay. One QX grant qube0→gui (tid 10
+    slot 9; covers server replies, A's FILLs ride tid-0's in-place QX
+    root — S3 shape).
+  - REFINEMENTS vs the S4a spec: (a) bochs-display via minimal bus-0
+    PCI scan (QEMU offers bochs/ramfb/virtio-gpu; bochs chosen for the
+    PCI-bar precedent matching the virtio scan; bus-0-only — QEMU
+    places bochs on bus 0, full 256-bus scan is YAGNI until USB);
+    (b) layer split L0/L1/L2 ratified (kernel maps, ELF scans+paints,
+    thread A drives — no kernel display code by construction);
+    (c) server-paints-nothing ratified (maximally layered);
+    (d) `V2_NEP` bump mechanics: `kernel/ipc.h` 10→11 plus stale
+    `V2_THREADS_MAX` 8→11 doc-only fix (unused, grep-verified);
+    (e) U-leaf range sizing: LFB U-window is one l0 table (2 MB,
+    512 pages — covers the 800×600×4 frame = 469 pages with headroom;
+    fills beyond 2 MB fault fail-closed) + ECAM U-window 16 pages RW
+    (BAR mask-probe writes + restore); S-side ECAM megapage stays
+    S-only; `l1_t[10][6]`/`l1_t[10][7]` (`GUI_LFB_UVA 0x80C00000` /
+    `GUI_ECAM_UVA 0x80E00000`, Task-2 VAs implemented verbatim);
+    kernel BAR0 programming (assigns 0x40000000 + MEM/master) is
+    guest PCI enumeration mechanics (QEMU leaves BARs unprogrammed,
+    ELF `pci_bar_ok` rejects base 0 — accepted as mechanics, S4b may
+    move it into the ELF); (f) `eval`-free proofs (`simp`/`arith`/
+    `blast` only — FDE giant-numeral lesson; `pci_demo_bar_ok` simp
+    on `mod` held in Isabelle2025-2 with arith fallback noted).
+  - CLOSED HOLES: `userspace/drivers/vga.c` fiction stays frozen —
+    untouched (shape reference for pixel math only, fixed 0x40000000
+    framebuffer never mapped by the v2 kernel).
+  - KNOWN DEFERRED / honest remainder (not built): S4b (surfaces,
+    compositor, trusted chrome) / S4c (input/keyboard, focus,
+    clipboard RPC, console migration — serial stays primary);
+    `kbd.c` gap stays open (referenced by `run_qemu.sh`, file absent
+    in-tree, owned by S4c); fallback display devices (ramfb,
+    virtio-gpu — bochs-only this stage); multi-bus PCI scan (bus-0
+    only); resolution negotiation (800×600×32 programmed explicitly,
+    no scaling); Stage 4 time/console, USB HCI + `usb` qube,
+    RX-from-wire, live AppVM→firewall→net traffic, §7 non-goals
+    unchanged.
+
 ## 10. Open questions (decided late, deliberately)
 
 1. SBI dependency surface: OpenSBI pin vs. minimal in-house M-shim

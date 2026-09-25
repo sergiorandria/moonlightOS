@@ -35,8 +35,8 @@ does exactly this).
 ## 2. Userspace (freestanding ELFs + libc + drivers)
 
 ```bash
-make -C userspace        # build/hello.elf, build/moonsh.elf, build/linux_demo.elf, build/mem_server.elf, build/qrexec.elf, build/adminvm.elf, build/firewall.elf, build/net.elf, build/vault.elf, build/cryptblk.elf, libc objects
-tools/mkinitrd.sh        # repack kernel/initrd_data.c + kernel/initrd.h (initrd order 0-9: mem_server.elf 0, qrexec.elf 1, adminvm.elf 2, firewall.elf 3, net.elf 4, moonsh.elf 5, ls.elf 6, cat.elf 7, vault.elf 8, cryptblk.elf 9)
+make -C userspace        # build/hello.elf, build/moonsh.elf, build/linux_demo.elf, build/mem_server.elf, build/qrexec.elf, build/adminvm.elf, build/firewall.elf, build/net.elf, build/vault.elf, build/cryptblk.elf, build/gui.elf, libc objects
+tools/mkinitrd.sh        # repack kernel/initrd_data.c + kernel/initrd.h (initrd order 0-10: mem_server.elf 0, qrexec.elf 1, adminvm.elf 2, firewall.elf 3, net.elf 4, moonsh.elf 5, ls.elf 6, cat.elf 7, vault.elf 8, cryptblk.elf 9, gui.elf 10)
 make -C userspace drivers # freestanding rv64 -Werror compile gates for the 8 driver compartments
 make -C userspace clean
 ```
@@ -54,7 +54,8 @@ tools/verify.sh
 
 Stages: host unit tests (ABI regression, servers + shell, driver host-sims,
 freestanding libc, v2 IPC/caps, qube ask-args `test_qargs`, firewall/net
-`test_netfw`, FDE `test_aead` KATs + `test_crypt` layout/slots) → production gates (linker layout: no
+`test_netfw`, FDE `test_aead` KATs + `test_crypt` layout/slots, S4a
+`test_gui` pixel + PCI KATs) → production gates (linker layout: no
 PROGBITS inside the `[_bss,_bss_end)` clear range; `user.c` rodata ban) →
 Isabelle `kernel/isabelle` session (`V2` + `Qubes_A` + `Qubes_B` + `Qubes_C` + `Qubes_D`, anti-vacuity gate) →
 kernel build → QEMU text smoke. All `PASS` required before pushing
@@ -74,7 +75,11 @@ The runner uses `-bios default` (OpenSBI) — the v2 kernel is S-mode; the v1
 (SLIRP) netdev plus `-global virtio-mmio.force-legacy=off` so the
 transports come up modern (version 2); the `-global` also flips the blk
 transport to modern mode, which the block driver already probes/handles
-via `vmm_probe`, so no blk change was needed. It also attaches a 256M raw `virtio-blk` disk
+via `vmm_probe`, so no blk change was needed. It attaches `-device
+bochs-display` (S4a: the display server needs its PCI display device even
+headless — `run_qemu.sh` falls back to bochs when `VGA_ARGS` is empty, and
+`verify.sh [4/4]` uses the same single cmdline; `-display none` keeps the
+hardware, the `GUIMMIO`/`GUI` markers prove it). It also attaches a 256M raw `virtio-blk` disk
 (`kernel/build/moonlight-disk.img`) for the userspace block compartment;
 use `--no-disk` to boot diskless. Expect:
 
@@ -88,6 +93,11 @@ v2: satp Sv39 on, U-bit split (k U=0 / u U=1), SUM=0
 [spawn] net ELF ok
 [spawn] vault ELF ok
 [spawn] cryptblk ELF ok
+GUI: bochs bound
+[spawn] gui ELF ok
+GUIQ: labels ok
+GUIMMIO: tid=10 only
+GUI: up
 QUB: qube0 qube1 up
 VAULT: up
 VAULTQ: labels ok
@@ -128,6 +138,7 @@ MEM / CAP / OK invoke reports, DU: vpn0 mirrored, NP
 QREXEC: admin registered # live handshake (admin HELLO->EP3, RECV EP4 [R_OK], NOTIFY(0,2); thread A WAITs bit 2 post-W1)
 VAULT: live ok # thread-A ask leg: keys.sign T_CALL->ASK->DECIDE->DELIVER to EP8
 AUD: deny rpc=2 # thread-A deny leg: clipboard DENY (R_DENY consumed by A)
+GUI: fill ok # S4a: first validated FILL (thread-A 4-leg pattern: clear + red/green/blue bars)
 no runnable left; parking cpu
 ```
 
