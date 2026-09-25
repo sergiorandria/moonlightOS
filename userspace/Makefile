@@ -47,7 +47,7 @@ CFLAGS_V2 = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
             -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
 LDFLAGS_V2 = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib -T v2_user.ld
 
-all: build/hello.elf build/moonsh.elf build/linux_demo.elf build/ls.elf build/cat.elf build/mem_server.elf build/qrexec.elf build/adminvm.elf build/firewall.elf build/net.elf build/vault.elf build/cryptblk.elf drivers libc
+all: build/hello.elf build/moonsh.elf build/linux_demo.elf build/ls.elf build/cat.elf build/mem_server.elf build/qrexec.elf build/adminvm.elf build/firewall.elf build/net.elf build/vault.elf build/cryptblk.elf build/gui.elf drivers libc
 
 build/mem_server.elf: mem_server/v2_main.c lib/v2_start.S v2_user.ld
 	@mkdir -p build
@@ -82,6 +82,11 @@ build/vault.elf: vault/v2_main.c vault/vault_start.S v2_user.ld
 build/cryptblk.elf: cryptblk/v2_main.c cryptblk/cryptblk_start.S v2_user.ld cryptblk/layout.h cryptblk/slot.h crypt/aead.h crypt/kdf.h crypt/sha256.h crypt/crypt_util.h
 	@mkdir -p build
 	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ cryptblk/v2_main.c cryptblk/cryptblk_start.S
+	ls -lh $@
+
+build/gui.elf: gui/v2_main.c gui/gui_start.S v2_user.ld gui/rect.h gui/pci.h
+	@mkdir -p build
+	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ gui/v2_main.c gui/gui_start.S
 	ls -lh $@
 
 build/hello.elf: example/hello.c $(LIB) lib/start.S user.ld
