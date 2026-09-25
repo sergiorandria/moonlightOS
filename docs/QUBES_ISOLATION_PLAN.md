@@ -296,15 +296,33 @@ usb         AdminVM     device.attach ask   "attach USB device?"
   policy engine and all untrusted-input parsers.
 - **S7 — Boot trust + release.** DICE wired, sealed vault, recovery flow,
   reproducible release artifacts, first versioned release.
-- **Deferred past S2 (honest future work, not built):** (B) audit-cap
-  `V2_AUDIT_MAX=64` overflow modeling (spec audit lists are unbounded;
-  proof owner: Qubes_A/B extension, S6 replay); (C) qube-lifecycle
-  alias follow-ups (kernel owner: QDESTROY/caps follow-ups); (D)
-  demo-convention brittleness (minor; harness owner:
-  `verify.sh`/`run_qemu.sh` hardening). Deferred-A (live T_CALL→
-  ASK→DECIDE→DELIVER traffic) BUILT 2026-09-24 — see the S2 note
-  above; it closed EP0 misdelivery, dead admin registration, and
-  collapsed-dst misrouting.
+- **Deferred-B/C BUILT 2026-09-25; D noted (harness-owned remainder
+  still open):** (B) audit-cap `V2_AUDIT_MAX=64` overflow modeling —
+  fail-closed allow via `qube_audit_room`/`qube_audit_allow`
+  (`kernel/qube.h`) + the two broker allow arms
+  (`userspace/qrexec_server/v2_main.c`); host test extended
+  (`tests/test_qube_policy.c`, `verify.sh [1f]`); self-test marker
+  `AUD: full ok` (`kernel/kboot.c`, `verify.sh [4/4]`); model
+  `max_audit = 64` + `audit_full_blocks_allow` / deny-still-proceeds
+  (`decide_always_dequeues`, `deny_appends_or_drops`) + preservation
+  (`audit_preserved_capped`) in `kernel/isabelle/Qubes_A.thy` with
+  C-mirrors (`c_full_blocks_allow`, `c_q_decide`) in `Qubes_B.thy`;
+  destroy is the take-prefix rule. Non-allow-arm `qube_audit`
+  returns are intentionally unchecked (best-effort by design). (C)
+  qube-lifecycle aliases — `T_DEAD 3` distinct from `T_BLOCKED 2`
+  (`kernel/kboot.c`), all state sites audited, the 3 SPAWN/FORK/
+  QCREATE scans simplified to `state == T_DEAD` alone, gated by the
+  byte-identical transcript (zero `verify.sh` change). (D)
+  demo-convention brittleness — still open (minor; harness owner:
+  `verify.sh`/`run_qemu.sh` hardening); the other 8 deferred minors
+  are addressed (one rejected with reviewer sign-off — empty-take
+  bare-`continue`, design spec §4 item 8 — the rest in code/lemmas/
+  comments). Full disposition + closed holes (silent audit drop,
+  alias fragility) + honest remainder in `V2_DESIGN.md` §9
+  gap-closure entry. Deferred-A (live T_CALL→ASK→DECIDE→DELIVER
+  traffic) BUILT 2026-09-24 — see the S2 note above; it closed EP0
+  misdelivery, dead admin registration, and collapsed-dst
+  misrouting.
 
 ## 12. Hardware + emulation requirements
 

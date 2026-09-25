@@ -209,9 +209,12 @@ per-function where not).
     msg-bounds) across all four ops, executable ping-pong/trunc/notify/
     FIFO demos pinned by `eval`, mutants (forged audit entry, oversize
     msg, lying silent-truncation variant). Implementation: `kernel/`
-    static EP0 (`ipc.h` queues + U-range validation, host-tested by
+    static endpoint (`ipc.h` queues + U-range validation, host-tested by
     `tests/test_v2ipc.c`: adversarial lengths, cross-region, unaligned,
-    queue-full, truncation), SUM-windowed `u_copy_in`/`u_copy_out`
+    queue-full, truncation) — EP0 at the time, replayed per-thread
+    addressed since deferred-A (separation pinned by the unconditional
+    `ep_separation_send` / `ep_separation_recv` + `no_cross_deliver`
+    in `V2_C.thy`), SUM-windowed `u_copy_in`/`u_copy_out`
     (validate-then-copy; SEND needs R, RECV needs W), UABI
     yield/putc/park/send/recv/notify/wait. Demo transcript: `B00pn`
     (ping from stamped sender 0, no trunc), `A10pg`, `W1` (notify bits),
@@ -232,7 +235,8 @@ per-function where not).
     (V2-UABI freestanding ELF, `v2_user.ld` BASE = frame window
     0x80800000) packed first by `tools/mkinitrd.sh` (index 0 + TOC);
     the kernel SPAWNs index 0 into thread 2 at boot (`[spawn] mem_server
-    ELF ok`, `MEM-SRV` banner, EP0 service loop). Loader fixes along the
+    ELF ok`, `MEM-SRV` banner, endpoint service loop — addressed
+    per-thread since deferred-A). Loader fixes along the
     way: window-base vpn translation, allocator-rights specialization,
     PTE sync + X for execute segments (W^X kept); ELF_MAP/SPAWN/EXEC take
     initrd indexes; the initrd blob stays in the kernel image (no pool
@@ -268,7 +272,8 @@ per-function where not).
     ask_full pins, `c_q_destroy_refines`, preservation + mutants).
 - **Qubes S2 — qrexec + AdminVM.**
   - BUILT 2026-09-19: `userspace/qrexec_server/v2_main.c` (typed RPC over
-    EP0, boot policy work→vault `keys.sign` ask / `clipboard` deny,
+    addressed endpoints — EP0 at the time, per-thread since deferred-A;
+    boot policy work→vault `keys.sign` ask / `clipboard` deny,
     `QREXEC:`/`AUD:` transcript) + `userspace/adminvm/v2_main.c`
     (HELLO-register, T_ASK prompt, T_DECIDE verdict), both packed as
     initrd indexes 1–2 and SPAWNed at boot (`[spawn] qrexec/adminvm ELF
@@ -477,16 +482,106 @@ per-function where not).
     collapsed-dst misrouting — every deliver resolved to
     `svc_of_qube[1] = 2` = mem_server, so the vault marker was
     unreachable.
-  - KNOWN DEFERRED / honest remainder (not built): (B) audit-cap
-    `V2_AUDIT_MAX=64` overflow modeling — spec audit lists are
-    unbounded (proof owner: Qubes_A/B extension, S6 replay); (C)
-    qube-lifecycle alias follow-ups (kernel owner: QDESTROY/caps
-    follow-ups); (D) demo-convention brittleness — marker-text coupling
-    between ELFs and the smoke gate (harness owner:
-    `verify.sh`/`run_qemu.sh` hardening). Live AppVM→firewall→net
+  - KNOWN DEFERRED / honest remainder: (B) audit-cap
+    `V2_AUDIT_MAX=64` overflow modeling — BUILT 2026-09-25, see the
+    gap-closure entry below (fail-closed allow, `max_audit` +
+    `audit_full_blocks_allow`); (C) qube-lifecycle alias follow-ups —
+    BUILT 2026-09-25, see below (`T_DEAD 3`, state-alone scans); (D)
+    demo-convention brittleness — still open (minor; harness owner:
+    `verify.sh`/`run_qemu.sh` hardening): marker-text coupling
+    between ELFs and the smoke gate. Live AppVM→firewall→net
     traffic stays ungated (`NET: fwd ok` specified but no phantom
     assert — S3 entry above); RX-from-wire, USB HCI + `usb` qube, and
     §7 non-goals unchanged.
+- **Audit-cap + lifecycle-alias gap closure (deferred-B/C/D).**
+  - BUILT 2026-09-25 (B fail-closed allow): `kernel/qube.h` helpers
+    `qube_audit_room` (nonzero iff `naudit < V2_AUDIT_MAX 64`) +
+    `qube_audit_allow` (OVERFLOW `-2` with zero state change when
+    full, else the allow record via `qube_audit(...,1)`); broker
+    (`userspace/qrexec_server/v2_main.c`) allow-forward arm gated on
+    the helper (full → deny-shape `AUD: deny rpc=` print + `R_DENY`
+    reply, no `T_DELIVER` SEND) and approve-deliver arm room-checked
+    before `qube_decide_idx` (full → dequeue-as-deny best-effort,
+    deny-shape print, no SEND, no reply — the decider never waits);
+    deny arms untouched. Host-pinned by the extended
+    `tests/test_qube_policy.c` (fill-to-64, 65th OVERFLOW with entries
+    intact, helper refuses at cap and appends below cap, gated in
+    `verify.sh [1f]`); smoke-pinned by the in-kernel self-test leg
+    (`kernel/kboot.c`, local struct, `/* bound: V2_AUDIT_MAX */`)
+    printing `AUD: full ok` (gated in `verify.sh [4/4]`). Proved in
+    `kernel/isabelle/Qubes_A.thy` (`max_audit = 64`, `audit_room`,
+    `a_bounded`; `audit_full_blocks_allow` — full audit + Allow
+    decision ⇒ `q_call` returns the state unchanged, so there is no
+    actuation without a record; `deny_appends_or_drops` +
+    `decide_always_dequeues` — dequeue unconditional, record iff
+    room; `audit_preserved_capped` over all four ops; full-ring
+    mutants + `replicate 64` simp evals) with C-mirrors in
+    `kernel/isabelle/Qubes_B.thy` (`c_full_blocks_allow`, new
+    `c_q_decide` + `c_q_decide_refines` + `c_decide_always_dequeues`).
+    Destroy records the fitting prefix, not whole-batch-iff-room:
+    `q_destroy`/`c_q_destroy` remove every matching pending entry
+    while extending the audit by `take (max_audit - length audit)
+    newrecs` (matches the C per-record `qube_audit` loop exactly —
+    `destroy_audit_capped` in `Qubes_A.thy`, `c_destroy_filter` in
+    `Qubes_B.thy`). Non-allow-arm `qube_audit` returns are
+    intentionally unchecked (best-effort by design: denial is the safe
+    direction and proceeds with or without a record; a full ring just
+    drops the record — the same discipline as the pre-existing T_CALL
+    deny arms).
+  - BUILT 2026-09-25 (C T_DEAD disambiguation): `kernel/kboot.c`
+    `#define T_DEAD 3` (distinct from `T_BLOCKED 2`; `T_RUNNABLE 0` /
+    `T_PARKED 1` unchanged); every state site audited — scheduler
+    skip, halt-no-runnable detection, IRQ-wake `T_BLOCKED` checks,
+    park/wake sets, and `wait_kind`-keyed WAIT/NOTIFY paths all
+    read-only or semantically unchanged; the 3 SPAWN/FORK/QCREATE
+    reuse scans simplified to `state == T_DEAD` alone
+    (`/* deferred-C: T_DEAD is distinct; state alone frees the slot */`
+    — a rendezvous-blocked thread is `T_BLOCKED 2 ≠ 3` and can no
+    longer match). Gated by the byte-identical transcript: zero
+    `verify.sh` change, the existing suite (incl. `AUD: full ok`)
+    passes unchanged.
+  - D (9 deferred minors, addressed 2026-09-25): (1) `/* bound:
+    V2_IPC_Q */` on the 4 loops (`tests/test_v2ipc.c` ×3 +
+    `kernel/ipc.h:102`); (2) QDESTROY sweep re-indent, whitespace-only
+    (`git diff -w` collapses to the 2 comment hunks); (3) stale EP0
+    comments → addressed-EP wording (11 sites across `kernel/kboot.c`,
+    `kernel/user.c`, 6 userspace servers); (4) S3 KNOWN DEFERRED "over
+    EP0" → "over addressed EPs" (item stays open); (5)
+    `ipc_demo_same_ep` differentiated (`[5]` vs ping's `[7,8]`) +
+    `ipc_bad_snoop_differs` asserts `ok1` (`V2_C.thy`); (6) T_DECIDE
+    invalid-dst arm gains the `qube_audit(...,0)` deny-record
+    (`userspace/qrexec_server/v2_main.c` — dead by construction, dst
+    validated 1..7 at enqueue, fail-closed regardless); (7)
+    double-notify eval pins (`ipc_demo_notify_take_clears`,
+    `ipc_demo_wait_reblocks` — UABI wake-delivery KAT for the
+    `regs[10]=pending` fix); (8) empty-take bare-`continue` REJECTED —
+    the path is reachable (zero-length SEND is legal per
+    `v2_len_ok`, RECV can return 0 with a live stamped sender; bare
+    `continue` would drop the reply and hang a rendezvous waiter), so
+    the current queuing error replies STAND — recorded in the design
+    spec §4 item 8, cited here, not relitigated; (9)
+    `uctx_t.state` comment extended (`3 = Dead`). The remaining
+    `ok1`-dropping warts (`ipc_bad_noguard_differs`,
+    `ipc_demo_pong`) are fixed here: both now assert `ok1`
+    (`V2_C.thy`, `isabelle build` clean).
+  - REFINEMENTS vs the gaps spec: (a) destroy is take-prefix, not
+    whole-batch-iff-room (fidelity to the C per-record loop — the
+    only reading under which `a_bounded` preservation proves); (b)
+    `audit_preserved_capped` closes `by metis` (16 per-op rules;
+    `blast` refused the conjunction); (c) T_DECIDE invalid-dst audit
+    attributes the pending entry's original src, not the decider.
+  - CLOSED HOLES (both latent, now unstatable): (a) silent audit drop
+    — allows proceeded unaudited past 64 entries (now fail-closed
+    DENY with no record, history never silently extended); (b) alias
+    fragility — `T_DEAD == T_BLOCKED` safe only via a triple
+    conjunction at 3 scan sites (now a distinct value with
+    state-alone scans).
+  - KNOWN DEFERRED / honest remainder (not built): S4 GUI, Stage 4
+    time/console, USB HCI + `usb` qube, RX-from-wire CI assertions,
+    live AppVM→firewall→net traffic (`NET: fwd ok` specified but
+    ungated — no phantom assert), firewall-compromise containment
+    (S6), §7 non-goals unchanged; demo-convention brittleness (D,
+    harness owner: `verify.sh`/`run_qemu.sh` hardening).
 
 ## 10. Open questions (decided late, deliberately)
 
@@ -498,6 +593,7 @@ per-function where not).
    in Stage 3).
 4. Whether `Seal` survives as a syscall or becomes an `Invoke` op
    (spec churn only — decide in Stage 0, freeze after).
-5. Audit-cap modeling + qube-lifecycle aliases (future work, see §9
-   live-traffic KNOWN DEFERRED items B/C); live T_CALL→ASK→DECIDE→
-   DELIVER traffic BUILT 2026-09-24 (deferred-A entry in §9).
+5. Audit-cap modeling + qube-lifecycle aliases BUILT 2026-09-25
+   (gap-closure entry in §9: fail-closed allow + `T_DEAD 3`);
+   live T_CALL→ASK→DECIDE→DELIVER traffic BUILT 2026-09-24
+   (deferred-A entry in §9).

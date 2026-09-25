@@ -92,8 +92,9 @@ an explicit overflow flag (`ovf`), never silent cut. The copy discipline is
 validate-then-copy through a bounded loop with `SUM` toggled only for that
 loop.
 
-Proved by `ep_separation_send` / `ep_separation_recv` (ops on EP i
-leave every EP j≠i bit-identical) + `no_cross_deliver` (RECV returns
+Proved by `ep_separation_send` / `ep_separation_recv` (unconditional:
+ops on EP i leave every EP j≠i bit-identical — V2_C models endpoints
+only, no room premises) + `no_cross_deliver` (RECV returns
 only own-EP bytes) in `kernel/isabelle/V2_C.thy` (0 sorry, 0 axioms,
 snoop/foreign mutants + eval pins); host-tested by the extended
 `tests/test_v2ipc.c` (gate + cross-EP invisibility + per-EP waiter
@@ -122,6 +123,42 @@ slot-9 line; one grant added, qube0→admin (tid 4 slot 9). Smoke
 markers (`verify.sh [4/4]`): `QREXEC: admin registered` (genuinely
 live — R_OK consumed + NOTIFY observed via the downstream chain) +
 `VAULT: live ok` + `AUD: deny rpc=2`.
+
+### Audit cap (fail-closed allow, built)
+
+The audit ring holds `V2_AUDIT_MAX 64` records (`kernel/qube.h`).
+Two helpers sit beside `qube_audit`: `qube_audit_room` (nonzero iff
+`naudit < V2_AUDIT_MAX`; deny paths never consult it) and
+`qube_audit_allow` (OVERFLOW with zero state change when full, else
+the allow record). The broker's two allow-actuating arms honor them
+(`userspace/qrexec_server/v2_main.c`): allow-forward denies (deny
+print + `R_DENY`, no SEND) when the record cannot land, and
+approve-deliver dequeues-as-deny best-effort when the ring is full.
+Rule: no ALLOW without an audit record; denials proceed with or
+without one. Non-allow-arm `qube_audit` returns are therefore
+intentionally unchecked — best-effort by design, never a wedge (a
+full ring just drops the record). An in-kernel self-test leg models
+the cap on a local policy (64 appends ok, 65th OVERFLOW intact,
+helper refuses/appends) and prints `AUD: full ok` (`kernel/kboot.c`,
+gated in `verify.sh [4/4]`). The model caps at `max_audit = 64`
+(`Qubes_A.thy`: `audit_full_blocks_allow`, `deny_appends_or_drops`,
+`decide_always_dequeues`, `audit_preserved_capped`; C-mirrors
+`c_full_blocks_allow`, `c_q_decide` in `Qubes_B.thy`). Destroy takes
+the fitting prefix (`take (max_audit - length audit) newrecs`,
+matching the C per-record loop) while removing every matching
+pending entry.
+
+### Thread states (T_DEAD distinct, built)
+
+`T_RUNNABLE 0`, `T_PARKED 1`, `T_BLOCKED 2` (IPC), `T_DEAD 3`
+(QDESTROY) (`kernel/kboot.c` — `T_DEAD` is distinct from `T_BLOCKED`
+since deferred-C). Slot-reuse scans (SPAWN ×2 incl. FORK, QCREATE ×1)
+key on `state == T_DEAD` alone: a rendezvous-blocked thread
+(`T_BLOCKED 2 ≠ 3`) can never match, so no alias conjuncts are
+needed. Scheduler skip, halt-no-runnable detection, and the IRQ-wake
+`T_BLOCKED` checks treat DEAD as non-runnable and unwakeable, as
+before; park/wake sets and `wait_kind`-keyed WAIT/NOTIFY paths are
+unchanged.
 
 ### Qubes labels + raw gate (S1, built)
 
@@ -279,7 +316,9 @@ validates the ABI headers).
     (test_libc + newlibc + batch4/5/6), v2 IPC + caps (host-compiled from
     `ipc.h`/`caps.h`; `test_v2ipc` extended with EP-gate + cross-EP
     isolation), qube labels + policy (`test_qlabels`,
-    `test_qube_policy` from `qube.h`), ask args (`test_qargs`), firewall +
+    `test_qube_policy` from `qube.h` — extended with the audit-cap
+    block: fill-to-64, 65th OVERFLOW with entries intact, helper
+    refuses at cap and appends below it), ask args (`test_qargs`), firewall +
     net plane (`test_netfw` over `fw.h`), FDE crypto + layout/slots
     (`test_aead` KATs over `userspace/crypt/`, `test_crypt` over
     `cryptblk/layout.h` + `slot.h`).
@@ -296,8 +335,9 @@ validates the ABI headers).
    `MEM-SRV`, `MEM`/`CAP`/`OK` invoke reports, `DU: vpn0 mirrored`,
    `NP`, `[spawn] qrexec/adminvm ELF ok`, `QUB: qube0 qube1 up`
    (base-qube marker; brokers/qubes 2-3 covered by the `[spawn]` lines),
-   `QUB: xread denied`, `QREXEC: ask` / `QREXEC: allow` / `QREXEC: deny`, `AUD: 3 entries`,
-   `[spawn] firewall/net ELF ok`, `NETQ: labels ok`, `FW: allow` /
+    `QUB: xread denied`, `QREXEC: ask` / `QREXEC: allow` / `QREXEC: deny`, `AUD: 3 entries`,
+    `AUD: full ok` (audit-cap self-test leg),
+    `[spawn] firewall/net ELF ok`, `NETQ: labels ok`, `FW: allow` /
    `FW: deny`, `FW: up`, `NET: up`, `LEAK: denied`, `SPOOF: ignored`,
    `AUD:`, `NETMMIO: tid=6 only`, `NET: link up`, `NET: tx ok`,
     `NET: irq ok`, `QREXEC: admin registered` (live handshake),

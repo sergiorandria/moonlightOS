@@ -736,8 +736,8 @@ lemma ipc_bad_snoop_differs:
    closed: the own-EP rule is observable. *)
 lemma ipc_bad_noguard_differs:
   "let (st1, ok1) = c_send 0 0 [7, 8] init_cstate in
-   (snd (c_recv 1 0 4 st1), snd (ipc_bad_noguard 1 0 4 st1)) =
-   ((0, [], True), (0, [], False))"
+   (ok1, snd (c_recv 1 0 4 st1), snd (ipc_bad_noguard 1 0 4 st1)) =
+   (True, (0, [], True), (0, [], False))"
   by eval
 
 (* ---- Executable demo: ping-pong between threads 0 and 1 over EPs ---- *)
@@ -759,8 +759,8 @@ lemma ipc_demo_pong:
        (st2, res2) = c_recv 1 1 4 st1;
        (st3, ok3) = c_send 1 0 [9] st2;
        (st4, res4) = c_recv 0 0 4 st3
-   in (ok3, res4, got st4) =
-      (True, (1, [9], False), [(0, [7, 8]), (1, [9])])"
+   in (ok1, ok3, res4, got st4) =
+      (True, True, (1, [9], False), [(0, [7, 8]), (1, [9])])"
   by eval
 
 lemma ipc_demo_trunc:

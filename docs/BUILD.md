@@ -108,6 +108,7 @@ QREXEC: ask
 QREXEC: allow
 QREXEC: deny
 AUD: 3 entries # S2 audit leg
+AUD: full ok # audit-cap self-test (64 appends ok, 65th OVERFLOW intact, helper refuses/appends)
 FW: allow
 FW: deny
 LEAK: denied
