@@ -37,7 +37,7 @@ int main(void) {
     /* Audit cap: fail-closed allow (deferred-B). Fill via qube_audit. */
     {
         v2_qpolicy_t full = {0};
-        int i, rc;
+        int i;
         for (i = 0; i < 64; i++) /* bound: V2_AUDIT_MAX */
             CHECK(qube_audit(&full, 0, 6, 1, 1) == 0);
         CHECK(full.naudit == 64);
@@ -53,7 +53,6 @@ int main(void) {
         CHECK(qube_audit_room(&full) != 0);
         CHECK(qube_audit_allow(&full, 0, 6, 1) == 0);
         CHECK(full.naudit == 64);
-        (void)rc;
     }
     printf("PASS: test_qube_policy\n");
     return 0;

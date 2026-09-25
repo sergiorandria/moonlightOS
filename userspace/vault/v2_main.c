@@ -8,7 +8,7 @@
  * disk frames. Boot state is a zeroed KEK table (8 slots: label+key, none
  * valid) and an empty VMK slot (invalid until format/unlock, Task 4+).
  *
- * EP0 protocol handled here (all messages <= V2_MSG_MAX = 4 words):
+ * Addressed-EP protocol handled here (received on EP8; all messages <= V2_MSG_MAX = 4 words):
  *   T_CALL    [1, rpc, arg0, arg1]  any -> vault (ALWAYS INVALID, see below)
  *   T_DELIVER [5, 7, slot, recslot] qrexec -> vault (approved unwrap)
  *   T_DELIVER [5, 8, slot, kekslot] qrexec -> vault (approved rewrap)

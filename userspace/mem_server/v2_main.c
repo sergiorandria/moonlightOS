@@ -106,7 +106,7 @@ void mem_server_main(void)
     u_puts("MEM-SRV\n");
 
     /* Service loop: wait for requests, handle them, reply. Runs after the
-     * A/B ping-pong has parked, so EP0 is quiet (no message stealing). */
+     * A/B ping-pong has parked, so EPs 0-1 are quiet (no message stealing). */
     for (;;) {
         uint64_t buf[4];
         unsigned long snd = 0;

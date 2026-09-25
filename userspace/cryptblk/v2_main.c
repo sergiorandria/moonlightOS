@@ -9,7 +9,7 @@
  * two views: /dev/blk0 (raw ciphertext, any label) and the file tree
  * (plaintext post-unlock, owner-label only).
  *
- * EP0 protocol handled here (all messages <= V2_MSG_MAX = 4 words):
+ * Addressed-EP protocol handled here (received on EP9; all messages <= V2_MSG_MAX = 4 words):
  *   T_CALL [1, op, a, b]  any QX-holding qube -> cryptblk (direct FS ops:
  *     CR_FS_OPEN/READ/WRITE/CLOSE/STAT/BLK0 on the fixed demo files;
  *     data moves one 8-byte word per reply — block-granular FS over
@@ -25,8 +25,9 @@
  *
  * Boot demo (self-contained, single-flight, net-phase2 precedent): the
  * ELF brings up its OWN driver + disk + TEST_KEYS unlock at boot and
- * prints the CRYPT: markers. It performs NO EP0 SEND/RECV during the
- * demo: EP0 is a single rendezvous (oldest waiter wins), so a boot-time
+ * prints the CRYPT: markers. It performs no addressed-EP SEND/RECV
+ * during the demo: each EP is a single rendezvous (oldest waiter wins),
+ * so a boot-time
  * SEND from here would land on an unrelated waiter (mem_server blocks
  * first) and wedge the demo. The vault-mediated T_KEY release path below
  * (key_consume) is the production shape — same grant slot, same ack tag,

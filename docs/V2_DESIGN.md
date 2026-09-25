@@ -344,7 +344,7 @@ per-function where not).
     `test_qargs` round-trip). Arg-less RPCs (`keys.sign`) forward zeros,
     unaffected.
   - KNOWN DEFERRED (not built): live end-to-end AppVM→firewall→net traffic
-    over EP0 (the smoke drives the model demo + NIC self-test; `NET: fwd
+    over addressed EPs (the smoke drives the model demo + NIC self-test; `NET: fwd
     ok` is specified but ungated — no phantom assert); USB HCI + `usb`
     qube; RX-from-wire CI assertions; firewall-compromise containment
     (S6).

@@ -1,7 +1,7 @@
 /* v2 S-mode kernel (Stage 2): Sv39 U-bit tables, stvec traps, SBI console,
  * timer-preemptive lowest-Runnable scheduler (mirrors V2_A.sched_step),
- * two U-mode threads, blocking rendezvous IPC on one static endpoint EP0
- * + notifications (mirrors V2_C: c_send/c_recv/c_notify/c_wait), fault
+ * two U-mode threads, blocking rendezvous IPC on addressed endpoints
+ * (EP i owned by tid i) + notifications (mirrors V2_C: c_send/c_recv/c_notify/c_wait), fault
  * containment. No PMP changes (firmware owns); SUM toggled only inside
  * copy_from/to_user after range validation (S never touches U pages
  * otherwise: stacks filled pre-MMU, console via SBI-forward). */
@@ -367,7 +367,7 @@ int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
 typedef struct {
     uint64_t regs[32];
     uint64_t sepc;
-    int state; /* 0 = Runnable, 1 = Parked, 2 = Blocked (IPC) */
+    int state; /* 0 = Runnable, 1 = Parked, 2 = Blocked (IPC), 3 = Dead (QDESTROY) */
     /* IPC (mirrors V2_C wk/sendq/recvq): RECV-blocked threads park their
      * validated (ptr, cap) here for later copy-out; queued senders live
      * in eps[ep].sendq (kernel memory, no U pointers retained -> no TOCTOU). */
@@ -1375,34 +1375,34 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     for (int e = 0; e < V2_NEP; e++) { /* bound: V2_NEP (10) */
                         v2_ep_t *ep = &eps[e];
                         int w = 0;
-                    for (int i = 0; i < ep->send_len; i++) { /* bound: V2_IPC_Q */
-                        int idx = (ep->send_head + i) % V2_IPC_Q;
-                        unsigned long s = ep->sendq[idx].sender;
-                        if (s < (unsigned long)NTHREADS &&
-                            qube_of[s] == (uint8_t)label)
-                            continue; /* drop: sender dies below */
-                        if (w != i) {
-                            int dst = (ep->send_head + w) % V2_IPC_Q;
-                            ep->sendq[dst] = ep->sendq[idx];
+                        for (int i = 0; i < ep->send_len; i++) { /* bound: V2_IPC_Q */
+                            int idx = (ep->send_head + i) % V2_IPC_Q;
+                            unsigned long s = ep->sendq[idx].sender;
+                            if (s < (unsigned long)NTHREADS &&
+                                qube_of[s] == (uint8_t)label)
+                                continue; /* drop: sender dies below */
+                            if (w != i) {
+                                int dst = (ep->send_head + w) % V2_IPC_Q;
+                                ep->sendq[dst] = ep->sendq[idx];
+                            }
+                            w++;
                         }
-                        w++;
-                    }
-                    ep->send_len = w;
-                    w = 0;
-                    for (int i = 0; i < ep->recv_len; i++) { /* bound: V2_IPC_Q */
-                        int idx = (ep->recv_head + i) % V2_IPC_Q;
-                        unsigned long tid = ep->recvq[idx];
-                        if (tid < (unsigned long)NTHREADS &&
-                            qube_of[tid] == (uint8_t)label)
-                            continue; /* drop: waiter dies below */
-                        if (w != i) {
-                            int dst = (ep->recv_head + w) % V2_IPC_Q;
-                            ep->recvq[dst] = ep->recvq[idx];
+                        ep->send_len = w;
+                        w = 0;
+                        for (int i = 0; i < ep->recv_len; i++) { /* bound: V2_IPC_Q */
+                            int idx = (ep->recv_head + i) % V2_IPC_Q;
+                            unsigned long tid = ep->recvq[idx];
+                            if (tid < (unsigned long)NTHREADS &&
+                                qube_of[tid] == (uint8_t)label)
+                                continue; /* drop: waiter dies below */
+                            if (w != i) {
+                                int dst = (ep->recv_head + w) % V2_IPC_Q;
+                                ep->recvq[dst] = ep->recvq[idx];
+                            }
+                            w++;
                         }
-                        w++;
-                    }
-                    ep->recv_len = w;
-                    }
+                        ep->recv_len = w;
+                        }
                 }
                 /* Revoke-drain caps, clear the whole frame window in
                  * hardware, park the threads. */

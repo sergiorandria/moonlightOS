@@ -69,10 +69,10 @@ int main(void) {
     /* Queue-full is fail-closed, never silent drop. */
     v2_ep_init(&ep);
     w[0] = 1;
-    for (int i = 0; i < V2_IPC_Q; i++)
+    for (int i = 0; i < V2_IPC_Q; i++) /* bound: V2_IPC_Q */
         CHECK(v2_q_send(&ep, 0, w, 1) == V2_OK);
     CHECK(v2_q_send(&ep, 0, w, 1) == V2_ERR_OVERFLOW);
-    for (int i = 0; i < V2_IPC_Q; i++)
+    for (int i = 0; i < V2_IPC_Q; i++) /* bound: V2_IPC_Q */
         CHECK(v2_q_wait(&ep, 0) == V2_OK);
     CHECK(v2_q_wait(&ep, 0) == V2_ERR_OVERFLOW);
 
@@ -117,7 +117,7 @@ int main(void) {
         /* Queue-full on one EP leaves the other working. */
         v2_ep_init(&epa);
         v2_ep_init(&epb);
-        for (int i = 0; i < V2_IPC_Q; i++)
+        for (int i = 0; i < V2_IPC_Q; i++) /* bound: V2_IPC_Q */
             CHECK(v2_q_send(&epa, 0, w, 1) == V2_OK);
         CHECK(v2_q_send(&epa, 0, w, 1) == V2_ERR_OVERFLOW);
         CHECK(v2_q_send(&epb, 0, w, 1) == V2_OK);

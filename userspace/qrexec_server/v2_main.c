@@ -4,7 +4,7 @@
  * at the frame-window base via userspace/v2_user.ld; entry is _v2_start
  * (qrexec_server/qrexec_start.S) which sets gp and calls qrexec_main.
  *
- * Role: every cross-qube call arrives on EP0 as T_CALL. The kernel stamps
+ * Role: every cross-qube call arrives on EP3 as T_CALL. The kernel stamps
  * the sender tid (a1) and sender qube label (a2) into RECV results, so the
  * client label is unforgable: policy matches on the stamped qube, never on
  * client-supplied bytes (anti-spoof). The payload hash is pinned at call
@@ -12,7 +12,7 @@
  * present the same hash or the decide is dropped (re-checked, never
  * trusted).
  *
- * EP0 protocol (all messages <= V2_MSG_MAX = 4 words):
+ * Addressed-EP protocol (received on EP3; all messages <= V2_MSG_MAX = 4 words):
  *   T_CALL    [1, rpc, arg0, arg1]      client -> qrexec
  *   T_DECIDE  [2, idx, approve, hash]   adminvm -> qrexec (hash = pinned)
  *   T_ASK     [3, idx, rpc, hash]       qrexec -> adminvm (queued ask)
@@ -245,6 +245,7 @@ void qrexec_main(void)
                     unsigned long a0 = pol.pending[idx].arg0;
                     unsigned long a1 = pol.pending[idx].arg1;
                     unsigned long dstq = pol.pending[idx].dst;
+                    unsigned long srcq = pol.pending[idx].src;
                     if (!qube_audit_room(&pol)) {
                         /* Audit full: dequeue as deny (record best-effort),
                          * deny-shape print, no SEND, no reply. */
@@ -263,6 +264,7 @@ void qrexec_main(void)
                             fwd[3] = a1;
                             if (dstq >= 8UL || dstq == 0UL) {
                                 /* Never a service: deny-audit, no SEND. */
+                                qube_audit(&pol, srcq, dstq, rpc, 0);
                                 u_puts("AUD: deny rpc=");
                                 u_putdec((long)rpc);
                                 u_putc('\n');
@@ -302,7 +304,7 @@ void qrexec_main(void)
              * svc 0 is invalid (demo qube, never a deliver target);
              * rpc >= 10 resolves to qube 8 (no such qube). Either way:
              * INVALID + deny-audit, no deliver SEND (fail closed). The
-             * caller still gets R_DENY: it rendezvous-waits on EP0. */
+             * caller still gets R_DENY: it rendezvous-waits on its own EP. */
             unsigned long svc = (rpc < 10) ? rpc_svc[rpc] : 8;
             /* Pin the hash over the received words at call time
              * (24 bytes max, within the <= 512 caller-len bound). */

@@ -728,8 +728,8 @@ definition init6 :: cstate where
    op returns none: no_cross_deliver is falsifiable. *)
 lemma ipc_bad_snoop_differs:
   "let (st1, ok1) = c_send 0 3 [7, 8] init6 in
-   (snd (ipc_bad_snoop 5 3 4 st1), snd (c_recv 5 5 4 st1)) =
-   ((0, [7, 8], False), (0, [], False))"
+   (ok1, snd (ipc_bad_snoop 5 3 4 st1), snd (c_recv 5 5 4 st1)) =
+   (True, (0, [7, 8], False), (0, [], False))"
   by eval
 
 (* The guard-drop mutant answers a foreign call while the real op fails
@@ -789,11 +789,12 @@ lemma ipc_demo_fifo:
 (* ---- Executable pins: separation (same-EP round-trip, cross-EP
    invisibility, per-EP full queue) + foreign noop ---- *)
 
-(* Same-EP round-trip: thread 0 sends to EP1, thread 1 receives EP1. *)
+(* Same-EP round-trip: thread 0 sends to EP1, thread 1 receives EP1.
+   Distinct payload from ipc_demo_ping above (both pin the shape). *)
 lemma ipc_demo_same_ep:
-  "let (st1, ok1) = c_send 0 1 [7, 8] init_cstate;
+  "let (st1, ok1) = c_send 0 1 [5] init_cstate;
        (st2, res2) = c_recv 1 1 4 st1
-   in (ok1, res2, got st2) = (True, (0, [7, 8], False), [(0, [7, 8])])"
+   in (ok1, res2, got st2) = (True, (0, [5], False), [(0, [5])])"
   by eval
 
 (* Cross-EP invisibility: bytes queued on EP3 are invisible to a RECV on
@@ -825,6 +826,25 @@ lemma ipc_demo_full_isolated:
        (st1, ok1) = c_send 0 1 [2] full0
    in (okF, ok1, length (sendq stF 0), length (sendq st1 1)) =
       (False, True, 16, 1)"
+  by eval
+
+(* ---- Executable pins: notify take-and-clear + WAIT re-blocks (UABI
+   wake-delivery KAT: WAIT takes pending signals into regs[10] and
+   clears them, so a second WAIT with nothing pending suspends) ---- *)
+
+(* WAIT takes pending signals and clears them (wk back to 0). *)
+lemma ipc_demo_notify_take_clears:
+  "let st1 = c_notify 1 3 init_cstate;
+       (st2, bits) = c_wait 1 st1
+   in (bits, ntfy st2 (1::nat), wk st2 (1::nat)) = ({3}, {}, 0)"
+  by eval
+
+(* A second WAIT with nothing pending suspends again (wk = 3, no bits). *)
+lemma ipc_demo_wait_reblocks:
+  "let st1 = c_notify 1 3 init_cstate;
+       (st2, bits) = c_wait 1 st1;
+       (st3, bits2) = c_wait 1 st2
+   in (bits, bits2, wk st3 (1::nat)) = ({3}, {}, 3)"
   by eval
 
 end

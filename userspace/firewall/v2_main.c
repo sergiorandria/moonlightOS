@@ -18,7 +18,7 @@
  * The decide runs against the approved client label 0 (T_DELIVER carries no
  * src; the broker ASK row pinned src == 0 before approval).
  *
- * EP0 protocol handled here (all messages <= 4 words):
+ * Addressed-EP protocol handled here (received on EP5; all messages <= 4 words):
  *   T_DELIVER [5, 3, slot, len]  qrexec -> firewall (approved net.send)
  *   T_CALL    [1, 5, slot, len]  adminvm -> firewall (filter reload, qube 3)
  *   T_DONE    [7, slot, 0, 0]    net -> firewall (forward complete)

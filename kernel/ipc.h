@@ -99,7 +99,7 @@ static inline void v2_ep_init(v2_ep_t *ep)
     ep->send_len = 0;
     ep->recv_head = 0;
     ep->recv_len = 0;
-    for (i = 0; i < V2_IPC_Q; i++) {
+    for (i = 0; i < V2_IPC_Q; i++) { /* bound: V2_IPC_Q */
         ep->sendq[i].sender = 0;
         ep->sendq[i].len = 0;
         ep->recvq[i] = 0;

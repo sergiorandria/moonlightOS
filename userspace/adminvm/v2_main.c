@@ -12,8 +12,8 @@
  * stage auto-approves after displaying the prompt (the decision bytes
  * still travel the full SEND/RECV + hash re-check path in the broker).
  *
- * Non-ASK messages taken by accident are re-SENT (cooperative EP0
- * multiplexing with the broker). All state is stack-local; string
+ * Non-ASK messages taken by accident are re-SENT (cooperative
+ * addressed-EP sharing with the broker). All state is stack-local; string
  * literals are private rodata (U-mapped).
  */
 #include <stdint.h>
@@ -153,7 +153,7 @@ void adminvm_main(void)
 
         n = u_recv(4, buf, 4, &snd, &sqb, &ovf);
         if (n < 4 || buf[0] != (uint64_t)T_ASK) {
-            /* Not ours: put it back for the broker (cooperative EP0).
+            /* Not ours: put it back for the broker (cooperative addressed EPs).
              * Short/empty takes have nothing to return. */
             if (n >= 1)
                 u_send(3, buf, (unsigned long)n);
