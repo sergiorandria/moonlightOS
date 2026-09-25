@@ -64,7 +64,7 @@ unbounded, so model and C disagree silently.
 |---|---|
 | Allow with full audit (live) | DENY reply, no delivery, no record (history stays complete by refusing to extend it silently) |
 | Deny with full audit (live) | Denial proceeds; record attempt best-effort (safe direction) |
-| Helper on null/edge | Same guards as `qube_audit` (null → INVALID) |
+| Helper on null/edge | OVERFLOW/fail-closed (unreachable in practice — the broker always passes `&pol`; denial is the safe direction either way) |
 
 ### Testing (B)
 
