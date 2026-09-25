@@ -7,7 +7,7 @@ begin
    (IPC integrity theorem, ping-pong demo); live-qrexec traffic plan
    (per-EP FIFO, own-EP RECV, guarded SEND).
    Endpoint-indexed queues: one FIFO pair per EP (EP i owned by tid i,
-   mirrors kernel/ipc.h V2_NEP = 10 + v2_ep_ok and the kboot eps array).
+   mirrors kernel/ipc.h V2_NEP = 11 + v2_ep_ok and the kboot eps array).
    SEND carries an explicit destination EP and fails closed on a bad EP;
    RECV carries the caller's EP argument and delivers/suspends only when
    it equals the caller's own EP (the kboot own-EP rule: ep != cur is
@@ -38,7 +38,7 @@ definition max_ipc_q :: nat where
 
 (* Endpoint count (mirrors V2_NEP; EP i owned by tid i). *)
 definition max_eps :: nat where
-  "max_eps = 10"
+  "max_eps = 11"
 
 definition msg_ok :: "nat list \<Rightarrow> bool" where
   "msg_ok m = (length m \<le> max_msg_len)"
@@ -846,5 +846,157 @@ lemma ipc_demo_wait_reblocks:
        (st3, bits2) = c_wait 1 st2
    in (bits, bits2, wk st3 (1::nat)) = ({3}, {}, 3)"
   by eval
+
+(* ---- S4a replay pins: EP10 (gui tid 10) fits the bumped bound ---- *)
+
+(* EP10 is a valid destination under max_eps = 11 (S4a gui EP10). *)
+lemma ipc_gui_ep_fits:
+  "10 < max_eps"
+  by (simp add: max_eps_def)
+
+(* EP11 is out of range: SEND fails closed with no state change. *)
+lemma ipc_send_ep11_rejects:
+  "c_send s 11 m st = (st, False)"
+  by (simp add: c_send_def max_eps_def)
+
+(* ---- PCI-scan bounds (S4a GUI: userspace/gui/pci.h + v2_main.c bind) ----
+   The ELF scans bus 0 only (PCI_BUS0_ONLY): dev < 32, fn < 8. pci_cfg_off
+   is the ECAM offset (bus*1MB + dev*2KB + fn*256); the bochs slot binds
+   iff its id pair is (0x1234 = 4660, 0x1111 = 4369), fetched verbatim
+   from QEMU source, never from memory. BAR0 (cfg 0x10) must pass the
+   size gate: nonzero base/size, size <= 64M, base aligned to size
+   (power-of-two + nowrap are C-side conjuncts of pci_bar_ok, pinned by
+   the host KATs in tests/test_gui.c; the HOL gate pins the shape the
+   kernel relies on: GUI_LFB_MAX + alignment of GUI_LFB_PHYS).
+   Zero axioms. *)
+
+definition pci_ndev :: nat where
+  "pci_ndev = 32"
+
+definition pci_nfn :: nat where
+  "pci_nfn = 8"
+
+definition pci_slot_ok :: "nat \<Rightarrow> nat \<Rightarrow> bool" where
+  "pci_slot_ok d f = (d < pci_ndev \<and> f < pci_nfn)"
+
+definition pci_cfg_off :: "nat \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> nat" where
+  "pci_cfg_off bus d f = bus * 1048576 + d * 2048 + f * 256"
+
+definition pci_bus0_window :: nat where
+  "pci_bus0_window = 65536"
+
+(* Bus-0 exactness: no bus-stride term (mirrors pci_cfg_off(0,d,f);
+   KAT: pci_cfg_off(0,31,7) = 31*2048 + 7*256 in tests/test_gui.c). *)
+lemma pci_cfg_exact:
+  "pci_cfg_off 0 d f = d * 2048 + f * 256"
+  by (simp add: pci_cfg_off_def)
+
+(* The bus-0 scan covers every bindable slot. *)
+lemma pci_scan_covers:
+  "d < pci_ndev \<Longrightarrow> f < pci_nfn \<Longrightarrow> pci_slot_ok d f"
+  by (simp add: pci_slot_ok_def)
+
+(* Reach is exactly the scan rectangle. *)
+lemma pci_scan_reach_exact:
+  "pci_slot_ok d f = (d < 32 \<and> f < 8)"
+  by (simp add: pci_slot_ok_def pci_ndev_def pci_nfn_def)
+
+(* Every scanned slot's config lies inside the bus-0 ECAM window
+   (max off = 31*2048 + 7*256 = 65280 < 65536). *)
+lemma pci_bus0_covers:
+  "pci_slot_ok d f \<Longrightarrow> pci_cfg_off 0 d f < pci_bus0_window"
+  unfolding pci_slot_ok_def pci_cfg_off_def pci_ndev_def pci_nfn_def
+            pci_bus0_window_def
+  by arith
+
+(* Bus-1 devices are invisible by construction: the scan hardwires bus 0
+   (PCI_BUS0_ONLY), and every bus-1 offset lies above the whole bus-0
+   window (min bus-1 off = 1MB). *)
+lemma pci_bus1_invisible:
+  "pci_bus0_window \<le> pci_cfg_off 1 d f"
+  unfolding pci_cfg_off_def pci_bus0_window_def by arith
+
+(* Bochs-display IDs (QEMU pci.h 0x1234 / bochs-display.c 0x1111). *)
+definition pci_bochs_ven :: nat where
+  "pci_bochs_ven = 4660"
+
+definition pci_bochs_dev :: nat where
+  "pci_bochs_dev = 4369"
+
+(* A scanned slot binds iff its id pair is the bochs pair. *)
+definition pci_binds :: "nat \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> nat \<Rightarrow> bool" where
+  "pci_binds ven dev d f =
+    (pci_slot_ok d f \<and> ven = pci_bochs_ven \<and> dev = pci_bochs_dev)"
+
+lemma pci_bind_needs_scan:
+  "pci_binds ven dev d f \<Longrightarrow> pci_slot_ok d f"
+  by (simp add: pci_binds_def)
+
+lemma pci_bind_is_bochs:
+  "pci_binds ven dev d f \<Longrightarrow> ven = pci_bochs_ven \<and> dev = pci_bochs_dev"
+  by (simp add: pci_binds_def)
+
+lemma pci_bind_ex:
+  "pci_binds pci_bochs_ven pci_bochs_dev 0 0"
+  by (simp add: pci_binds_def pci_slot_ok_def pci_ndev_def pci_nfn_def
+               pci_bochs_ven_def pci_bochs_dev_def)
+
+(* ---- BAR-size gate (pci.h pci_bar_ok, 64M LFB cap) ---- *)
+
+definition pci_lfb_max :: nat where
+  "pci_lfb_max = 67108864"
+
+definition pci_bar_ok :: "nat \<Rightarrow> nat \<Rightarrow> bool" where
+  "pci_bar_ok base sz =
+    (base \<noteq> 0 \<and> sz \<noteq> 0 \<and> sz \<le> pci_lfb_max \<and> base mod sz = 0)"
+
+lemma pci_bar_gate:
+  "pci_bar_ok base sz \<Longrightarrow>
+   base \<noteq> 0 \<and> sz \<noteq> 0 \<and> sz \<le> pci_lfb_max \<and> base mod sz = 0"
+  by (simp add: pci_bar_ok_def)
+
+(* Kernel-assigned BAR (GUI_LFB_PHYS 0x40000000, 16M default LFB) passes;
+   pinned by the host KAT pci_bar_ok(0x40000000, 0x1000000). *)
+definition pci_demo_base :: nat where
+  "pci_demo_base = 1073741824"
+
+definition pci_demo_size :: nat where
+  "pci_demo_size = 16777216"
+
+lemma pci_demo_bar_ok:
+  "pci_bar_ok pci_demo_base pci_demo_size"
+  by (simp add: pci_bar_ok_def pci_demo_base_def pci_demo_size_def
+               pci_lfb_max_def)
+
+(* ---- Mutants: every new invariant can fail ---- *)
+
+(* Scan-miss: dev 32 is off the 32-device scan, never bound. *)
+definition pci_mutant_miss_d :: nat where
+  "pci_mutant_miss_d = 32"
+
+lemma pci_mutant_miss_bad:
+  "\<not> pci_slot_ok pci_mutant_miss_d 0"
+  by (simp add: pci_mutant_miss_d_def pci_slot_ok_def pci_ndev_def)
+
+(* Oversize BAR: 64M+1 exceeds the gate. *)
+definition pci_mutant_big :: nat where
+  "pci_mutant_big = pci_lfb_max + 1"
+
+lemma pci_mutant_big_bad:
+  "\<not> pci_bar_ok pci_mutant_big pci_mutant_big"
+  unfolding pci_mutant_big_def pci_bar_ok_def pci_lfb_max_def by arith
+
+(* Bus-1 offset sits outside the bus-0 window (invisible by construction). *)
+definition pci_mutant_bus1 :: nat where
+  "pci_mutant_bus1 = pci_cfg_off 1 0 0"
+
+lemma pci_mutant_bus1_bad:
+  "pci_bus0_window \<le> pci_mutant_bus1"
+  unfolding pci_mutant_bus1_def pci_cfg_off_def pci_bus0_window_def by arith
+
+lemma pci_invariants_nontrivial:
+  "(\<exists>d f. \<not> pci_slot_ok d f) \<and> (\<exists>b s. \<not> pci_bar_ok b s) \<and>
+   (\<exists>off. pci_bus0_window \<le> off)"
+  using pci_mutant_miss_bad pci_mutant_big_bad pci_mutant_bus1_bad by blast
 
 end

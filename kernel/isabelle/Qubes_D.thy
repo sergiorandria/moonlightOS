@@ -66,7 +66,7 @@ definition FDE_KEY_SLOT :: nat where
   "FDE_KEY_SLOT = 20"
 
 definition FDE_C_MAX_THREADS :: nat where
-  "FDE_C_MAX_THREADS = 10"
+  "FDE_C_MAX_THREADS = 11"
 
 (* ---- Slot model (mirrors slot.h wrap/unwrap/wipe) ---- *)
 
@@ -393,9 +393,9 @@ lemma slot_deliver_audit_drop:
    audit st @ [\<lparr>osrc = tid, odst = d, orpc = r, oallow = False\<rparr>]"
   by (simp add: q_slot_deliver_def q_fde_audit_def)
 
-(* ---- C bounds imply spec bounds (C: <=10 threads, <=8 qubes) ---- *)
+(* ---- C bounds imply spec bounds (C: <=11 threads, <=9 qubes) ---- *)
 
-(* Thread bound: vault tid 8 and cryptblk tid 9 fit the 10-thread build. *)
+(* Thread bound: vault tid 8 and cryptblk tid 9 fit the 11-thread build. *)
 definition c_thread_ok :: "nat \<Rightarrow> bool" where
   "c_thread_ok t = (t < FDE_C_MAX_THREADS)"
 
@@ -407,7 +407,7 @@ lemma c_thread_crypt:
   "c_thread_ok FDE_CRYPT_TID"
   by (simp add: c_thread_ok_def FDE_CRYPT_TID_def FDE_C_MAX_THREADS_def)
 
-(* Qube build ends at qube_next = 8 = V2_QUBES_MAX; C qube bound (8)
+(* Qube build ends at qube_next = 9 = V2_QUBES_MAX; C qube bound (9)
    implies the spec bound (16) by the S2 lemma. *)
 lemma c_fde_qubes_bound:
   "c_qbounded st \<Longrightarrow> q_bounded st"

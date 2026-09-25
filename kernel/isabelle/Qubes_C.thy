@@ -454,7 +454,7 @@ lemma demo_cask_proj:
   "cask_proj (mk_cask 0 2 3 9 7 64) = \<lparr>asrc = 0, adst = 2, arpc = 3, ahash = 9\<rparr>"
   by eval
 
-(* ---- C bounds imply spec bounds (C: <=8 qubes, 1 frame) ---- *)
+(* ---- C bounds imply spec bounds (C: <=9 qubes, 1 frame) ---- *)
 
 (* Single-frame bound: one announce carries at most one max frame. *)
 definition c_frame_bound :: "nat \<Rightarrow> bool" where

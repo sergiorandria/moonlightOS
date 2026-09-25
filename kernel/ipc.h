@@ -21,7 +21,7 @@
 #define V2_IPC_Q 16
 #define V2_EP0 0
 #define V2_NEP 11 /* one endpoint per thread (EP i owned by tid i); rides V2_CAP_THREADS (S4a: 10 -> 11 for gui EP10) */
-#define V2_THREADS_MAX 8
+#define V2_THREADS_MAX 11 /* S4a: rides V2_CAP_THREADS (was stale 8, Task-3 review minor; no in-tree users, kept as documentation) */
 
 #define V2_OK 0
 #define V2_ERR_INVALID (-1)

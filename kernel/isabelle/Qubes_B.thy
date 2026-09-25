@@ -9,7 +9,7 @@ begin
    c_decide mirrors the qube_decide first-match-wins loop, c_q_call mirrors
    the qube_decide + qube_ask_enqueue call path (including the full-queue
    fail-closed branch), and c_q_destroy mirrors the qube_destroy_drop
-   read/write sweep. Refinement relation: the C build clamps qubes to 8
+   read/write sweep. Refinement relation: the C build clamps qubes to 9
    (c_max_qubes) while the spec allows 16 (max_qubes), so every C-bounded
    state is spec-bounded but not vice versa (mutant_b_c9 witnesses the
    strictness); the pending bound (32) coincides. Audit is append-only up to
@@ -55,10 +55,10 @@ lemma mutant_forge_bad:
 
 (* ---- C bounds and the refinement relation ---- *)
 
-(* C build clamps (kernel/qube.h): qubes to 8, policy/pending to 32.
+(* C build clamps (kernel/qube.h): qubes to 9, policy/pending to 32.
    Spec (Qubes_A): qubes to 16, pending to 32. *)
 definition c_max_qubes :: nat where
-  "c_max_qubes = 8"
+  "c_max_qubes = 9"
 
 definition c_max_policy :: nat where
   "c_max_policy = 32"
@@ -75,7 +75,7 @@ definition c_policy_bounded :: "qstate \<Rightarrow> bool" where
 definition c_pbounded :: "qstate \<Rightarrow> bool" where
   "c_pbounded st = (length (pending st) \<le> c_max_pending)"
 
-(* C qube bound implies the spec bound (8 \<le> 16). *)
+(* C qube bound implies the spec bound (9 \<le> 16). *)
 lemma c_qubes_implies_spec:
   "c_qbounded st \<Longrightarrow> q_bounded st"
   unfolding c_qbounded_def q_bounded_def c_max_qubes_def max_qubes_def
@@ -346,9 +346,9 @@ definition mutant_b_pend :: qstate where
 lemma mutant_b_pend_bad: "\<not> p_bounded mutant_b_pend"
   by (simp add: mutant_b_pend_def p_bounded_def max_pending_def)
 
-(* Strictness witness: 9 qubes fit the spec but overflow the C table. *)
+(* Strictness witness: 10 qubes fit the spec but overflow the C table. *)
 definition mutant_b_c9 :: qstate where
-  "mutant_b_c9 = init_qstate\<lparr>qubes := [0,1,2,3,4,5,6,7,8]\<rparr>"
+  "mutant_b_c9 = init_qstate\<lparr>qubes := [0,1,2,3,4,5,6,7,8,9]\<rparr>"
 
 lemma mutant_b_c9_bad: "\<not> c_qbounded mutant_b_c9"
   by (simp add: mutant_b_c9_def c_qbounded_def c_max_qubes_def)
