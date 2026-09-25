@@ -380,7 +380,7 @@ typedef struct {
 
 #define T_RUNNABLE 0
 #define T_PARKED 1
-#define T_DEAD 2
+#define T_DEAD 3 /* distinct from T_BLOCKED since deferred-C: slot-reuse scans key on state alone */
 #define T_BLOCKED 2
 
 static uctx_t threads[NTHREADS];
@@ -1047,12 +1047,8 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                  * V2_CAP_THREADS is the model's bound, not ours). */
                 int child = -1;
                 for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-                    /* T_DEAD aliases T_BLOCKED (both 2): a rendezvous-blocked
-                     * thread parks (ptr, cap) + wait_kind, so all three must
-                     * read clear before the slot is reusable (fail closed). */
-                    if (threads[t].state == T_DEAD &&
-                        threads[t].wait_kind == V2_WK_NONE &&
-                        threads[t].ipc_ptr == 0 && threads[t].ipc_cap == 0) {
+                    /* deferred-C: T_DEAD is distinct; state alone frees the slot */
+                    if (threads[t].state == T_DEAD) {
                         child = t;
                         break;
                     }
@@ -1112,12 +1108,8 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                  * FAIL CLOSED: any error -> V2_ERR_INVALID/V2_ERR_OVERFLOW. */
                 int child = -1;
                 for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-                    /* T_DEAD aliases T_BLOCKED (both 2): a rendezvous-blocked
-                     * thread parks (ptr, cap) + wait_kind, so all three must
-                     * read clear before the slot is reusable (fail closed). */
-                    if (threads[t].state == T_DEAD &&
-                        threads[t].wait_kind == V2_WK_NONE &&
-                        threads[t].ipc_ptr == 0 && threads[t].ipc_cap == 0) {
+                    /* deferred-C: T_DEAD is distinct; state alone frees the slot */
+                    if (threads[t].state == T_DEAD) {
                         child = t;
                         break;
                     }
@@ -1300,10 +1292,8 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     break;
                 }
                 for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-                    /* T_DEAD aliases T_BLOCKED (both 2): see SPAWN scan. */
-                    if (threads[t].state == T_DEAD &&
-                        threads[t].wait_kind == V2_WK_NONE &&
-                        threads[t].ipc_ptr == 0 && threads[t].ipc_cap == 0) {
+                    /* deferred-C: T_DEAD is distinct; state alone frees the slot */
+                    if (threads[t].state == T_DEAD) {
                         child = t;
                         break;
                     }
