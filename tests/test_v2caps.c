@@ -43,11 +43,13 @@ int main(void) {
     int ws[8];
     unsigned long n;
 
-    /* Init: thread 0 holds root caps on frames 0..31 (V2_FRAMES_MAX=32),
+    /* Init: thread 0 holds root caps on frames 0..31 (one per slot:
+     * min(V2_FRAMES_MAX, V2_CAP_SLOTS) = 32 roots; S4a pool is 40, so
+     * frames 32..39 have no init roots — reachable only via PT_ALLOC),
      * rest empty. */
     v2_caps_init(&st, 2);
     CHECK(st.nthreads == 2);
-    for (i = 0; i < (unsigned long)V2_FRAMES_MAX; i++) {
+    for (i = 0; i < (unsigned long)V2_CAP_SLOTS; i++) {
         CHECK(v2_has_cap(&st, 0, i));
         CHECK(st.caps[0][i].root);
         CHECK(st.caps[0][i].obj == i);
@@ -118,8 +120,8 @@ int main(void) {
 
     /* Mint touches only the actor (d_mint_local / d_no_grant_no_gain).
      * Actor is thread 1 here: thread 0's whole table holds init roots
-     * (V2_FRAMES_MAX=32 == V2_CAP_SLOTS), so no empty dst exists there;
-     * thread 1 has slots 0..2 used and 16 free. */
+     * (V2_CAP_SLOTS=32 roots; S4a pool is 40 frames), so no empty dst
+     * exists there; thread 1 has slots 0..2 used and 16 free. */
     snap = st;
     CHECK(v2_mint(&st, 1, 0, V2_RIGHT_R, 16) == V2_OK);
     for (i = 0; i < (unsigned long)V2_CAP_SLOTS; i++)
@@ -212,8 +214,8 @@ int main(void) {
 
     /* ---- Invoke round-trip tests (mirror kernel V2_INVOKE handler) ----
      * Actor is thread 1: thread 0's whole table holds init roots
-     * (V2_FRAMES_MAX=32 == V2_CAP_SLOTS), so the host PT_ALLOC finds its
-     * first empty slot on thread 1. */
+     * (V2_CAP_SLOTS=32 roots; S4a pool is 40 frames), so the host
+     * PT_ALLOC finds its first empty slot on thread 1. */
     {
         v2_caps_t st;
         v2_caps_init(&st, 2);

@@ -9,7 +9,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define V2_QUBES_MAX 8
+/* Qube label bound (S1: 8; S4a: 8 -> 9 for the gui qube 8; Task 5
+ * owns the proof impact, Qubes_D qube-bound note extended there, never
+ * here). Comment only, no API change: labels are small ints stamped at
+ * boot (kboot qube_of[]), fresh QCREATE labels start at qube_next. */
+#define V2_QUBES_MAX 9
 #define V2_POLICY_MAX 32
 #define V2_PENDING_MAX 32
 #define V2_AUDIT_MAX 64

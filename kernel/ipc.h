@@ -20,7 +20,7 @@
 #define V2_MSG_MAX 4
 #define V2_IPC_Q 16
 #define V2_EP0 0
-#define V2_NEP 10 /* one endpoint per thread (EP i owned by tid i); rides V2_CAP_THREADS */
+#define V2_NEP 11 /* one endpoint per thread (EP i owned by tid i); rides V2_CAP_THREADS (S4a: 10 -> 11 for gui EP10) */
 #define V2_THREADS_MAX 8
 
 #define V2_OK 0

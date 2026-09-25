@@ -18,7 +18,7 @@ int main(void) {
     CHECK(qube_raw_ok(q, 8, 0, 1, 0) == 0);      /* cross-qube, no grant */
     CHECK(qube_raw_ok(q, 8, 0, 1, 1) == 1);      /* cross-qube, QX grant */
     CHECK(qube_raw_ok(q, 8, 0, 9, 1) == 0);      /* bad tid fails closed */
-    CHECK(V2_QUBES_MAX == 8 && V2_PENDING_MAX == 32 && V2_RIGHT_QX == 0x8UL);
+    CHECK(V2_QUBES_MAX == 9 && V2_PENDING_MAX == 32 && V2_RIGHT_QX == 0x8UL);
     CHECK(V2_INV_QCREATE == 14 && V2_INV_QDESTROY == 15);
     printf("PASS: test_qlabels\n");
     return 0;

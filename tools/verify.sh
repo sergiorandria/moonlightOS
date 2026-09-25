@@ -142,7 +142,7 @@ if [ -f kernel/build/moonlight.elf ]; then
         truncate -s 256M "$DISK"
       fi
     fi
-    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -global virtio-mmio.force-legacy=off -drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 2>&1 | tr -d '\0')
+    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -global virtio-mmio.force-legacy=off -drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 -device bochs-display 2>&1 | tr -d '\0')
     # Fail closed: every missing marker flips the gate to FAIL (a smoke
     # that only prints FAIL lines but reports PASS proves nothing).
     QEMU_FAIL=0
@@ -189,6 +189,8 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "CRYPT: leak denied" && echo "v2 smoke: crypt leak" || { echo "v2 smoke: FAIL (no crypt leak)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "CRYPT: no volume" && echo "v2 smoke: crypt no-volume" || { echo "v2 smoke: FAIL (no crypt no-volume)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "BLKMMIO: tid=9 only" && echo "v2 smoke: blkmmio leaf" || { echo "v2 smoke: FAIL (no blkmmio)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "GUI: up" && echo "v2 smoke: gui up" || { echo "v2 smoke: FAIL (no gui up)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "GUIMMIO: tid=10 only" && echo "v2 smoke: guimmio leaf" || { echo "v2 smoke: FAIL (no guimmio)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "QREXEC: admin registered" && echo "v2 smoke: admin live" || { echo "v2 smoke: FAIL (no admin registered)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "VAULT: live ok" && echo "v2 smoke: vault live" || { echo "v2 smoke: FAIL (no vault live)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "AUD: deny rpc=2" && echo "v2 smoke: live deny" || { echo "v2 smoke: FAIL (no live deny)"; QEMU_FAIL=1; }

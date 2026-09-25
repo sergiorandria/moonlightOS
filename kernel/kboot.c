@@ -80,11 +80,13 @@ static void kputdec(unsigned long v) {
  * identity map (512 pages = 2M) and the free region above the image. */
 _Static_assert((unsigned long)V2_FRAMES_MAX * 4096UL <= 512UL * 4096UL,
                "frame pool must fit the l0_frames identity map");
-#define NTHREADS 10 /* bound for all thread loops (<= V2_CAP_THREADS) */
+#define NTHREADS 11 /* bound for all thread loops (<= V2_CAP_THREADS) */
 /* Threads: 0 A, 1 B, 2 mem_server, 3 qrexec, 4 AdminVM, 5 firewall,
- * 6 net, 7 CAP stub, 8 vault, 9 cryptblk. Growing NTHREADS forces
- * WCET/table re-analysis: threads[], qube_of[], u_sp[] size with it;
- * root_pt_t/l1_t/l0_u_t cover V2_CAP_THREADS. */
+ * 6 net, 7 CAP stub, 8 vault, 9 cryptblk, 10 gui. Growing NTHREADS
+ * forces WCET/table re-analysis: threads[], qube_of[], u_sp[] size with
+ * it; root_pt_t/l1_t/l0_u_t cover V2_CAP_THREADS. NTHREADS == 11 ==
+ * V2_CAP_THREADS: the thread table is full — the next thread forces a
+ * V2_CAP_THREADS bump + proof replay (S4b). */
 _Static_assert(NTHREADS <= V2_CAP_THREADS,
                "NTHREADS must fit the caps model + page tables");
 
@@ -128,8 +130,8 @@ static uint32_t blk_virtio_irq = 0xFFFFFFFFUL;
  * word-per-frame (fdata[f] = val), so the real store/load mirrors exactly
  * what the model records and fdata can never diverge from the
  * real frame (Write-Through Mirror). This bounds every new copy loop and
- * keeps every frame access within the 32-frame region (frame <
- * V2_FRAMES_MAX, max offset 31*4096 + V2_WORD_BYTES <= 131080). */
+ * keeps every frame access within the 40-frame region (frame <
+ * V2_FRAMES_MAX, max offset 39*4096 + V2_WORD_BYTES <= 159752). */
 #define V2_WORD_BYTES 8 /* bound: bytes per WRITE/READ invoke (one word) */
 
 /* Per-thread Sv39 VSpaces. root_pt_t = root (index VPN[2]), l1_t = level-1
@@ -151,6 +153,26 @@ static uint64_t l0_netmmio[512] __attribute__((aligned(4096)));
  * (wired at l1_t[9][6] = UVA 0x80C00000; every other l1_t[t][6] stays 0,
  * asserted at boot). The 8 transport pages, RW, never X. */
 static uint64_t l0_blkmmio[512] __attribute__((aligned(4096)));
+/* S4a GUI leaves (Task-2 VAs, kernel maps / ELF scans):
+ * - LFB U-leaf l0_guifb: 512 pages (2MB window) at GUI_LFB_PHYS, wired at
+ *   l1_t[10][6] = UVA 0x80C00000. Reuses the BLK leaf INDEX in tid-10-only
+ *   tables (every thread owns its l1_t, so no alias with l1_t[9][6]).
+ *   Covers the 800*600*4 frame (469 pages) inside the programmed BAR.
+ * - ECAM U-leaf l0_guiecam: bus-0 config range (64KB = 16 pages) at
+ *   GUI_ECAM_PHYS, wired at l1_t[10][7] = UVA 0x80E00000 (fresh index).
+ *   RW: the ELF's BAR mask probe writes all-ones and restores.
+ * Both RW, never X (W^X). Exclusivity asserted at boot ("GUIMMIO"). */
+#define GUI_LFB_UVA 0x80C00000UL
+#define GUI_ECAM_UVA 0x80E00000UL
+#define GUI_ECAM_PHYS 0x30000000UL /* virt-machine ECAM base (fixed) */
+#define GUI_LFB_PHYS 0x40000000UL /* kernel-assigned BAR0 (PCI low-MMIO window, 64M-aligned) */
+#define GUI_ECAM_PAGES 16 /* bound: bus-0 config range 64KB (32 dev x 2KB) */
+#define GUI_LFB_PAGES 512 /* bound: one l0 table (2MB window >= 469-page frame) */
+#define GUI_PCI_VEN 0x1234u /* bochs-display vendor (QEMU include/hw/pci/pci.h) */
+#define GUI_PCI_DEV 0x1111u /* bochs-display device (QEMU hw/display/bochs-display.c) */
+#define GUI_LFB_MAX 0x4000000u /* largest BAR the kernel assigns (64M, ELF re-validates) */
+static uint64_t l0_guifb[512] __attribute__((aligned(4096)));
+static uint64_t l0_guiecam[512] __attribute__((aligned(4096)));
 
 static uint64_t pte_leaf(uint64_t paddr, uint64_t flags) {
     return ((paddr >> 12) << 10) | flags | PTE_V;
@@ -180,6 +202,11 @@ static void pagetable_init(void) {
      * threshold/claim), mirroring the l1_m[128] UART line. */
     l1_m[96] = pte_leaf(0x0c000000UL, PTE_R | PTE_W | PTE_A | PTE_D);
     l1_m[97] = pte_leaf(0x0c200000UL, PTE_R | PTE_W | PTE_A | PTE_D);
+    /* S4a GUI ECAM S-leaf: 2MB megapage at VPN[1] 384 covering
+     * 0x30000000-0x301FFFFF (buses 0-1). S-only (no U bit): the kernel's
+     * BAR programming below runs in S-mode post-MMU through it; the ELF
+     * never sees this VA (it uses the l0_guiecam U-leaf instead). */
+    l1_m[384] = pte_leaf(GUI_ECAM_PHYS, PTE_R | PTE_W | PTE_A | PTE_D);
     /* Phase-2 NIC U-leaf: all 8 transport pages for tid 6 (NET_UVA +
      * i*0x1000, VPN[1] 5, VPN[0] 0..7: the driver scans for the NIC
      * because QEMU attaches backends last-first). W^X: RW, never X. */
@@ -191,6 +218,15 @@ static void pagetable_init(void) {
      * virtio-blk device, never assuming a transport). W^X: RW, never X. */
     for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
         l0_blkmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
+                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+    /* S4a GUI U-leaves (contents fixed pre-MMU; the BAR programming in
+     * kboot() assigns this same GUI_LFB_PHYS, so leaf and BAR agree by
+     * construction). W^X: RW, never X. */
+    for (int k = 0; k < GUI_LFB_PAGES; k++) /* bound: GUI_LFB_PAGES (512) */
+        l0_guifb[k] = pte_leaf(GUI_LFB_PHYS + (unsigned long)k * 4096UL,
+                               PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+    for (int k = 0; k < GUI_ECAM_PAGES; k++) /* bound: GUI_ECAM_PAGES (16) */
+        l0_guiecam[k] = pte_leaf(GUI_ECAM_PHYS + (unsigned long)k * 4096UL,
                                  PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* Per-thread VSpaces: shared kernel/leaf/frame/UART regions are wired
      * through each thread's own l1_t; the per-thread frame window
@@ -208,9 +244,18 @@ static void pagetable_init(void) {
             l1_t[t][5] = pte_table(l0_netmmio);
         /* FDE block: the transport U-leaf exists ONLY in tid 9's tables
          * (BLK_UVA 0x80C00000 = VPN[1] 6). Every other l1_t[t][6] stays 0
-         * (asserted at boot: "BLKMMIO: tid=9 only"). */
+         * except tid 10 (GUI LFB: same INDEX, different thread's tables —
+         * asserted at boot: "BLKMMIO: tid=9 only" + "GUIMMIO"). */
         if (t == 9)
             l1_t[t][6] = pte_table(l0_blkmmio);
+        /* S4a GUI: the LFB + ECAM U-leaves exist ONLY in tid 10's tables
+         * (GUI_LFB_UVA 0x80C00000 = VPN[1] 6, GUI_ECAM_UVA 0x80E00000 =
+         * VPN[1] 7). Every other l1_t[t][6] (except tid 9 BLK) and every
+         * other l1_t[t][7] stays 0 (asserted at boot: "GUIMMIO"). */
+        if (t == 10) {
+            l1_t[t][6] = pte_table(l0_guifb);
+            l1_t[t][7] = pte_table(l0_guiecam);
+        }
         root_pt_t[t][0] = pte_table(l1_m);
         root_pt_t[t][2] = pte_table(l1_t[t]);
     }
@@ -309,7 +354,7 @@ static void v2_sfence_all(void)
  * (l1_t[t][8]). fdata stays the caps.h model shadow: v2_write/v2_read
  * still update it first, so host-side coherence holds. These helpers run
  * ONLY after the model op returned V2_OK (fail closed), never cross the
- * 32-frame region (frame < V2_FRAMES_MAX; len <= V2_WORD_BYTES <= 4096),
+ * 40-frame region (frame < V2_FRAMES_MAX; len <= V2_WORD_BYTES <= 4096),
  * and are byte-accurate through volatile pointers so the copy is never
  * optimized away. */
 static void v2_real_write(unsigned long frame, const uint8_t *src, size_t len)
@@ -409,6 +454,7 @@ extern uintptr_t ustack_a_top, ustack_b_top, ustack_m_top, ustack_cap_top;
 extern uintptr_t ustack_qrexec_top, ustack_adminvm_top;
 extern uintptr_t ustack_fw_top, ustack_net_top;
 extern uintptr_t ustack_vault_top, ustack_crypt_top;
+extern uintptr_t ustack_gui_top;
 __attribute__((noreturn)) void u_enter(uctx_t *ctx);
 
 static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
@@ -1372,7 +1418,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 /* Drop queued IPC entries owned by the qube (compact both
                  * queues in place; other qubes' entries are preserved). */
                 {
-                    for (int e = 0; e < V2_NEP; e++) { /* bound: V2_NEP (10) */
+                    for (int e = 0; e < V2_NEP; e++) { /* bound: V2_NEP (11) */
                         v2_ep_t *ep = &eps[e];
                         int w = 0;
                         for (int i = 0; i < ep->send_len; i++) { /* bound: V2_IPC_Q */
@@ -1536,7 +1582,7 @@ case 13: /* Load page fault */
 
 void kboot(void) {
     kputs("v2 stage2: S-mode entry (OpenSBI)\n");
-    for (int e = 0; e < V2_NEP; e++) /* bound: V2_NEP (10) */
+    for (int e = 0; e < V2_NEP; e++) /* bound: V2_NEP (11) */
         v2_ep_init(&eps[e]);
     frame_pool_init();
     qube_init(qube_of, (unsigned long)NTHREADS); /* all threads start in qube 0 */
@@ -1554,6 +1600,7 @@ void kboot(void) {
     u_sp[7] = (uint64_t)ustack_cap_top;
     u_sp[8] = (uint64_t)ustack_vault_top;
     u_sp[9] = (uint64_t)ustack_crypt_top; /* Task 4 spawn reads it */
+    u_sp[10] = (uint64_t)ustack_gui_top; /* S4a spawn reads it */
     pagetable_init();
     uintptr_t root = (uintptr_t)root_pt_t[0];
     uint64_t satp = (8UL << 60) | ((root >> 12) & 0xFFFFFFFFFFFUL);
@@ -1604,6 +1651,61 @@ void kboot(void) {
         *(volatile uint32_t *)PLIC_ENABLE_S |= (1U << blk_virtio_irq);
         *(volatile uint32_t *)PLIC_THRESH_M = 0;
         *(volatile uint32_t *)PLIC_THRESH_S = 0;
+    }
+    /* S4a GUI PCI bind: QEMU leaves PCI BARs unprogrammed (no firmware
+     * enumeration under OpenSBI), so the kernel assigns BAR0 before the
+     * ELF's bind probe runs. Mechanics only (raw dword offsets, no PCI
+     * structs, no pixel math): scan bus 0 for the bochs-display function,
+     * size BAR0 with the standard mask probe (save / write all-ones /
+     * read / restore), assign GUI_LFB_PHYS when the size is sane, enable
+     * MEM + bus-master in the command register. The l0_guifb U-leaf
+     * (wired pre-MMU in pagetable_init) maps this same GUI_LFB_PHYS, so
+     * leaf and BAR agree by construction. S-mode ECAM access runs through
+     * the l1_m[384] leaf (post-MMU, SUM=0: no U pages touched).
+     * Fail-closed: no match / absurd size leaves BAR0 untouched and the
+     * ELF parks marker-free (no "GUI: up", smoke gate misses it). */
+    {
+        int gui_found = 0;
+        for (int dev = 0; dev < 32 && !gui_found; dev++) { /* bound: 32 (bus-0 devices) */
+            for (int fn = 0; fn < 8 && !gui_found; fn++) { /* bound: 8 (functions) */
+                volatile uint32_t *cfg = (volatile uint32_t *)
+                    (GUI_ECAM_PHYS + (unsigned long)dev * 2048UL +
+                     (unsigned long)fn * 256UL);
+                uint32_t id = cfg[0]; /* offset 0x00: vendor/device */
+                uint32_t b0, b1, mask, size, cmd;
+                if (id == 0xFFFFFFFFu)
+                    continue; /* empty slot: no device */
+                if ((id & 0xFFFFu) != GUI_PCI_VEN)
+                    continue;
+                if ((id >> 16) != GUI_PCI_DEV)
+                    continue;
+                b0 = cfg[4]; /* offset 0x10: BAR0 (LFB base) */
+                if ((b0 & 0x1u) != 0u)
+                    continue; /* I/O BAR: not an MMIO framebuffer */
+                if (((b0 >> 1) & 0x3u) == 0x2u)
+                    continue; /* 64-bit BAR type: outside the uint32 model */
+                b1 = cfg[5]; /* offset 0x14: BAR0 high word */
+                if (b1 != 0u)
+                    continue; /* nonzero high word: outside the uint32 model */
+                cfg[4] = 0xFFFFFFFFu;
+                mask = cfg[4];
+                cfg[4] = b0; /* restore before any sizing decision */
+                size = (~(mask & 0xFFFFFFF0u)) + 1u;
+                if (size == 0u || size > GUI_LFB_MAX)
+                    continue; /* absurd size: leave BAR0 untouched */
+                if ((size & (size - 1u)) != 0u)
+                    continue; /* BAR sizes are powers of two */
+                if ((GUI_LFB_PHYS & (size - 1u)) != 0u)
+                    continue; /* assigned base must be aligned to size */
+                cfg[4] = (uint32_t)GUI_LFB_PHYS;
+                cmd = cfg[1]; /* offset 0x04: command register */
+                cfg[1] = cmd | 0x6u; /* MEM space + bus master */
+                gui_found = 1;
+                kputs("GUI: bochs bound\n");
+            }
+        }
+        if (!gui_found)
+            kputs("GUI: no bochs; leaves wired, server will park\n");
     }
 
     for (int i = 0; i < NTHREADS; i++) { /* bound: NTHREADS */
@@ -1793,13 +1895,38 @@ void kboot(void) {
             kputs("[spawn] cryptblk ELF FAIL; parked\n");
         }
     }
+    /* S4a gui: initrd index 10 into thread 10 (qube 8, labeled below).
+     * Mirrors the cryptblk load above. On success the thread enters the
+     * ELF image, binds bochs-display through the GUIMMIO leaves and
+     * prints GUI: up from U-mode, then RECV-waits on EP10 (no client
+     * yet: Task 5 drives FILLs). On failure it stays parked and the
+     * missing marker fails the smoke loudly (fail closed: nothing
+     * impersonates the display server). kboot only spawns + asserts
+     * here: scan/bind/FILL live in the ELF. */
+    {
+        const uint8_t *elf_data;
+        uint32_t elf_size;
+        uint64_t entry = 0, brk = 0;
+        if (initrd_lookup(10, &elf_data, &elf_size) == 0 &&
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 10, &entry, &brk) == V2_OK &&
+            entry != 0) {
+            v2_pte_sync(10);
+            threads[10].regs[2] = u_sp[10];
+            threads[10].sepc = entry;
+            threads[10].state = T_RUNNABLE;
+            kputs("[spawn] gui ELF ok\n");
+        } else {
+            kputs("[spawn] gui ELF FAIL; parked\n");
+        }
+    }
     /* Qubes boot labels: mem_server (thread 2) owns qube 1, qrexec
      * (thread 3) owns qube 2, AdminVM (thread 4) owns qube 3, firewall
      * (thread 5) owns qube 4, net (thread 6) owns qube 5, vault
-     * (thread 8) owns qube 6, cryptblk (thread 9) owns qube 7; A/B/CAP
-     * stub stay in qube 0. Fresh QCREATE labels start at qube_next == 8
-     * == V2_QUBES_MAX: the qube table is full (documented cap — any
-     * further qube forces a V2_QUBES_MAX bump + proof replay, Task 5). */
+     * (thread 8) owns qube 6, cryptblk (thread 9) owns qube 7, gui
+     * (thread 10) owns qube 8; A/B/CAP stub stay in qube 0. Fresh
+     * QCREATE labels start at qube_next == 9 == V2_QUBES_MAX: the qube
+     * table is full (documented cap — any further qube forces a
+     * V2_QUBES_MAX bump + proof replay, S4b). */
     qube_of[2] = 1;
     qube_of[3] = 2;
     qube_of[4] = 3;
@@ -1807,30 +1934,41 @@ void kboot(void) {
     qube_of[6] = 5;
     qube_of[8] = 6;
     qube_of[9] = 7;
-    qube_next = 8;
+    qube_of[10] = 8;
+    qube_next = 9;
     kputs("QUB: qube0 qube1 up\n");
     /* NETQ label assert: fail closed (mismatch prints marker-free
      * "[demo] FAIL", so the smoke gate misses the marker and fails). */
-    if (qube_of[5] != 4 || qube_of[6] != 5 || qube_next != 8) {
+    if (qube_of[5] != 4 || qube_of[6] != 5 || qube_next != 9) {
         kputs("[demo] FAIL netq labels\n");
     } else {
         kputs("NETQ: labels ok\n");
     }
     /* VAULTQ label assert: vault (thread 8) owns qube 6 and the next
-     * fresh label is 8 (cryptblk took 7 below). Fail-closed like NETQ
-     * above; the one QX grant below is documented beside this assert. */
-    if (qube_of[8] != 6 || qube_next != 8) {
+     * fresh label is 9 (cryptblk took 7, gui takes 8 below). Fail-closed
+     * like NETQ above; the one QX grant below is documented beside this
+     * assert. */
+    if (qube_of[8] != 6 || qube_next != 9) {
         kputs("[demo] FAIL vaultq labels\n");
     } else {
         kputs("VAULTQ: labels ok\n");
     }
     /* CRYPTQ label assert: cryptblk (thread 9) owns qube 7 and the next
-     * fresh label is 8 == V2_QUBES_MAX. Fail-closed like NETQ above;
-     * the FDE QX grants below are documented beside this assert. */
-    if (qube_of[9] != 7 || qube_next != 8) {
+     * fresh label is 9 (gui took 8 below) == V2_QUBES_MAX. Fail-closed
+     * like NETQ above; the FDE QX grants below are documented beside
+     * this assert. */
+    if (qube_of[9] != 7 || qube_next != 9) {
         kputs("[demo] FAIL cryptq labels\n");
     } else {
         kputs("CRYPTQ: labels ok\n");
+    }
+    /* GUIQ label assert: gui (thread 10) owns qube 8 and the next fresh
+     * label is 9 == V2_QUBES_MAX. Fail-closed like NETQ above; the gui
+     * QX grant below is documented beside this assert. */
+    if (qube_of[10] != 8 || qube_next != 9) {
+        kputs("[demo] FAIL guiq labels\n");
+    } else {
+        kputs("GUIQ: labels ok\n");
     }
     /* S3 QX boot grants: QX is holder-based (qube_has_qx scans the
      * sender's own table), so each cross-qube leg needs its sender to
@@ -1902,6 +2040,20 @@ void kboot(void) {
     if (v2_grant(&caps, 0, 9, 4, 9) != V2_OK || !qube_has_qx(4)) {
         kputs("[demo] FAIL live qx grants\n");
     }
+    /* S4a GUI QX boot grant (exactly one): qube0 -> gui (tid 10 slot 9).
+     * QX is holder-based (qube_has_qx scans the sender's own table), so
+     * the cross-qube legs need their senders to hold QX: thread A's
+     * FILLs (qube 0 -> qube 8, Task 5) ride thread A's qube0 slot-9 root
+     * (augmented in place by the S3 block above — A IS tid 0, no
+     * delegation needed for A itself), and the server's R_OK/R_DENY
+     * replies (qube 8 -> qube 0) ride this grant into tid 10 slot 9.
+     * Same slot-9 shape (gui table holds no caps yet; MAP rejects QX-bit
+     * caps, so slot 8 stays free). Fail-closed: any grant failure prints
+     * marker-free "[demo] FAIL". */
+    if (v2_grant(&caps, 0, 9, 10, 9) != V2_OK ||
+        !qube_has_qx(10) || !qube_has_qx(0)) {
+        kputs("[demo] FAIL gui qx grant\n");
+    }
     /* NETMMIO leaf gate: the transport U-leaf exists ONLY in tid 6's
      * tables (l1_t[6][5]); any other mapping is a leak. Fail-closed:
      * mismatch prints marker-free "[demo] FAIL", so the smoke gate
@@ -1918,18 +2070,38 @@ void kboot(void) {
             kputs("[demo] FAIL netmmio leak\n");
     }
     /* BLKMMIO leaf gate: the transport U-leaf exists ONLY in tid 9's
-     * tables (l1_t[9][6]); any other mapping is a leak. Fail-closed
-     * like NETMMIO above. */
+     * tables (l1_t[9][6]); any other mapping is a leak — except tid 10,
+     * which reuses leaf INDEX 6 for its own LFB table (per-thread l1_t
+     * isolation, no alias). Fail-closed like NETMMIO above. */
     {
         int mmio_ok = (l1_t[9][6] != 0);
         for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-            if (t != 9 && l1_t[t][6] != 0)
+            if (t != 9 && t != 10 && l1_t[t][6] != 0)
                 mmio_ok = 0;
         }
         if (mmio_ok)
             kputs("BLKMMIO: tid=9 only\n");
         else
             kputs("[demo] FAIL blkmmio leak\n");
+    }
+    /* GUIMMIO leaf gate: the LFB + ECAM U-leaves exist ONLY in tid 10's
+     * tables (l1_t[10][6] = LFB, l1_t[10][7] = ECAM); any other mapping
+     * is a leak. Index 6 is shared with BLK by design (tid 9 keeps its
+     * own table — checked by the BLKMMIO gate above). Fail-closed:
+     * mismatch prints marker-free "[demo] FAIL", so the smoke gate
+     * misses the marker and fails instead of passing on a lie. */
+    {
+        int mmio_ok = (l1_t[10][6] != 0) && (l1_t[10][7] != 0);
+        for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+            if (t != 10 && t != 9 && l1_t[t][6] != 0)
+                mmio_ok = 0;
+            if (t != 10 && l1_t[t][7] != 0)
+                mmio_ok = 0;
+        }
+        if (mmio_ok)
+            kputs("GUIMMIO: tid=10 only\n");
+        else
+            kputs("[demo] FAIL guimmio leak\n");
     }
     /* S2 demo transcript (runs once at boot, in-kernel test_cap_thread-style
      * sequence: straight-line, bounded, no loops, no IPC). It drives the
@@ -2155,15 +2327,16 @@ void kboot(void) {
         if (ds < 0 || v2_revoke(&caps, 7, (unsigned long)ds) != V2_OK) {
             kputs("[demo] FAIL revoke\n");
         } else {
-            /* FDE frame budget (Task 4: pool 16 -> 32, 31 usable):
-             * steady demand is ~25-27 frames: 7 boot ELFs = 20 image
-             * frames (mem 1 + qrexec 2 + adminvm 2 + fw 2 + net 2 +
-             * vault 3 + cryptblk 8) + net DMA 2 + cryptblk DMA 2 +
-             * CAP 1, plus transient key/record frames (freed after
-             * use). Revoke alone drops caps/mappings but leaves the
-             * bitmap marked used, so return the demo frame to the pool:
-             * it was zeroed at alloc and never WRITEn (model ops only),
-             * and frame_alloc_slot re-zeroes on next alloc. */
+            /* S4a frame budget (pool 32 -> 40, 39 usable): steady demand
+             * is ~27-29 frames: 8 boot ELFs = 22 image frames (mem 1 +
+             * qrexec 2 + adminvm 2 + fw 2 + net 2 + vault 3 + cryptblk 8
+             * + gui 2, measured `llvm-readelf -l`) + net DMA 2 +
+             * cryptblk DMA 2 + CAP 1, plus transient key/record frames
+             * (freed after use). Revoke alone drops caps/mappings but
+             * leaves the bitmap marked used, so return the demo frame
+             * to the pool: it was zeroed at alloc and never WRITEn
+             * (model ops only), and frame_alloc_slot re-zeroes on
+             * next alloc. */
             frame_free(ds);
         }
     }

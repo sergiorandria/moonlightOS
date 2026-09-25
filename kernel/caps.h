@@ -28,8 +28,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Frame pool bound (Task 4: 16 -> 32; Task 5 owns the proof impact,
- * V2_D max_frames divergence note extended there, never here).
+/* Frame pool bound (Task 4: 16 -> 32; S4a: 32 -> 40; Task 5 owns the
+ * proof impact, V2_D max_frames divergence note extended there, never
+ * here).
  * Budget table (measured Task-4 exit, `llvm-readelf -l` page counts):
  *   images: mem 1 + qrexec 2 + adminvm 2 + fw 2 + net 2 + vault 3 +
  *     cryptblk 8 (6 text + rodata + bss) = 20 steady
@@ -38,14 +39,18 @@
  *   total steady ~25-27 of 31 usable (frame 0 stays kernel-reserved).
  * Task-3 exit was exactly 15/15 usable: the pool could not fit cryptblk
  * without this bump. 32x4K = 128K fits the 0x81000000 window trivially
- * (asserted in kboot.c beside the pool). */
-#define V2_FRAMES_MAX 32
+ * (asserted in kboot.c beside the pool).
+ * S4a: gui image 2 pages (measured `llvm-readelf -l`: RX text + RW bss)
+ * + headroom -> 40 (39 usable, steady ~27-29).
+ * The LFB is MMIO-leaf range (l0_guifb, never pool frames). */
+#define V2_FRAMES_MAX 40
 #define V2_CAP_SLOTS 32
 /* FDE growth (Task 3): 8 -> 10 threads (vault tid 8, cryptblk tid 9).
+ * S4a growth: 10 -> 11 threads (gui tid 10).
  * Page tables (kboot root_pt_t/l1_t/l0_u_t), qube_of[], u_sp[] and the
  * thread table all size with this; NTHREADS in kboot.c must stay <= here
  * (enforced by _Static_assert at the NTHREADS definition). */
-#define V2_CAP_THREADS 10
+#define V2_CAP_THREADS 11
 #define V2_VPN_SLOTS 32
 
 #define V2_RIGHT_R 0x1UL
@@ -164,11 +169,11 @@ static inline void v2_caps_init(v2_caps_t *st, unsigned long nthreads)
             st->vm[t][i].rights = 0;
         }
     }
-    for (i = 0; i < V2_FRAMES_MAX; i++) /* bound: V2_FRAMES_MAX (32) */
+    for (i = 0; i < V2_FRAMES_MAX; i++) /* bound: V2_FRAMES_MAX (40) */
         st->fdata[i] = 0;
-    for (i = 0; i < V2_FRAMES_MAX && i < V2_CAP_SLOTS; i++) { /* bound: V2_FRAMES_MAX (32) */
+    for (i = 0; i < V2_FRAMES_MAX && i < V2_CAP_SLOTS; i++) { /* bound: V2_FRAMES_MAX (40) */
         /* Init roots: thread 0 holds a root cap on every frame the table
-         * can name (32 frames, 32 slots: the whole table). */
+         * can name (40 frames, 32 slots: the first 32 frames). */
         st->caps[0][i].valid = 1;
         st->caps[0][i].obj = (unsigned long)i;
         st->caps[0][i].rights = V2_RIGHT_RW;

@@ -94,9 +94,9 @@ int main(void) {
     CHECK(v2_q_send(&ep, 1, w, 0) == V2_OK);
     CHECK(v2_q_take_send(&ep, &s) == V2_OK && s.len == 0 && s.sender == 1);
 
-    /* Addressed EPs: gate + cross-EP isolation (Phase 1). */
-    CHECK(v2_ep_ok(0) && v2_ep_ok(9));
-    CHECK(!v2_ep_ok(10));
+    /* Addressed EPs: gate + cross-EP isolation (Phase 1). S4a: 11 EPs. */
+    CHECK(v2_ep_ok(0) && v2_ep_ok(10));
+    CHECK(!v2_ep_ok(11));
     CHECK(!v2_ep_ok(99));
     {
         v2_ep_t epa, epb;

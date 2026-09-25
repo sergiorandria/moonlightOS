@@ -393,6 +393,10 @@ static uint8_t ustack_adminvm[4096] __attribute__((section(".ustack"), aligned(1
  * DMA-adjacent staging on-stack (8KB, qrexec 8K precedent). */
 static uint8_t ustack_vault[4096] __attribute__((section(".ustack"), aligned(16)));
 static uint8_t ustack_crypt[8192] __attribute__((section(".ustack"), aligned(16)));
+/* S4a GUI stack: the display server holds its FILL service frame on-stack
+ * (8KB, qrexec/cryptblk 8K precedent — no DMA staging, but the RECV
+ * service frame plus bind-time scan locals mirror the broker shape). */
+static uint8_t ustack_gui[8192] __attribute__((section(".ustack"), aligned(16)));
 
 /* Boot assertion (Task 4 follow-up b): the qrexec U-stack window must fit
  * the policy frame with headroom; a short window fails the build, never
@@ -404,6 +408,9 @@ _Static_assert(sizeof(ustack_vault) >= 4096,
                "vault U-stack must be >= 4KB (KEK table + VMK slot)");
 _Static_assert(sizeof(ustack_crypt) >= 8192,
                "cryptblk U-stack must be >= 8KB (FS + DMA staging)");
+/* S4a boot assertion: gui service-frame minimum (qrexec 8K precedent). */
+_Static_assert(sizeof(ustack_gui) >= 8192,
+               "gui U-stack must be >= 8KB (FILL service frame)");
 
 uintptr_t ustack_a_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_b_top __attribute__((section(".udata"))) = 0;
@@ -415,6 +422,7 @@ uintptr_t ustack_fw_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_net_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_vault_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_crypt_top __attribute__((section(".udata"))) = 0;
+uintptr_t ustack_gui_top __attribute__((section(".udata"))) = 0;
 
 __attribute__((section(".utext"))) void user_stacks_init(void) {
     ustack_a_top = (uintptr_t)(ustack_a + sizeof(ustack_a));
@@ -427,4 +435,5 @@ __attribute__((section(".utext"))) void user_stacks_init(void) {
     ustack_net_top = (uintptr_t)(ustack_net + sizeof(ustack_net));
     ustack_vault_top = (uintptr_t)(ustack_vault + sizeof(ustack_vault));
     ustack_crypt_top = (uintptr_t)(ustack_crypt + sizeof(ustack_crypt));
+    ustack_gui_top = (uintptr_t)(ustack_gui + sizeof(ustack_gui));
 }

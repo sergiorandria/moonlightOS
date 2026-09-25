@@ -81,6 +81,17 @@ if [ "$DISP" != "-nographic" ]; then
   fi
 fi
 
+# S4a GUI: the display server needs its PCI display device even headless
+# (--nographic leaves VGA_ARGS empty, but -display none keeps hardware:
+# the device still enumerates on ECAM and the GUIMMIO/GUI markers prove
+# it). Single cmdline: VGA_ARGS rides both exec lines below, so one place
+# covers windowed (already set above) and headless (fallback here).
+if [ -z "$VGA_ARGS" ]; then
+  if $QEMU -device help 2>&1 | grep -q "bochs-display"; then
+    VGA_ARGS="-device bochs-display"
+  fi
+fi
+
 # The v2 kernel is S-mode: OpenSBI loads it, so QEMU must ship firmware
 # (-bios default). -bios none was the v1 M-mode world and must not return.
 BIOS_ARGS="-bios default"
