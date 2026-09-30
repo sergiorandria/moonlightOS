@@ -192,6 +192,7 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "BLKMMIO: tid=9 only" && echo "v2 smoke: blkmmio leaf" || { echo "v2 smoke: FAIL (no blkmmio)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUI: up" && echo "v2 smoke: gui up" || { echo "v2 smoke: FAIL (no gui up)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUIMMIO: tid=10 only" && echo "v2 smoke: guimmio leaf" || { echo "v2 smoke: FAIL (no guimmio)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "RNGMMIO: tid=8 only" && echo "v2 smoke: rngmmio leaf" || { echo "v2 smoke: FAIL (no rngmmio)"; QEMU_FAIL=1; }
     # S4a display pattern (Task 5): thread-A drives 4 FILL legs through
     # the gui server (words: tag 6, xy=x<<16|y, wh=w<<16|h, 32-bit XRGB
     # color in the low 32 bits) — fullscreen black clear + full-width

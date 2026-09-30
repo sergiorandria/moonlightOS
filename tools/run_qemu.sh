@@ -103,6 +103,7 @@ BIOS_ARGS="-bios default"
 # defaults virtio-mmio transports to legacy mode (Version=1); the driver
 # implements the modern queue core and needs Version=2.
 NET_ARGS="-device virtio-net-device,netdev=n0 -netdev user,id=n0"
+RNG_ARGS="-device virtio-rng-device"
 VIRTIO_MODERN="-global virtio-mmio.force-legacy=off"
 
 # 256M virtio-blk virtual disk (raw). Microkernel separation: the kernel
@@ -153,7 +154,7 @@ fi
 if [[ "$*" == *"--gdb"* ]]; then
   echo "GDB on :1234 - connect with: riscv64-unknown-elf-gdb $ELF -ex 'target remote :1234'"
   # shellcheck disable=SC2086
-  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $VIRTIO_MODERN $VGA_ARGS $KBD_ARGS $DISK_ARGS -S -s -serial mon:stdio $LOG_ARGS -no-reboot
+  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $RNG_ARGS $VIRTIO_MODERN $VGA_ARGS $KBD_ARGS $DISK_ARGS -S -s -serial mon:stdio $LOG_ARGS -no-reboot
 fi
 
 echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS $NET_ARGS $VIRTIO_MODERN $BIOS_ARGS -kernel $ELF -no-reboot $LOG_ARGS"
@@ -169,4 +170,4 @@ else
 fi
 echo "(use --trace-int to re-enable -d int logging)"
 # shellcheck disable=SC2086
-exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $VIRTIO_MODERN $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS -serial mon:stdio $LOG_ARGS -no-reboot
+exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $RNG_ARGS $VIRTIO_MODERN $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS -serial mon:stdio $LOG_ARGS -no-reboot

@@ -104,6 +104,7 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
 #define VIRTIO_NTRANSPORTS 8
 #define VIRTIO_DEV_NET 1u
 #define VIRTIO_DEV_BLK 2u
+#define VIRTIO_DEV_RNG 4u
 #define PLIC_BASE 0x0c000000UL
 /* PLIC hart-0 contexts (sifive_plic, stride 0x80 enables / 0x1000 claim):
  * the M-context set is reached via delegation, the S-context set signals
@@ -153,6 +154,12 @@ static uint64_t l0_netmmio[512] __attribute__((aligned(4096)));
  * (wired at l1_t[9][6] = UVA 0x80C00000; every other l1_t[t][6] stays 0,
  * asserted at boot). The 8 transport pages, RW, never X. */
 static uint64_t l0_blkmmio[512] __attribute__((aligned(4096)));
+/* RNG U-leaf: same single-leaf pattern as NET/BLK, for tid 8 only
+ * (wired at l1_t[8][5] = UVA 0x80A00000; reuses the NET leaf INDEX in
+ * tid-8-only tables — every thread owns its l1_t, so no alias with
+ * l1_t[6][5]. The 8 transport pages, RW, never X. Exclusivity asserted
+ * at boot ("RNGMMIO"), with the NETMMIO gate tolerating tid 8. */
+static uint64_t l0_rngmmio[512] __attribute__((aligned(4096)));
 /* S4a GUI leaves (Task-2 VAs, kernel maps / ELF scans):
  * - LFB U-leaf l0_guifb: 512 pages (2MB window) at GUI_LFB_PHYS, wired at
  *   l1_t[10][6] = UVA 0x80C00000. Reuses the BLK leaf INDEX in tid-10-only
@@ -220,6 +227,12 @@ static void pagetable_init(void) {
     for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
         l0_blkmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
                                  PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+    /* RNG U-leaf: the same 8 transport pages for tid 8 (same shape as
+     * NET/BLK above: the vault ELF scans for the virtio-rng device,
+     * never assuming a transport). W^X: RW, never X. */
+    for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
+        l0_rngmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
+                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* S4a GUI U-leaves (contents fixed pre-MMU; the BAR programming in
      * kboot() assigns this same GUI_LFB_PHYS, so leaf and BAR agree by
      * construction). W^X: RW, never X. */
@@ -240,7 +253,8 @@ static void pagetable_init(void) {
         l1_t[t][8] = pte_table(l0_frames);
         /* Phase-2 NIC: the transport U-leaf exists ONLY in tid 6's tables
          * (NET_UVA 0x80A00000 = VPN[1] 5). Every other l1_t[t][5] stays 0
-         * (asserted at boot: "NETMMIO: tid=6 only"). */
+         * except tid 8 (RNG leaf: same INDEX, different thread's tables —
+         * asserted at boot: "NETMMIO: tid=6 only" + "RNGMMIO"). */
         if (t == 6)
             l1_t[t][5] = pte_table(l0_netmmio);
         /* FDE block: the transport U-leaf exists ONLY in tid 9's tables
@@ -249,6 +263,13 @@ static void pagetable_init(void) {
          * asserted at boot: "BLKMMIO: tid=9 only" + "GUIMMIO"). */
         if (t == 9)
             l1_t[t][6] = pte_table(l0_blkmmio);
+        /* RNG: the transport U-leaf exists ONLY in tid 8's tables
+         * (RNG_UVA 0x80A00000 = VPN[1] 5, fresh for tid 8: its frame
+         * window is index 4, GUI/BLK use 6/7). Every other l1_t[t][5]
+         * stays 0 except tid 6 (NET: same INDEX, different thread's
+         * tables — asserted at boot: "RNGMMIO: tid=8 only" + "NETMMIO"). */
+        if (t == 8)
+            l1_t[t][5] = pte_table(l0_rngmmio);
         /* S4a GUI: the LFB + ECAM U-leaves exist ONLY in tid 10's tables
          * (GUI_LFB_UVA 0x80C00000 = VPN[1] 6, GUI_ECAM_UVA 0x80E00000 =
          * VPN[1] 7). Every other l1_t[t][6] (except tid 9 BLK) and every
@@ -2056,13 +2077,15 @@ void kboot(void) {
         kputs("[demo] FAIL gui qx grant\n");
     }
     /* NETMMIO leaf gate: the transport U-leaf exists ONLY in tid 6's
-     * tables (l1_t[6][5]); any other mapping is a leak. Fail-closed:
+     * tables (l1_t[6][5]); any other mapping is a leak — except tid 8,
+     * which reuses leaf INDEX 5 for its own RNG table (per-thread l1_t
+     * isolation, no alias). Fail-closed:
      * mismatch prints marker-free "[demo] FAIL", so the smoke gate
      * misses the marker and fails instead of passing on a lie. */
     {
         int mmio_ok = (l1_t[6][5] != 0);
         for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-            if (t != 6 && l1_t[t][5] != 0)
+            if (t != 6 && t != 8 && l1_t[t][5] != 0)
                 mmio_ok = 0;
         }
         if (mmio_ok)
@@ -2084,6 +2107,21 @@ void kboot(void) {
             kputs("BLKMMIO: tid=9 only\n");
         else
             kputs("[demo] FAIL blkmmio leak\n");
+    }
+    /* RNGMMIO leaf gate: the transport U-leaf exists ONLY in tid 8's
+     * tables (l1_t[8][5]); any other mapping is a leak — except tid 6,
+     * which reuses leaf INDEX 5 for its own NET table (per-thread l1_t
+     * isolation, no alias). Fail-closed like NETMMIO above. */
+    {
+        int mmio_ok = (l1_t[8][5] != 0);
+        for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+            if (t != 8 && t != 6 && l1_t[t][5] != 0)
+                mmio_ok = 0;
+        }
+        if (mmio_ok)
+            kputs("RNGMMIO: tid=8 only\n");
+        else
+            kputs("[demo] FAIL rngmmio leak\n");
     }
     /* GUIMMIO leaf gate: the LFB + ECAM U-leaves exist ONLY in tid 10's
      * tables (l1_t[10][6] = LFB, l1_t[10][7] = ECAM); any other mapping
