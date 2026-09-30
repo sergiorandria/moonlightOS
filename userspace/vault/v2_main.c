@@ -18,7 +18,13 @@
  *                                   VMK through the T_KEY handoff)
  *   T_KEY     [8, slot, 0, 0]       vault -> cryptblk (keyless notice)
  *   T_KEY_ACK [10, slot, 0, 0]      cryptblk -> vault (handoff ack)
+ *   RANDOM_REQ [11, nonce, 0, 0]    cryptblk -> vault (entropy reseed)
  *   reply     [0] = OK, [-1] = INVALID
+ *
+ * RANDOM arm (Task 3): cryptblk-qube7-only (sqb != 7 -> [-1] DENY,
+ * GUI qube0-only precedent); the 32B device sample is mixed with
+ * rdtime + service-delta via rng_mix_ok and reseeds the DRBG. Short
+ * reads and timeouts also DENY, fail-closed.
  *
  * DENY-direct discipline (same as the S3 firewall, userspace/firewall/
  * v2_main.c: direct T_CALLs never carry approval, so every T_CALL gets
@@ -61,6 +67,8 @@
 #include "../../kernel/qube.h"
 #include "../crypt/kdf.h"
 #include "../cryptblk/slot.h"
+#include "rng_mix.h"
+#include "rng_scan.h"
 
 #define V2_YIELD 0
 #define V2_PUTC 1
@@ -126,6 +134,288 @@
  * ack is still plausibly in flight. */
 #define VAULT_ACK_TIMEOUT_TICKS 20000000UL
 #define VAULT_ACK_POLL_BOUND 2000000
+
+/* ---- Task-3 RNG bind + mixer + RANDOM service ----
+ * Transport: virtio-rng on an MMIO transport, scanned through the tid-8
+ * U-leaf (Task 2, kernel/kboot.c l1_t[8][5] = UVA 0x80A00000; QEMU
+ * attaches backends last-first, so the device is found by scan, never
+ * assumed at transport 0). Scan + negotiate shape is copied from the net
+ * driver (userspace/net/v2_main.c net_find/net_phase2); the rng device
+ * has no BAR/LFB, so the bind is magic + device-ID only.
+ *
+ * DIVERGENCE from rng_scan.h (ledger b): rng_scan.h names the PA window
+ * (VIRTIO_MMIO_BASE 0x10000000, stride 0x2000), but U-mode cannot
+ * address PA. The readable base below is ALWAYS the mapped RNG UVA
+ * window (RNG_UVA + t*0x1000, one 4K page per transport, same layout as
+ * the net tid-6 U-leaf). rng_trans_off(t) is still consulted as the
+ * Task-1 bound/sentinel (t < 8, 0xFFFFFFFF = no transport), but its PA
+ * is never dereferenced.
+ *
+ * Magic (ledger a): rng_scan.h defines no VIRTIO_MAGIC_VAL, so the
+ * virtio-mmio magic ("virt") is defined inline in this TU only.
+ *
+ * RANDOM_REQ [11, nonce, 0, 0] arrives as its own tag (11), NOT as a
+ * T_DELIVER, so its arm sits BEFORE the deliver gate below (after the
+ * T_CALL DENY-direct arm). Allowlist is cryptblk qube7-only
+ * (sqb != 7 -> R_DENY), mirroring the GUI qube0-only precedent
+ * (userspace/gui/v2_main.c). On success the 32B device sample is mixed
+ * with rdtime + irq_delta via rng_mix_ok and reseeds this ELF's DRBG
+ * (kdf.h single owner); the reply is [0] = OK, [-1] = DENY.
+ *
+ * irq_delta note: the brief assumes an IRQ path, but the vault owns no
+ * IRQ line (the kernel raises notify bits only for tids 6/9), so
+ * rng_last_t tracks the last RANDOM service time (boot rdtime on the
+ * first request); the delta is still fresh rdtime per request.
+ *
+ * drbg note: the brief names drbg_reseed, which does not exist in
+ * kdf.h; the existing owner API drbg_seed(mixed, 32) is the reseed.
+ */
+#define RNG_TID 8
+#define RNG_EP 8
+#define RANDOM_REQ 11
+#define RANDOM_RESP 12
+#define R_OK 0L
+#define R_DENY (-1L)
+
+#define RNG_UVA 0x80A00000UL
+#define RNG_UVA_STRIDE 0x1000UL
+#define RNG_MAGIC_VAL 0x74726976u
+
+/* virtio-mmio register offsets (mirrors net driver + virtio_mmio.h). */
+#define RNG_R_MAGIC 0x000u
+#define RNG_R_VERSION 0x004u
+#define RNG_R_DEVICE_ID 0x008u
+#define RNG_R_FEAT 0x010u
+#define RNG_R_FEAT_SEL 0x014u
+#define RNG_R_DRV_FEAT 0x020u
+#define RNG_R_DRV_SEL 0x024u
+#define RNG_R_QSEL 0x030u
+#define RNG_R_QMAX 0x034u
+#define RNG_R_QNUM 0x038u
+#define RNG_R_QREADY 0x044u
+#define RNG_R_QNOTIFY 0x050u
+#define RNG_R_ISTATUS 0x060u
+#define RNG_R_IACK 0x064u
+#define RNG_R_STATUS 0x070u
+#define RNG_R_QDESC_LO 0x080u
+#define RNG_R_QDRV_LO 0x090u
+#define RNG_R_QDEV_LO 0x0a0u
+
+#define RNG_ST_ACK 1u
+#define RNG_ST_DRIVER 2u
+#define RNG_ST_DRIVER_OK 4u
+#define RNG_ST_FEAT_OK 8u
+#define RNG_ST_FAILED 128u
+
+#define RNG_DESC_F_WRITE 2u
+#define RNG_QNUM_WANT 1u
+
+/* DMA frame vpn (net precedent: high vpns 16/17, far from the <8-page
+ * ELF image) + frame-window base (kernel/ipc.h V2_U_FRAME_BASE). */
+#define RNG_DMA_VPN 16
+#define RNG_U_FRAME_BASE 0x80800000UL
+#define RNG_DMA_VA (RNG_U_FRAME_BASE + ((unsigned long)RNG_DMA_VPN * 4096UL))
+
+#define V2_INV_FRAME_PA 16
+
+/* Poll bound + ~2s @10MHz deadline (net NET_POLL_BOUND precedent). */
+#define RNG_POLL_BOUND 2000000
+#define RNG_TIMEOUT_TICKS 20000000UL
+
+/* Forward declarations: the RNG block above precedes the ecall helpers
+ * (kept in net-driver order below); prototypes pin the linkage. */
+static long u_invoke(long op, long a1, long a2, long a3);
+static long u_yield(void);
+static uint64_t u_rdtime(void);
+
+struct rng_desc {
+    uint64_t addr;
+    uint32_t len;
+    uint16_t flags;
+    uint16_t next;
+};
+
+struct rng_avail {
+    uint16_t flags;
+    uint16_t idx;
+    uint16_t ring[1];
+};
+
+struct rng_used_elem {
+    uint32_t id;
+    uint32_t len;
+};
+
+struct rng_used {
+    uint16_t flags;
+    uint16_t idx;
+    struct rng_used_elem ring[1];
+};
+
+static volatile uint32_t *rng_regs = 0;
+static long rng_dma_pa = 0;
+static uint16_t rng_seen = 0;
+static uint64_t rng_last_t = 0;
+
+static void rng_fence(void)
+{
+    asm volatile("fence iorw,iorw" ::: "memory");
+}
+
+static uint32_t rng_r(volatile uint32_t *regs, uint32_t off)
+{
+    return *(volatile uint32_t *)((uintptr_t)regs + off);
+}
+
+static void rng_w(volatile uint32_t *regs, uint32_t off, uint32_t v)
+{
+    *(volatile uint32_t *)((uintptr_t)regs + off) = v;
+}
+
+static void rng_w64(volatile uint32_t *regs, uint32_t lo_off, uint64_t v)
+{
+    rng_w(regs, lo_off, (uint32_t)(v & 0xffffffffu));
+    rng_w(regs, lo_off + 4u, (uint32_t)(v >> 32));
+    rng_fence();
+}
+
+/* Bind the virtio-rng transport (net net_find shape), negotiate the
+ * modern transport, and set up queue 0 in one PT_ALLOC'd DMA frame.
+ * Returns 1 live, 0 fail-closed (caller parks: no "RNG: up" without a
+ * live queue). */
+static int vault_rng_bind(void)
+{
+    unsigned long t;
+    volatile uint32_t *regs = 0;
+    long slot;
+    long pa;
+    volatile uint8_t *dma;
+    unsigned long i;
+    uint32_t max;
+    for (t = 0u; t < 8u; t++) { /* bound: 8 (virtio transports) */
+        unsigned long base = rng_trans_off(t);
+        uint32_t magic;
+        uint32_t dev;
+        if (base == 0xFFFFFFFFUL)
+            continue;
+        regs = (volatile uint32_t *)(RNG_UVA + t * RNG_UVA_STRIDE);
+        magic = rng_r(regs, RNG_R_MAGIC);
+        if (magic != RNG_MAGIC_VAL)
+            continue;
+        dev = rng_r(regs, RNG_R_DEVICE_ID);
+        if (!rng_dev_match(dev))
+            continue;
+        break;
+    }
+    if (t >= 8u || regs == 0)
+        return 0;
+    /* Modern-transport negotiate (net net_phase2 step-2 shape). */
+    rng_w(regs, RNG_R_STATUS, 0u);
+    rng_fence();
+    rng_w(regs, RNG_R_STATUS, RNG_ST_ACK | RNG_ST_DRIVER);
+    rng_fence();
+    rng_w(regs, RNG_R_FEAT_SEL, 0u);
+    (void)rng_r(regs, RNG_R_FEAT);
+    rng_w(regs, RNG_R_DRV_SEL, 1u);
+    rng_w(regs, RNG_R_DRV_FEAT, 1u);
+    rng_w(regs, RNG_R_DRV_SEL, 0u);
+    rng_w(regs, RNG_R_DRV_FEAT, 0u);
+    rng_w(regs, RNG_R_STATUS,
+           RNG_ST_ACK | RNG_ST_DRIVER | RNG_ST_FEAT_OK);
+    rng_fence();
+    if (!(rng_r(regs, RNG_R_STATUS) & RNG_ST_FEAT_OK)) {
+        rng_w(regs, RNG_R_STATUS,
+               RNG_ST_ACK | RNG_ST_DRIVER | RNG_ST_FAILED);
+        return 0;
+    }
+    /* One DMA frame (RW only) for queue 0: desc[1] @0, avail @64,
+     * used @1024, 32B data buffer @2048. */
+    slot = u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
+    if (slot < 0 || u_invoke(V2_INV_MAP, slot, (long)RNG_DMA_VPN, 0) != 0)
+        return 0;
+    pa = u_invoke(V2_INV_FRAME_PA, (long)RNG_DMA_VPN, 0, 0);
+    if (pa <= 0)
+        return 0;
+    dma = (volatile uint8_t *)RNG_DMA_VA;
+    for (i = 0; i < 4096UL; i++) /* bound: 4096 */
+        dma[i] = 0;
+    rng_w(regs, RNG_R_QSEL, 0u);
+    max = rng_r(regs, RNG_R_QMAX);
+    if (max < (uint32_t)RNG_QNUM_WANT || max > 1024u)
+        return 0;
+    rng_w(regs, RNG_R_QNUM, RNG_QNUM_WANT);
+    rng_w64(regs, RNG_R_QDESC_LO, (uint64_t)pa + 0u);
+    rng_w64(regs, RNG_R_QDRV_LO, (uint64_t)pa + 64u);
+    rng_w64(regs, RNG_R_QDEV_LO, (uint64_t)pa + 1024u);
+    rng_w(regs, RNG_R_QREADY, 1u);
+    rng_fence();
+    rng_w(regs, RNG_R_STATUS, RNG_ST_ACK | RNG_ST_DRIVER |
+           RNG_ST_FEAT_OK | RNG_ST_DRIVER_OK);
+    rng_fence();
+    rng_regs = regs;
+    rng_dma_pa = pa;
+    rng_seen = 0;
+    return 1;
+}
+
+/* Read 32B of device randomness through the bound queue 0 (one
+ * device-writable descriptor per request; used-ring completion is polled
+ * with an rdtime deadline + u_yield between polls, never a spin — the
+ * kernel raises IRQ notify bits only for tids 6/9, so the vault polls).
+ * Returns 1 with hw full, 0 fail-closed (short read, timeout, or no
+ * bind): the caller replies R_DENY and wipes. */
+static int vault_read_hw(uint8_t *hw)
+{
+    volatile struct rng_desc *d;
+    volatile struct rng_avail *a;
+    volatile struct rng_used *u;
+    volatile uint8_t *buf;
+    uint64_t t0;
+    int p;
+    int done = 0;
+    unsigned long i;
+    uint32_t isr;
+    if (!hw || rng_regs == 0 || rng_dma_pa <= 0)
+        return 0;
+    d = (volatile struct rng_desc *)RNG_DMA_VA;
+    a = (volatile struct rng_avail *)(RNG_DMA_VA + 64u);
+    u = (volatile struct rng_used *)(RNG_DMA_VA + 1024u);
+    buf = (volatile uint8_t *)(RNG_DMA_VA + 2048u);
+    d[0].addr = (uint64_t)rng_dma_pa + 2048u;
+    d[0].len = 32u;
+    d[0].flags = (uint16_t)RNG_DESC_F_WRITE;
+    d[0].next = 0u;
+    rng_fence();
+    a->ring[0] = rng_seen;
+    rng_fence();
+    a->idx = (uint16_t)(rng_seen + 1u);
+    rng_fence();
+    rng_w(rng_regs, RNG_R_QNOTIFY, 0u);
+    rng_fence();
+    t0 = u_rdtime();
+    for (p = 0; p < RNG_POLL_BOUND; p++) { /* bound: RNG_POLL_BOUND */
+        if (u->idx != rng_seen) {
+            done = 1;
+            break;
+        }
+        u_yield();
+        if (u_rdtime() - t0 > (uint64_t)RNG_TIMEOUT_TICKS)
+            break;
+    }
+    if (!done)
+        return 0;
+    if (u->ring[0].id != 0u || u->ring[0].len != 32u)
+        return 0; /* short read: fail closed, no partial bytes out */
+    rng_fence();
+    for (i = 0u; i < 32u; i++) /* bound: 32 */
+        hw[i] = buf[i];
+    rng_seen = (uint16_t)(rng_seen + 1u);
+    isr = rng_r(rng_regs, RNG_R_ISTATUS);
+    if (isr)
+        rng_w(rng_regs, RNG_R_IACK, isr);
+    rng_fence();
+    return 1;
+}
 
 static long u_ecall3(long sys, long a0, long a1, long a2)
 {
@@ -357,6 +647,10 @@ void vault_main(void)
     for (i = 0; i < 32UL; i++) /* bound: 32 (VMK bytes) */
         vmk[i] = 0;
 
+    rng_last_t = u_rdtime();
+    if (!vault_rng_bind())
+        u_park();
+    u_puts("RNG: up\n");
     u_puts("VAULT: up\n");
 
     for (;;) { /* bound: inf - service loop */
@@ -378,6 +672,42 @@ void vault_main(void)
              * calls never carry approval. No T_CALL form is honored. */
             u_puts("VAULT: deny\n");
             u_reply(snd, R_INVALID);
+            continue;
+        }
+
+        /* RANDOM_REQ is its own tag (11), not a T_DELIVER, so it is
+         * claimed here, before the deliver gate below (which would
+         * silently drop it). Placed after the T_CALL arm: direct calls
+         * stay DENY-direct. */
+        if (n >= 2 && buf[0] == (uint64_t)RANDOM_REQ) {
+            unsigned long req_qb;
+            uint8_t hw[32];
+            uint8_t mixed[32];
+            uint64_t now;
+            uint64_t irq_delta;
+            req_qb = sqb;
+            if (req_qb != 7u) {
+                u_reply(snd, R_DENY);
+                continue;
+            } /* cryptblk qube7-only */
+            for (i = 0; i < 32UL; i++) { /* bound: 32 (RANDOM buffers) */
+                hw[i] = 0;
+                mixed[i] = 0;
+            }
+            now = u_rdtime();
+            irq_delta = now - rng_last_t;
+            if (!vault_read_hw(hw) ||
+                !rng_mix_ok(hw, 32u, now, irq_delta, mixed)) {
+                crypt_wipe(hw, sizeof(hw));
+                crypt_wipe(mixed, sizeof(mixed));
+                u_reply(snd, R_DENY);
+                continue;
+            }
+            drbg_seed(mixed, 32u);
+            rng_last_t = now;
+            crypt_wipe(hw, sizeof(hw));
+            crypt_wipe(mixed, sizeof(mixed));
+            u_reply(snd, R_OK);
             continue;
         }
 

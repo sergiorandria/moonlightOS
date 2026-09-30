@@ -74,7 +74,7 @@ build/net.elf: net/v2_main.c net/net_start.S v2_user.ld
 	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ net/v2_main.c net/net_start.S
 	ls -lh $@
 
-build/vault.elf: vault/v2_main.c vault/vault_start.S v2_user.ld
+build/vault.elf: vault/v2_main.c vault/vault_start.S v2_user.ld vault/rng_mix.h vault/rng_scan.h
 	@mkdir -p build
 	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ vault/v2_main.c vault/vault_start.S
 	ls -lh $@
