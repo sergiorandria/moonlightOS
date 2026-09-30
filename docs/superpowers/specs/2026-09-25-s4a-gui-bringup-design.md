@@ -166,11 +166,11 @@ tid=10 only` leaf assert (same shape as `NETMMIO`/`BLKMMIO`).
 |---|---|
 | No bochs on bus 0 / bad magic | Park, no markers → gate FAILs |
 | BAR size absurd / MAP fails | Park marker-free → FAIL |
-| Wrong resolution (not 800×600×32?) | Server programs VBE for 800×600×32 explicitly; mismatch → park (no scaling code — minimal) |
+| Wrong resolution (not 800×600×32?) | Resolution ASSUMED 800×600×32 from QEMU bochs-display default, unchecked — explicit VBE programming deferred to S4b; mismatch paints with wrong stride (smoke is marker-only, no pixel check) |
 | LFB write fault | Park (mapping was wrong — the leaf assert catches it first) |
 | FILL rect out-of-bounds / wrap-around | `R_DENY`, zero pixels touched (validate-then-paint; wrap-safe arithmetic) |
 | Unknown tag on EP10 | `R_DENY` (INVALID), no state change |
-| FILL from non-qube-0 sender | Raw gate denies at SEND (no QX) — server never sees it |
+| FILL from non-qube-0 sender | Kernel raw gate is holder-based (any QX holder passes) — server enforces qube0-only (`sqb != 0` → `R_DENY`, zero pixels touched) |
 | Server not yet waiting when A calls | Rendezvous queues + A blocks (single-flight; no race) |
 
 ---

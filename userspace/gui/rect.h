@@ -43,9 +43,9 @@ static inline int rect_fill_ok(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
         return 0; /* wrap-around, then bottom-edge overhang */
     }
     /* stride-overflow: the end byte of the last touched pixel must sit
-     * inside the framebuffer. Bounds above give last <= 480000, so neither
+     * inside the framebuffer. Bounds above give last <= 479999, so neither
      * multiply below can wrap; the checks stay as fail-closed guards. */
-    last = (ye - 1u) * (uint32_t)GUI_W + xe;
+    last = (ye - 1u) * (uint32_t)GUI_W + (xe - 1u);
     if (last > (uint32_t)GUI_W * (uint32_t)GUI_H) {
         return 0;
     }

@@ -203,10 +203,15 @@ void gui_main(void)
         sqb = 0;
         ovf = 0;
         n = u_recv(GUI_EP, buf, 4, &snd, &sqb, &ovf);
-        /* sqb/snd stamps ignored: any qube WITH a QX grant passes the
-         * kernel gate; without QX the SEND never arrives. */
-        (void)sqb;
+        /* Defense in depth: kernel gate is holder-based (any QX holder
+         * passes qube_raw_ok), so enforce qube0-only here. Non-qube-0
+         * sender -> DENY, zero pixels touched (S4b will add per-qube
+         * surfaces; this stage is output-only for qube 0). */
         (void)ovf;
+        if (sqb != 0) {
+            u_reply(snd, R_DENY);
+            continue;
+        }
         if (n < 1)
             continue; /* not ours: silent drop, no reply (no waiter) */
         if (n < 4 || buf[0] != (uint64_t)FILL) {

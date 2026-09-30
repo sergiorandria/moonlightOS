@@ -171,6 +171,7 @@ static uint64_t l0_blkmmio[512] __attribute__((aligned(4096)));
 #define GUI_PCI_VEN 0x1234u /* bochs-display vendor (QEMU include/hw/pci/pci.h) */
 #define GUI_PCI_DEV 0x1111u /* bochs-display device (QEMU hw/display/bochs-display.c) */
 #define GUI_LFB_MAX 0x4000000u /* largest BAR the kernel assigns (64M, ELF re-validates) */
+#define GUI_FB_MIN (800u * 600u * 4u) /* smallest usable LFB: one 800x600x32 frame (ELF enforces same) */
 static uint64_t l0_guifb[512] __attribute__((aligned(4096)));
 static uint64_t l0_guiecam[512] __attribute__((aligned(4096)));
 
@@ -1691,8 +1692,8 @@ void kboot(void) {
                 mask = cfg[4];
                 cfg[4] = b0; /* restore before any sizing decision */
                 size = (~(mask & 0xFFFFFFF0u)) + 1u;
-                if (size == 0u || size > GUI_LFB_MAX)
-                    continue; /* absurd size: leave BAR0 untouched */
+                if (size == 0u || size > GUI_LFB_MAX || size < GUI_FB_MIN)
+                    continue; /* absurd/small size: leave BAR0 untouched (must cover 800x600x32) */
                 if ((size & (size - 1u)) != 0u)
                     continue; /* BAR sizes are powers of two */
                 if ((GUI_LFB_PHYS & (size - 1u)) != 0u)

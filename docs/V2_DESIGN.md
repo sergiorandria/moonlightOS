@@ -671,8 +671,9 @@ per-function where not).
     `kbd.c` gap stays open (referenced by `run_qemu.sh`, file absent
     in-tree, owned by S4c); fallback display devices (ramfb,
     virtio-gpu — bochs-only this stage); multi-bus PCI scan (bus-0
-    only); resolution negotiation (800×600×32 programmed explicitly,
-    no scaling); Stage 4 time/console, USB HCI + `usb` qube,
+     only); resolution assumed 800×600×32 from QEMU default, unchecked
+     (explicit VBE programming deferred to S4b, no scaling); Stage 4
+     time/console, USB HCI + `usb` qube,
     RX-from-wire, live AppVM→firewall→net traffic, §7 non-goals
     unchanged.
 
