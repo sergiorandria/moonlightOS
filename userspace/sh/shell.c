@@ -39,8 +39,8 @@ __attribute__((weak)) int moonsh_nice_tid(long tid, int prio);
 /* VFS (userspace/vfs_server/server.c), linked into the kernel image but
  * absent from the bare userspace ELF: weak like the moonsh_* hooks. The
  * shell is just another client (reserved id, own fd table); all isolation
- * and validation still apply. Backing frames for shell-created files come
- * from a tiny demo pool below (production: Untyped retype via invoke). */
+ * and validation still apply. Backing frames for shell-created files are
+ * minted via Untyped retype (PT_ALLOC + MAP invoke). */
 __attribute__((weak)) int vfs_create(unsigned caller, const char *name, unsigned cap, unsigned size, unsigned short color, unsigned short omode);
 __attribute__((weak)) int vfs_open(unsigned caller, const char *name, unsigned rights);
 __attribute__((weak)) int vfs_read(unsigned caller, int fd, void *buf, unsigned long len);
@@ -53,8 +53,46 @@ __attribute__((weak)) void vfs_server_init(void);
 #define VFS_SHELL_CLIENT 128u
 #define VFS_R 1u
 #define VFS_W 2u
-static unsigned char vfs_shell_frames[2][4096];
-static unsigned vfs_shell_nframes;
+
+/* Invoked frames (V2_INVOKE ecall 7: PT_ALLOC 6 mints a frame cap, MAP 3
+ * maps it at a scratch vpn). riscv: real ecall; host-sim: stub that fails
+ * closed (write prints "no frames", same as an empty pool). */
+#define SHELL_V2_INVOKE 7
+#define SHELL_V2_INV_MAP 3
+#define SHELL_V2_INV_PT_ALLOC 6
+/* Scratch vpn for the MAP window (vault/cryptblk precedent: the ELF image
+ * occupies the low vpns only; the image stays < 8 pages by build). */
+#define SHELL_SCRATCH_VPN 8UL
+#ifdef __riscv
+static long shell_ecall4(long sys, long a0, long a1, long a2, long a3) {
+    register long r_a0 asm("a0") = a0;
+    register long r_a1 asm("a1") = a1;
+    register long r_a2 asm("a2") = a2;
+    register long r_a3 asm("a3") = a3;
+    register long r_a7 asm("a7") = sys;
+    asm volatile("ecall"
+                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
+                 : "r"(r_a7)
+                 : "memory");
+    return r_a0;
+}
+static long shell_invoke(long op, long a1, long a2, long a3) {
+    return shell_ecall4(SHELL_V2_INVOKE, op, a1, a2, a3);
+}
+#else
+static long shell_invoke(long op, long a1, long a2, long a3) {
+    (void)op; (void)a1; (void)a2; (void)a3;
+    return -1;
+}
+#endif
+static unsigned long u_invoke_pt_alloc(void) {
+    long rc = shell_invoke(SHELL_V2_INV_PT_ALLOC, 0, 0, 0);
+    if (rc < 0) return 0xFFFFFFFFUL;
+    return (unsigned long)rc;
+}
+static long u_invoke_map(unsigned long frame, unsigned long vpn) {
+    return shell_invoke(SHELL_V2_INV_MAP, (long)frame, (long)vpn, 0);
+}
 
 static void shell_puts(const char *s) {
     while (*s) moonlight_putc(*s++);
@@ -577,18 +615,15 @@ void shell_exec_line(const char *line) {
             while (t[tlen]) tlen++;
             fd = vfs_open(VFS_SHELL_CLIENT, name, VFS_R | VFS_W);
             if (fd < 0) {
-                /* First use: mint from the demo frame pool (production:
-                 * Untyped retype via invoke hands the server a Frame cap). */
-                if (vfs_shell_nframes >= 2) {
-                    shell_puts("write: demo frame pool exhausted\n");
+                /* Production: mint via Untyped retype (PT_ALLOC + MAP). */
+                unsigned long frame = u_invoke_pt_alloc();
+                unsigned long scratch_vpn = SHELL_SCRATCH_VPN;
+                if (frame == 0xFFFFFFFFUL) { shell_puts("write: no frames\n"); return; }
+                if (u_invoke_map(frame, scratch_vpn) != 0) { shell_puts("write: map failed\n"); return; }
+                if (vfs_create(VFS_SHELL_CLIENT, name, (unsigned)frame, 4096, 0, VFS_R) == 0) {
+                    fd = vfs_open(VFS_SHELL_CLIENT, name, VFS_R | VFS_W);
                 } else {
-                    unsigned cap = (unsigned)(unsigned long)&vfs_shell_frames[vfs_shell_nframes];
-                    if (vfs_create(VFS_SHELL_CLIENT, name, cap, 4096, 0, VFS_R) == 0) {
-                        vfs_shell_nframes++;
-                        fd = vfs_open(VFS_SHELL_CLIENT, name, VFS_R | VFS_W);
-                    } else {
-                        shell_puts("write: create denied\n");
-                    }
+                    shell_puts("write: create denied\n");
                 }
             }
             if (fd >= 0) {

@@ -663,19 +663,47 @@ void vfs_server_run(uint32_t ep) {
     }
 }
 
-/* Demo seed for the in-kernel shell build (called from shell_main via a
+/* Invoked frame for the "sh" placeholder (V2_INVOKE ecall 7, PT_ALLOC 6
+ * mints a zeroed frame cap in our table). riscv: real ecall; host-sim:
+ * stub that fails closed (init creates nothing, same as alloc failure). */
+#define VFS_INV_PT_ALLOC 6
+#ifdef __riscv
+static long vfs_ecall4(long sys, long a0, long a1, long a2, long a3) {
+    register long r_a0 asm("a0") = a0;
+    register long r_a1 asm("a1") = a1;
+    register long r_a2 asm("a2") = a2;
+    register long r_a3 asm("a3") = a3;
+    register long r_a7 asm("a7") = sys;
+    asm volatile("ecall"
+                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
+                 : "r"(r_a7)
+                 : "memory");
+    return r_a0;
+}
+static long vfs_invoke(long op, long a1, long a2, long a3) {
+    return vfs_ecall4(7, op, a1, a2, a3);
+}
+#else
+static long vfs_invoke(long op, long a1, long a2, long a3) {
+    (void)op; (void)a1; (void)a2; (void)a3;
+    return -1;
+}
+#endif
+
+/* Seed for the in-kernel shell build (called from shell_main via a
  * weak symbol; the bare moonsh.elf build has no VFS server so the call is
- * skipped there). Registers a placeholder "sh" file on a demo pool frame.
+ * skipped there). Registers a placeholder "sh" file backed by a PT_ALLOC
+ * invoked frame recorded in the file slot (minted via Untyped retype,
+ * no hardcoded frame). Clamp/validate-then-write stays in
+ * vfs_create/vfs_write and the IPC reply shapes are untouched.
  * NOTE: this is NOT the initrd: the initrd blob lives in the kernel image
  * (.data) and is looked up via initrd_lookup(), it never occupies pool
  * frames. A production console server would populate entries from the
  * initrd TOC instead of hardcoding one frame. */
 void vfs_server_init(void) {
-    /* moonsh (shell) - frame 1 */
-    {
-        unsigned cap = 1; /* frame 1 in initrd */
-        unsigned size = 4096; /* 1 frame = 4096 bytes (ELF is small) */
-        vfs_create(VFS_SHELL_CLIENT, "sh", cap, size, 0, VFS_READ);
-    }
+    long slot = vfs_invoke(VFS_INV_PT_ALLOC, 0, 0, 0);
+    if (slot < 0) return; /* fail closed: no placeholder without a frame */
+    /* moonsh (shell): 1 frame = 4096 bytes. */
+    vfs_create(VFS_SHELL_CLIENT, "sh", (unsigned)slot, 4096, 0, VFS_READ);
     /* Add more binaries here as they're added to initrd */
 }
