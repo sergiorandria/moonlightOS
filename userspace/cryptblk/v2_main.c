@@ -24,25 +24,25 @@
  *   reply [0, ...] = OK (+ payload), [-1] = INVALID
  *
  * Boot demo (self-contained, single-flight, net-phase2 precedent): the
- * ELF brings up its OWN driver + disk + TEST_KEYS unlock at boot and
- * prints the CRYPT: markers. It performs no addressed-EP SEND/RECV
- * during the demo: each EP is a single rendezvous (oldest waiter wins),
- * so a boot-time
- * SEND from here would land on an unrelated waiter (mem_server blocks
- * first) and wedge the demo. The vault-mediated T_KEY release path below
+ * ELF brings up its OWN driver + disk, attests the vault RANDOM service
+ * (RANDOM_REQ on EP8, R_OK from vault qube6 on EP9 — rendezvous queues +
+ * blocks until the vault serves), derives the KEK, and prints the CRYPT:
+ * markers. The vault-mediated T_KEY release path below
  * (key_consume) is the production shape — same grant slot, same ack tag,
  * same canary check — reached via AdminVM-attended flows, not at boot.
  * Single-flight is structural: one request in flight (driver), one RECV
  * per service-loop iteration, no state held across iterations except the
  * VMK + mounted superblock.
  *
- * TEST_KEYS honesty (smoke-only): the boot demo derives its KEK from the
- * fixed vector passphrase CRYPT_TEST_PW with CRYPT_TEST_ITERS iterations
- * (small for the QEMU gate). The release path is manual AdminVM entry at
+ * Seed honesty (dev-grade): the boot demo derives its KEK from the
+ * vault-attested seed words via pbkdf2_hmac_sha256 with the per-volume
+ * header salt at CRYPT_KDF_SMOKE_ITERS iterations (small for the QEMU
+ * gate; no compiled-in passphrase). The attestation nonce is public wire
+ * bytes, so secrecy still rests on future AdminVM passphrase entry at
  * CRYPT_KDF_ITERS_DEFAULT work factor, documented, never compiled in.
- * Format uses a FIXED DRBG seed (deterministic image bytes across fresh
- * formats); production seeding from a hardware RNG is future work (the
- * DRBG is test-grade, disclosed in userspace/crypt/kdf.h).
+ * Format folds rdtime into the DRBG (fresh salt/VMK per format); the
+ * DRBG itself stays test-grade, disclosed in userspace/crypt/kdf.h —
+ * production hardware-RNG seeding is future work (audit-deferred).
  *
  * Sector layout (4K sectors; disk 256M = 65536 sectors of 512B LBA):
  *   0..1 header (HEADER_SECTORS; USED bytes 568 all in sector 0)
@@ -202,16 +202,14 @@
 #define CR_SUPER_MAGIC 0x3142535450595243UL /* "CRYPTSB1" LE */
 #define CR_SUPER_NFILES 2UL
 
-/* TEST_KEYS vector (smoke-only, see header honesty note). */
-#define CRYPT_TEST_ITERS 8192UL
-static const uint8_t crypt_test_pw[21] = {
-    109, 111, 111, 110, 108, 105, 103, 104, 116, 45, 102, 100, 101, 45,
-    116, 101, 115, 116, 45, 118, 49
-}; /* "moonlight-fde-test-v1" as bytes (no string literal games: the
-    * passphrase is test data, and literals would only hide it) */
-static const uint8_t crypt_fmt_seed[9] = {
-    67, 82, 89, 80, 84, 70, 77, 84, 49
-}; /* "CRYPTFMT1": fixed DRBG seed for deterministic fresh formats */
+/* Production: KEK derives from vault RANDOM seed + per-volume salt via
+ * pbkdf2_hmac_sha256 (no compiled-in vectors, no fixed format seed). The seed
+ * words arrive through crypt_get_seed below (RANDOM_REQ on EP8, R_OK
+ * from vault qube6 on EP9); the format salt/VMK come from fresh
+ * drbg_next bytes (no fixed DRBG seed). */
+/* QEMU-gate KDF work factor (release factor CRYPT_KDF_ITERS_DEFAULT,
+ * AdminVM-attended, never compiled in). */
+#define CRYPT_KDF_SMOKE_ITERS 8192UL
 
 struct blk_desc {
     uint64_t addr;
@@ -342,6 +340,46 @@ static long u_recv(unsigned long ep, uint64_t *buf, unsigned long cap,
     *qube = (unsigned long)r_a2;
     *ovf = (unsigned long)r_a3;
     return r_a0;
+}
+
+/* Production seed handoff: the 32B KEK password arrives via the vault
+ * RANDOM service, never from a compiled-in vector. The 4 attested reply
+ * words expand LE into 32 seed bytes (4 word reads, bounded); every
+ * failure path wipes. Returns 1 ok, 0 denied.
+ *
+ * Ledger note: Task-3 RANDOM replies carry no seed bytes and grant no
+ * frame (RANDOM_RESP 12 stays reserved), so a literal frame-READ has no
+ * source; the handoff folds the attested reply words themselves. The
+ * per-volume header salt in the PBKDF2 below keeps every volume's KEK
+ * distinct. */
+static int vault_seed_to_local(const uint64_t *w, uint8_t *seed_out)
+{
+    unsigned i;
+    unsigned k;
+    if (!w || !seed_out)
+        return 0;
+    for (i = 0; i < 4; i++) { /* bound: 4 (attested reply words) */
+        uint64_t word = w[i];
+        for (k = 0; k < 8; k++) /* bound: 8 (bytes per word) */
+            seed_out[i * 8u + k] = (uint8_t)(word >> (8u * k));
+    }
+    return 1;
+}
+
+/* Production: KEK derives from vault RANDOM seed + per-volume salt via
+ * pbkdf2_hmac_sha256 (no compiled-in vectors, no fixed format seed). */
+static int crypt_get_seed(uint8_t *seed_out)
+{
+    uint64_t req[4];
+    long n;
+    unsigned long snd = 0, sqb = 0, ovf = 0;
+    if (!seed_out)
+        return 0;
+    req[0] = 11u; req[1] = 0x9e4bu; req[2] = 0u; req[3] = 0u; /* RANDOM_REQ + nonce */
+    if (u_send(8u, req, 4) != 0) return 0;
+    n = u_recv(9u, req, 4, &snd, &sqb, &ovf);
+    if (n < 1 || req[0] != 0u || sqb != 6u) return 0; /* vault qube6 R_OK only */
+    return vault_seed_to_local(req, seed_out); /* 4x word-READ handoff, bounded, wiped */
 }
 
 static long u_invoke(long op, long a1, long a2, long a3)
@@ -815,7 +853,7 @@ static void blk_bringup(crypt_state_t *st)
     st->expect_used = 0;
 }
 
-/* ---- TEST_KEYS unlock + format (smoke-only path, see file header). ---- */
+/* ---- Vault-seeded unlock + format (see file header). ---- */
 
 static uint8_t probe_byte(unsigned long o)
 {
@@ -827,15 +865,19 @@ static uint8_t canary_byte(unsigned long o)
     return (uint8_t)(0xC0u ^ (o & 0xFFu) ^ ((o >> 8) & 0xFFu));
 }
 
-/* Derive the KEK: PBKDF2(TEST_PW, header salt, slot-0 iters). The slot
- * work factor is authoritative (format and unlock agree through it). */
-static int crypt_kek(const vol_header_t *h, uint8_t kek[32])
+/* Derive the KEK: PBKDF2(vault seed, header salt, slot-0 iters). The
+ * slot work factor is authoritative (format and unlock agree through
+ * it). The caller owns the seed (fetched once per boot in
+ * cryptblk_main, wiped after the unlock leg); this path never wipes
+ * it, but wipes the derived KEK on KDF failure. */
+static int crypt_kek(const vol_header_t *h, const uint8_t *seed,
+                     uint8_t kek[32])
 {
-    if (!h || !kek)
+    if (!h || !seed || !kek)
         return -1;
     if (h->slots[0].iters == 0)
         return -1;
-    if (pbkdf2_hmac_sha256(crypt_test_pw, sizeof(crypt_test_pw), h->salt,
+    if (pbkdf2_hmac_sha256(seed, 32, h->salt,
                            32, h->slots[0].iters, kek, 32) != 0) {
         crypt_wipe(kek, 32);
         return -1;
@@ -901,10 +943,12 @@ static int super_entry_parse(const uint8_t *b, unsigned long at,
  * Leaves the VMK wiped and vmk_valid CLEAR so the unlock step re-derives
  * uniformly on both the format and volume-ok paths (the locked leg runs
  * on live state either way). Returns 0 ok, -1 fail-closed. */
-static int crypt_format(crypt_state_t *st)
+static int crypt_format(crypt_state_t *st, const uint8_t *seed)
 {
     uint8_t kek[32];
     uint8_t salt8[8];
+    uint8_t mix[40];
+    uint64_t now;
     vol_header_t *h;
     unsigned long i;
     unsigned long start = 0;
@@ -912,27 +956,38 @@ static int crypt_format(crypt_state_t *st)
     uint8_t nm_blk0[4];
     if (!st)
         return -1;
+    if (!seed)
+        return -1;
     h = &st->hdr;
     crypt_wipe(h, sizeof(*h));
     h->magic = CRYPT_MAGIC;
     h->version = CRYPT_VERSION;
     h->nslots = 1;
-    h->iters = (uint32_t)CRYPT_TEST_ITERS;
+    h->iters = (uint32_t)CRYPT_KDF_SMOKE_ITERS;
     h->reserved = 0;
-    h->slots[0].iters = (uint32_t)CRYPT_TEST_ITERS;
+    h->slots[0].iters = (uint32_t)CRYPT_KDF_SMOKE_ITERS;
     h->slots[0].label = CRYPT_QUBE;
-    /* Deterministic fresh-format bytes (fixed DRBG seed; smoke-only,
-     * see file header). */
-    drbg_seed(crypt_fmt_seed, sizeof(crypt_fmt_seed));
+    /* Fresh per-format DRBG state (no fixed seed): the caller seed
+     * folded with rdtime, hashed into the DRBG; the header salt, VMK
+     * and slot salt come from fresh drbg_next bytes (already linked).
+     * The salt is stored in the header, so freshness here never
+     * affects unlock stability across boots. */
+    now = u_rdtime();
+    for (i = 0; i < 8UL; i++) /* bound: 8 (rdtime bytes) */
+        mix[i] = (uint8_t)(now >> (8u * i));
+    for (i = 0; i < 32UL; i++) /* bound: 32 (seed bytes) */
+        mix[8u + i] = seed[i];
+    drbg_seed(mix, sizeof(mix));
+    crypt_wipe(mix, sizeof(mix));
     drbg_next(h->salt, 32);
     drbg_next(st->vmk, 32);
     drbg_next(salt8, 8);
-    if (crypt_kek(h, kek) != 0) {
+    if (crypt_kek(h, seed, kek) != 0) {
         crypt_wipe(st->vmk, sizeof(st->vmk));
         return -1;
     }
     if (slot_wrap(kek, st->vmk, salt8, CRYPT_QUBE,
-                  (uint32_t)CRYPT_TEST_ITERS, &h->slots[0]) != 0) {
+                   (uint32_t)CRYPT_KDF_SMOKE_ITERS, &h->slots[0]) != 0) {
         crypt_wipe(kek, sizeof(kek));
         crypt_wipe(salt8, sizeof(salt8));
         crypt_wipe(st->vmk, sizeof(st->vmk));
@@ -1007,16 +1062,17 @@ static int crypt_format(crypt_state_t *st)
 }
 
 /* Unlock: KEK -> unwrap slot 0 (label-pinned to this qube) -> VMK ->
- * canary-verify. Must start locked. Returns 0 ok, -1 fail-closed. */
-static int crypt_unlock(crypt_state_t *st)
+ * canary-verify. Must start locked. The seed is caller-owned (fetched
+ * once per boot, wiped after this leg). Returns 0 ok, -1 fail-closed. */
+static int crypt_unlock(crypt_state_t *st, const uint8_t *seed)
 {
     uint8_t kek[32];
     unsigned long i;
-    if (!st || st->vmk_valid || !st->hdr_valid)
+    if (!st || !seed || st->vmk_valid || !st->hdr_valid)
         return -1;
     if (st->hdr.slots[0].label != (uint32_t)CRYPT_QUBE)
         return -1; /* volume slot is released to the cryptblk label only */
-    if (crypt_kek(&st->hdr, kek) != 0)
+    if (crypt_kek(&st->hdr, seed, kek) != 0)
         return -1;
     if (slot_unwrap(kek, &st->hdr.slots[0], st->vmk) != 0) {
         crypt_wipe(kek, sizeof(kek));
@@ -1248,6 +1304,7 @@ void cryptblk_main(void)
     /* Explicit field init: `= {0}` on this multi-KB struct would emit a
      * memset call, which does not exist freestanding (-nostdlib). */
     crypt_state_t st;
+    uint8_t seed[32];
     unsigned long i;
     unsigned long f;
     long r;
@@ -1288,8 +1345,20 @@ void cryptblk_main(void)
     u_puts("CRYPT: up\n");
     blk_bringup(&st);
 
+    /* Single vault attestation per boot: the seed words are identical on
+     * every fetch (attested fixed reply words), so one RANDOM_REQ
+     * round-trip serves both the format and unlock legs (single-flight,
+     * minimal IPC). Wiped after the unlock leg on every path below. */
+    for (i = 0; i < 32UL; i++) /* bound: 32 (seed bytes) */
+        seed[i] = 0;
+    if (!crypt_get_seed(seed)) {
+        crypt_wipe(seed, sizeof(seed));
+        cr_demo_fail();
+        return;
+    }
+
     /* Provision leg (idempotent): valid header => reuse ("volume ok");
-     * absent magic => TEST_KEYS format ("formatted"). The smoke gate
+     * absent magic => vault-seeded format ("formatted"). The smoke gate
      * accepts either (union-tolerant pair, see tools/verify.sh). */
     if (blk4k_read(&st, 0, st.io) == 0 &&
         layout_parse(st.io, (unsigned long)LAYOUT_HEADER_USED,
@@ -1298,13 +1367,15 @@ void cryptblk_main(void)
         crypt_wipe(st.io, sizeof(st.io));
         u_puts("CRYPT: volume ok\n");
     } else {
-        if (crypt_format(&st) != 0) {
+        if (crypt_format(&st, seed) != 0) {
+            crypt_wipe(seed, sizeof(seed));
             cr_demo_fail();
             return;
         }
         if (blk4k_read(&st, 0, st.io) != 0 ||
             layout_parse(st.io, (unsigned long)LAYOUT_HEADER_USED,
                          &st.hdr) != 0) {
+            crypt_wipe(seed, sizeof(seed));
             cr_demo_fail();
             return;
         }
@@ -1317,13 +1388,16 @@ void cryptblk_main(void)
     r = fs_open(&st, CR_FILE_PROBE, (unsigned long)CRYPT_QUBE,
                 (unsigned long)CRYPT_TID);
     if (r != CR_LOCKED) {
+        crypt_wipe(seed, sizeof(seed));
         cr_demo_fail();
         return;
     }
     u_puts("CRYPT: locked\n");
 
-    /* Unlock leg: TEST_KEYS KDF -> unwrap slot 0 -> canary check. */
-    if (crypt_unlock(&st) != 0) {
+    /* Unlock leg: vault-seed KDF -> unwrap slot 0 -> canary check. */
+    r = crypt_unlock(&st, seed);
+    crypt_wipe(seed, sizeof(seed));
+    if (r != 0) {
         cr_demo_fail();
         return;
     }
@@ -1609,9 +1683,11 @@ void cryptblk_main(void)
             sqb == (unsigned long)QREXEC_QUBE) {
             /* Approved format: format-if-absent. Silent when the volume
              * exists (no waiter on deliver paths); the marker only on
-             * an actual fresh format. Smoke-build behavior: TEST_KEYS
-             * vector (see file header); the AdminVM-attended fresh-KEK
-             * format is future work. */
+             * an actual fresh format. Vault-seeded format (see file
+             * header); the AdminVM-attended fresh-KEK format is
+             * future work. The seed is fetched handler-local and wiped
+             * on every path; a vault DENY skips the format fail-closed
+             * with no state change. */
             if (blk4k_read(&st, 0, st.io) == 0 &&
                 layout_parse(st.io, (unsigned long)LAYOUT_HEADER_USED,
                              &st.hdr) == 0) {
@@ -1619,8 +1695,19 @@ void cryptblk_main(void)
                 crypt_wipe(st.io, sizeof(st.io));
                 continue;
             }
-            if (crypt_format(&st) == 0)
-                u_puts("CRYPT: formatted\n");
+            {
+                uint8_t dseed[32];
+                unsigned long k;
+                int fok;
+                for (k = 0; k < 32UL; k++) /* bound: 32 (seed bytes) */
+                    dseed[k] = 0;
+                fok = crypt_get_seed(dseed);
+                if (fok)
+                    fok = (crypt_format(&st, dseed) == 0) ? 1 : 0;
+                crypt_wipe(dseed, sizeof(dseed));
+                if (fok)
+                    u_puts("CRYPT: formatted\n");
+            }
             continue;
         }
 
