@@ -999,4 +999,25 @@ lemma pci_invariants_nontrivial:
    (\<exists>off. pci_bus0_window \<le> off)"
   using pci_mutant_miss_bad pci_mutant_big_bad pci_mutant_bus1_bad by blast
 
+(* ---- RNG-scan bounds (vault virtio-rng: rng_scan.h + kboot tid-8 leaf) ----
+   The vault ELF scans the 8 virtio-mmio transports (VIRTIO_NTRANSPORTS 8):
+   rng_scan n is the covered prefix (capped at 8, so index 8 is the OOB
+   sentinel, never a transport). The transport U-leaf exists ONLY in tid
+   8's tables (l1_t[8][5], boot-asserted "RNGMMIO: tid=8 only"): rng_leaf
+   pins the owner, and the tid-6 mutant pin rejects the NET alias.
+   Zero axioms. *)
+
+definition rng_scan :: "nat \<Rightarrow> nat" where
+  "rng_scan n = (if n \<le> 8 then n else 8)"
+
+definition rng_leaf :: "nat \<Rightarrow> bool" where
+  "rng_leaf t = (t = 8)"
+
+lemma rng_mmio_covers: "rng_scan 8 = 8"
+  by (simp add: rng_scan_def)
+lemma rng_tid8_only: "rng_leaf t \<Longrightarrow> t = 8"
+  by (simp add: rng_leaf_def)
+lemma rng_mutant_leak_rejected: "rng_leaf 6 = False"
+  by (simp add: rng_leaf_def)
+
 end

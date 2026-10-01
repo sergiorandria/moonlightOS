@@ -159,13 +159,13 @@
  * T_CALL DENY-direct arm). Allowlist is cryptblk qube7-only
  * (sqb != 7 -> R_DENY), mirroring the GUI qube0-only precedent
  * (userspace/gui/v2_main.c). On success the 32B device sample is mixed
- * with rdtime + irq_delta via rng_mix_ok and reseeds this ELF's DRBG
+ * with rdtime + service_delta via rng_mix_ok and reseeds this ELF's DRBG
  * (kdf.h single owner); the reply is [0] = OK, [-1] = DENY.
  *
- * irq_delta note: the brief assumes an IRQ path, but the vault owns no
+ * service_delta note: the brief assumes an IRQ path, but the vault owns no
  * IRQ line (the kernel raises notify bits only for tids 6/9), so
  * rng_last_t tracks the last RANDOM service time (boot rdtime on the
- * first request); the delta is still fresh rdtime per request.
+ * first request); the delta is fresh rdtime per request, not IRQ jitter.
  *
  * drbg note: the brief names drbg_reseed, which does not exist in
  * kdf.h; the existing owner API drbg_seed(mixed, 32) is the reseed.
@@ -684,7 +684,7 @@ void vault_main(void)
             uint8_t hw[32];
             uint8_t mixed[32];
             uint64_t now;
-            uint64_t irq_delta;
+            uint64_t service_delta;
             req_qb = sqb;
             if (req_qb != 7u) {
                 u_reply(snd, R_DENY);
@@ -695,9 +695,9 @@ void vault_main(void)
                 mixed[i] = 0;
             }
             now = u_rdtime();
-            irq_delta = now - rng_last_t;
+            service_delta = now - rng_last_t;
             if (!vault_read_hw(hw) ||
-                !rng_mix_ok(hw, 32u, now, irq_delta, mixed)) {
+                !rng_mix_ok(hw, 32u, now, service_delta, mixed)) {
                 crypt_wipe(hw, sizeof(hw));
                 crypt_wipe(mixed, sizeof(mixed));
                 u_reply(snd, R_DENY);

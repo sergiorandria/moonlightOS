@@ -143,7 +143,7 @@ if [ -f kernel/build/moonlight.elf ]; then
         truncate -s 256M "$DISK"
       fi
     fi
-    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -global virtio-mmio.force-legacy=off -drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 -device bochs-display 2>&1 | tr -d '\0')
+    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -device virtio-rng-device -global virtio-mmio.force-legacy=off -drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 -device bochs-display 2>&1 | tr -d '\0')
     # Fail closed: every missing marker flips the gate to FAIL (a smoke
     # that only prints FAIL lines but reports PASS proves nothing).
     QEMU_FAIL=0
@@ -193,6 +193,7 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "GUI: up" && echo "v2 smoke: gui up" || { echo "v2 smoke: FAIL (no gui up)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUIMMIO: tid=10 only" && echo "v2 smoke: guimmio leaf" || { echo "v2 smoke: FAIL (no guimmio)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "RNGMMIO: tid=8 only" && echo "v2 smoke: rngmmio leaf" || { echo "v2 smoke: FAIL (no rngmmio)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "RNG: up" && echo "v2 smoke: rng up" || { echo "v2 smoke: FAIL (no rng up)"; QEMU_FAIL=1; }
     # S4a display pattern (Task 5): thread-A drives 4 FILL legs through
     # the gui server (words: tag 6, xy=x<<16|y, wh=w<<16|h, 32-bit XRGB
     # color in the low 32 bits) — fullscreen black clear + full-width

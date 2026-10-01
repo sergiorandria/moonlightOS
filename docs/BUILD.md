@@ -54,7 +54,8 @@ tools/verify.sh
 
 Stages: host unit tests (ABI regression, servers + shell, driver host-sims,
 freestanding libc, v2 IPC/caps, qube ask-args `test_qargs`, firewall/net
-`test_netfw`, FDE `test_aead` KATs + `test_crypt` layout/slots, S4a
+`test_netfw`, FDE `test_aead` KATs + `test_crypt` layout/slots, RNG
+`test_rng` mixer/scan KATs, S4a
 `test_gui` pixel + PCI KATs) → production gates (linker layout: no
 PROGBITS inside the `[_bss,_bss_end)` clear range; `user.c` rodata ban) →
 Isabelle `kernel/isabelle` session (`V2` + `Qubes_A` + `Qubes_B` + `Qubes_C` + `Qubes_D`, anti-vacuity gate) →
@@ -73,9 +74,12 @@ tools/build_qemu.sh           # alias for `make -C kernel`
 The runner uses `-bios default` (OpenSBI) — the v2 kernel is S-mode; the v1
 `-bios none` world is gone. It attaches a virtio-net device on a user
 (SLIRP) netdev plus `-global virtio-mmio.force-legacy=off` so the
-transports come up modern (version 2); the `-global` also flips the blk
+ transports come up modern (version 2); the `-global` also flips the blk
 transport to modern mode, which the block driver already probes/handles
 via `vmm_probe`, so no blk change was needed. It attaches `-device
+virtio-rng-device` for the vault RNG (`verify.sh [4/4]` uses the same
+device — without it the vault parks marker-free and the `RNG: up` gate
+fails). It attaches `-device
 bochs-display` (S4a: the display server needs its PCI display device even
 headless — `run_qemu.sh` falls back to bochs when `VGA_ARGS` is empty, and
 `verify.sh [4/4]` uses the same single cmdline; `-display none` keeps the
@@ -99,6 +103,8 @@ GUIQ: labels ok
 GUIMMIO: tid=10 only
 GUI: up
 QUB: qube0 qube1 up
+RNGMMIO: tid=8 only
+RNG: up
 VAULT: up
 VAULTQ: labels ok
 CRYPTQ: labels ok
@@ -151,11 +157,18 @@ over EP3 (keys.sign → `[1]` R_PENDING; clipboard → `[-1]` R_DENY —
 reply words, never the `usend` return). Any deviation parks A
 marker-free and the `[4/4]` gate FAILs on the missing markers above.
 
-FDE honesty notes: the smoke unlock uses `TEST_KEYS` vectors compiled
-behind a build flag (smoke-only — release passphrase entry is
-manual-only); the threat model is KDF-only against a stolen disk
+FDE honesty notes: the smoke KEK derives from the vault virtio-rng seed
+via PBKDF2 with the per-volume header salt at small smoke iters
+(dev-grade only — the seed crosses as public wire bytes, so no
+production secrecy is claimed; release passphrase entry is manual-only
+and deferred); pre-rotation (TEST_KEYS-era) disk images no longer
+unlock, so a stale image fails the smoke — delete
+`kernel/build/moonlight-disk.img` for a fresh format. The threat model
+is KDF-only against a stolen disk
 (PBKDF2-HMAC-SHA256 600k, no Argon2 yet), with no rollback protection,
-a test-grade DRBG (no hardware RNG yet), plaintext filenames, and no
+a test-grade DRBG (vault reseeds per RANDOM service from mixed hardware
+bytes, but the DRBG construction itself is unaudited — audit deferred),
+plaintext filenames, and no
 re-encryption on revoke.
 
 ## 5. Isabelle

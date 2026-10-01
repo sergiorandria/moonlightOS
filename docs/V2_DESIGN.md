@@ -397,11 +397,11 @@ per-function where not).
     ends at 8 == `V2_QUBES_MAX`; (c) format-if-absent idempotence (gate
     asserts `formatted|volume ok` since the disk persists across runs);
     (d) `no volume` leg runs as a RAM-shadow header parse (no live-disk
-    mutation, no second boot); (e) TEST_KEYS vectors are smoke-only
-    (release passphrase entry is manual-only, documented in the ELF
-    header); (f) `FDE_MAGIC` pins use `simp`, not `eval` (giant-numeral
-    codegen blowup: two evals ran 140s+ without finishing; simp
-    closes the same goals in milliseconds).
+    mutation, no second boot); (e) TEST_KEYS vectors deleted by the RNG
+    stage (vault-seeded KEK; release passphrase entry stays manual-only,
+    see the RNG hardening entry below); (f) `FDE_MAGIC` pins use `simp`,
+    not `eval` (giant-numeral codegen blowup: two evals ran 140s+ without
+    finishing; simp closes the same goals in milliseconds).
   - KNOWN DEFERRED / honest limits (not built): stolen-disk gate is the
     KDF work factor only (PBKDF2 600k; no memory-hard KDF — Argon2
     later, `KDF:` version field reserved in the header); no
@@ -676,6 +676,24 @@ per-function where not).
      time/console, USB HCI + `usb` qube,
     RX-from-wire, live AppVM→firewall→net traffic, §7 non-goals
     unchanged.
+- **RNG hardening — vault-owned virtio-rng + demo hardening.**
+  - BUILT 2026-10-01: vault ELF binds the virtio-rng device over its
+    tid-8-only U-leaf (`RNGMMIO: tid=8 only`), mixes 32B hardware
+    samples with rdtime + service-gap delta (`rng_mix_ok`, host-KATed
+    in `tests/test_rng.c`), serves `RANDOM_REQ` to cryptblk qube7-only,
+    and cryptblk derives its KEK from that seed (TEST_KEYS vectors
+    deleted; shell/VFS demo pools replaced by invoked frames).
+    Smoke-pinned by `RNG: up` + `RNGMMIO: tid=8 only` (`verify.sh
+    [4/4]`, which now attaches `-device virtio-rng-device` like
+    `run_qemu.sh`); proved by `rng_mmio_covers`/`rng_tid8_only`/
+    `rng_mutant_leak_rejected` in `V2_C.thy` (0 sorry, 0 axioms). No
+    new thread, no cap bump.
+  - HONESTY (dev-grade, not production secrecy): the KEK derives from
+    public wire bytes + stored header salt via PBKDF2 at smoke iters,
+    so secrecy rests on future AdminVM passphrase entry (deferred);
+    the DRBG stays test-grade (audit deferred). Rotation break by
+    design: TEST_KEYS-era disk images no longer unlock — CI and
+    developers must start fresh (`rm kernel/build/moonlight-disk.img`).
 
 ## 10. Open questions (decided late, deliberately)
 

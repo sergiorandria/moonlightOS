@@ -257,7 +257,17 @@ the stamped caller (non-owner ⇒ NOTFOUND, no disk I/O). Tag mismatch
 `slot_release_only_to_label`, `ciphertext_view_independent`,
 `no_ambient_decrypt`, `c_slot_release_eq` in `Qubes_D.thy` (crypto
 strength via host KAT-correspondence, hash reasoning over the
-`pkt_hash` stand-in).
+ `pkt_hash` stand-in).
+
+### RNG (vault-owned virtio-rng, built)
+
+The vault ELF (thread 8, `RNG_UVA 0x80A00000`) owns the only RNG
+transport U-leaf (tid-8-only, boot-asserted `RNGMMIO: tid=8 only`, same
+shape as the NET/BLK leaves); it binds the virtio-rng device (dev 4)
+by scanning the 8 transports, mixes each 32B hardware sample with
+rdtime + service-gap delta via `rng_mix_ok`, and serves it as
+`RANDOM_REQ 11` on EP8 to cryptblk qube7-only (any other requester
+gets `R_DENY`), reseeding its DRBG per service.
 
 ### Display layers (S4a, built)
 
