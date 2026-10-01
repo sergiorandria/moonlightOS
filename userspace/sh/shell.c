@@ -754,6 +754,34 @@ void shell_exec_line(const char *line) {
     }
 }
 
+/* sh_feed: append chunk bytes to the line buffer, dispatch complete lines.
+ * Pure (no ecalls): the RECV loop and host tests share it. Lines cap at
+ * SHELL_LINE_MAX-1 (128); overflow drops the line fail-closed. */
+static char sh_feed_buf[SHELL_LINE_MAX];
+static unsigned sh_feed_len = 0;
+int sh_feed(const char *chunk, unsigned n) {
+    unsigned i;
+    int dispatched = 0;
+    if (!chunk || n > 16u) return -1;
+    for (i = 0u; i < n; i++) { /* bound: 16 (chunk cap above) */
+        if (sh_feed_len >= (unsigned)SHELL_LINE_MAX - 1u) {
+            sh_feed_len = 0;
+            sh_feed_buf[0] = '\0';
+            shell_puts("SH: line too long\n");
+            return -1;
+        }
+        sh_feed_buf[sh_feed_len++] = chunk[i];
+        if (chunk[i] == '\n') {
+            sh_feed_buf[sh_feed_len - 1u] = '\0';
+            shell_exec_line(sh_feed_buf);
+            sh_feed_buf[0] = '\0';
+            sh_feed_len = 0;
+            dispatched++;
+        }
+    }
+    return dispatched;
+}
+
 /* ---- interactive line reader (history + VGA-safe editing) ---- */
 #define PROMPT "moonsh> "
 
