@@ -151,8 +151,8 @@
  * Task-1 bound/sentinel (t < 8, 0xFFFFFFFF = no transport), but its PA
  * is never dereferenced.
  *
- * Magic (ledger a): rng_scan.h defines no VIRTIO_MAGIC_VAL, so the
- * virtio-mmio magic ("virt") is defined inline in this TU only.
+ * Magic (ledger a): VIRTIO_MAGIC_VAL ("virt") lives in rng_scan.h
+ * and is probed here; no TU-local duplicate.
  *
  * RANDOM_REQ [11, nonce, 0, 0] arrives as its own tag (11), NOT as a
  * T_DELIVER, so its arm sits BEFORE the deliver gate below (after the
@@ -179,7 +179,6 @@
 
 #define RNG_UVA 0x80A00000UL
 #define RNG_UVA_STRIDE 0x1000UL
-#define RNG_MAGIC_VAL 0x74726976u
 
 /* virtio-mmio register offsets (mirrors net driver + virtio_mmio.h). */
 #define RNG_R_MAGIC 0x000u
@@ -300,7 +299,7 @@ static int vault_rng_bind(void)
             continue;
         regs = (volatile uint32_t *)(RNG_UVA + t * RNG_UVA_STRIDE);
         magic = rng_r(regs, RNG_R_MAGIC);
-        if (magic != RNG_MAGIC_VAL)
+        if (magic != VIRTIO_MAGIC_VAL)
             continue;
         dev = rng_r(regs, RNG_R_DEVICE_ID);
         if (!rng_dev_match(dev))
@@ -386,7 +385,11 @@ static int vault_read_hw(uint8_t *hw)
     d[0].flags = (uint16_t)RNG_DESC_F_WRITE;
     d[0].next = 0u;
     rng_fence();
-    a->ring[0] = rng_seen;
+    /* Avail ring carries the descriptor id (always 0: QNUM 1, single
+     * descriptor); the sequence lives in idx (rng_seen + 1) and the
+     * used-ring poll below. Posting the sequence as the id hangs the
+     * 2nd+ request (device never completes id != 0). */
+    a->ring[0] = 0;
     rng_fence();
     a->idx = (uint16_t)(rng_seen + 1u);
     rng_fence();
