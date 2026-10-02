@@ -107,10 +107,12 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
 #define VIRTIO_DEV_RNG 4u
 #define PLIC_BASE 0x0c000000UL
 /* PLIC hart-0 contexts (sifive_plic, stride 0x80 enables / 0x1000 claim):
- * the M-context set is reached via delegation, the S-context set signals
- * S-mode directly. Measured on the pinned QEMU: only the S-context
- * delivers to the hart (an M-context claim succeeds but MEIP never
- * asserts), so both are programmed and the handler claims both. */
+ * M-context set (0x0c002000 / 0x0c200000) reached via delegation,
+ * S-context set (0x0c002080 / 0x0c201000) signals S-mode directly.
+ * Measured on pinned QEMU: only S-context delivers to hart (M-context claim
+ * succeeds but MEIP never asserts). Both programmed as defense-in-depth:
+ * M-context delegation path may activate on different firmware. Handler
+ * claims both contexts. */
 #define PLIC_ENABLE_M 0x0c002000UL
 #define PLIC_ENABLE_S 0x0c002080UL
 #define PLIC_THRESH_M 0x0c200000UL
@@ -120,12 +122,12 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
 #define NET_IRQ_BIT 0x1UL /* notify bit the scause=9 handler raises on tid 6 */
 #define BLK_IRQ_BIT 0x2UL /* notify bit the scause=9 handler raises on tid 9 */
 
-/* Phase-2 NIC IRQ (1+transport index), discovered at boot; 0xFFFFFFFF
- * when no modern net transport exists (handler then matches nothing). */
-static uint32_t net_virtio_irq = 0xFFFFFFFFUL;
-/* FDE block IRQ (1+transport index), discovered at boot; 0xFFFFFFFF
- * when no modern blk transport exists (handler then matches nothing). */
-static uint32_t blk_virtio_irq = 0xFFFFFFFFUL;
+/* Virtio IRQ discovery: Phase-2 NIC and FDE block IRQ (1+transport index),
+ * discovered at boot; VIRTIO_IRQ_NOT_FOUND when no modern device exists
+ * (handler then matches nothing, fail-closed). */
+#define VIRTIO_IRQ_NOT_FOUND 0xFFFFFFFFUL
+static uint32_t net_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
+static uint32_t blk_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
 
 /* V2_INV_WRITE/READ move exactly one 64-bit word: the caps.h model is
  * word-per-frame (fdata[f] = val), so the real store/load mirrors exactly
@@ -160,11 +162,20 @@ static uint64_t l0_blkmmio[512] __attribute__((aligned(4096)));
  * l1_t[6][5]. The 8 transport pages, RW, never X. Exclusivity asserted
  * at boot ("RNGMMIO"), with the NETMMIO gate tolerating tid 8. */
 static uint64_t l0_rngmmio[512] __attribute__((aligned(4096)));
+/* S4a GUI configuration: Resolution and display parameters.
+ * Current: 800×600×32 (XRGB, matches QEMU bochs-display default).
+ * Future: Runtime negotiation via VBE/EDID (S4b). */
+#define GUI_WIDTH 800
+#define GUI_HEIGHT 600
+#define GUI_BPP 32 /* bits per pixel: 32-bit XRGB */
+#define GUI_STRIDE (GUI_WIDTH * (GUI_BPP / 8)) /* bytes per scanline */
+#define GUI_FB_SIZE (GUI_HEIGHT * GUI_STRIDE)  /* total framebuffer bytes */
+
 /* S4a GUI leaves (Task-2 VAs, kernel maps / ELF scans):
  * - LFB U-leaf l0_guifb: 512 pages (2MB window) at GUI_LFB_PHYS, wired at
  *   l1_t[10][6] = UVA 0x80C00000. Reuses the BLK leaf INDEX in tid-10-only
  *   tables (every thread owns its l1_t, so no alias with l1_t[9][6]).
- *   Covers the 800*600*4 frame (469 pages) inside the programmed BAR.
+ *   Covers the GUI_FB_SIZE frame (469 pages) inside the programmed BAR.
  * - ECAM U-leaf l0_guiecam: bus-0 config range (64KB = 16 pages) at
  *   GUI_ECAM_PHYS, wired at l1_t[10][7] = UVA 0x80E00000 (fresh index).
  *   RW: the ELF's BAR mask probe writes all-ones and restores.
@@ -172,13 +183,13 @@ static uint64_t l0_rngmmio[512] __attribute__((aligned(4096)));
 #define GUI_LFB_UVA 0x80C00000UL
 #define GUI_ECAM_UVA 0x80E00000UL
 #define GUI_ECAM_PHYS 0x30000000UL /* virt-machine ECAM base (fixed) */
-#define GUI_LFB_PHYS 0x40000000UL /* kernel-assigned BAR0 (PCI low-MMIO window, 64M-aligned) */
-#define GUI_ECAM_PAGES 16 /* bound: bus-0 config range 64KB (32 dev x 2KB) */
-#define GUI_LFB_PAGES 512 /* bound: one l0 table (2MB window >= 469-page frame) */
-#define GUI_PCI_VEN 0x1234u /* bochs-display vendor (QEMU include/hw/pci/pci.h) */
-#define GUI_PCI_DEV 0x1111u /* bochs-display device (QEMU hw/display/bochs-display.c) */
-#define GUI_LFB_MAX 0x4000000u /* largest BAR the kernel assigns (64M, ELF re-validates) */
-#define GUI_FB_MIN (800u * 600u * 4u) /* smallest usable LFB: one 800x600x32 frame (ELF enforces same) */
+#define GUI_LFB_PHYS 0x40000000UL  /* kernel-assigned BAR0 (PCI low-MMIO window, 64M-aligned) */
+#define GUI_ECAM_PAGES 16          /* bound: bus-0 config range 64KB (32 dev x 2KB) */
+#define GUI_LFB_PAGES 512          /* bound: one l0 table (2MB window >= 469-page frame) */
+#define GUI_PCI_VEN 0x1234u        /* bochs-display vendor (QEMU include/hw/pci/pci.h) */
+#define GUI_PCI_DEV 0x1111u        /* bochs-display device (QEMU hw/display/bochs-display.c) */
+#define GUI_LFB_MAX 0x4000000u     /* largest BAR the kernel assigns (64M, ELF re-validates) */
+#define GUI_FB_MIN (GUI_WIDTH * GUI_HEIGHT * (GUI_BPP / 8)) /* smallest usable LFB */
 static uint64_t l0_guifb[512] __attribute__((aligned(4096)));
 static uint64_t l0_guiecam[512] __attribute__((aligned(4096)));
 
@@ -283,32 +294,52 @@ static void pagetable_init(void) {
     }
 }
 
-/* ---- Frame pool (bitmap, 1=free, 0=in-use) ---- */
+/* ---- Frame pool (bitmap, 1=free, 0=in-use) ----
+ * Frame 0 stays kernel-reserved (its page tables live in kernel RAM, not
+ * in the v2 frame region). Frames 1..V2_FRAME_TOTAL-1 map to real physical
+ * pages at V2_FRAME_PHYS_BASE + f*4096. */
 #define V2_FRAME_TOTAL (V2_FRAMES_MAX)
 uint8_t frame_bitmap[V2_FRAME_TOTAL]; /* 1=free, 0=used */
 
-static void frame_pool_init(void) {
-    /* Frame 0 stays reserved for the kernel (its page tables live in the
-     * kernel's own RAM, not in the v2 frame region). Frames 1..7 map to
-     * real physical pages at V2_FRAME_PHYS_BASE + f*4096. */
+/* Forward declaration for frame_free */
+static void frame_zero(int f);
+
+static void frame_pool_init(void)
+{
+    /* Initialize all frames as free, then reserve frame 0 for kernel */
     for (int i = 0; i < V2_FRAME_TOTAL; i++) /* bound: V2_FRAME_TOTAL */
         frame_bitmap[i] = 1;
-    frame_bitmap[0] = 0; /* frame 0: reserved for the kernel */
+    frame_bitmap[0] = 0; /* frame 0: kernel-reserved (page tables in kernel RAM) */
 }
 
-static int frame_alloc(void) {
-    for (int i = 0; i < V2_FRAME_TOTAL; i++) { /* bound: V2_FRAME_TOTAL */
+static int frame_alloc(void)
+{
+    /* Scan from frame 1 (skip kernel-reserved frame 0) */
+    for (int i = 1; i < V2_FRAME_TOTAL; i++) { /* bound: V2_FRAME_TOTAL */
         if (frame_bitmap[i]) {
             frame_bitmap[i] = 0;
             return i;
         }
     }
-    return -1; /* all frames used */
+    /* Frame pool exhausted: diagnostic message for debugging */
+    kputs("[frame_alloc] EXHAUSTED: all ");
+    kputdec((unsigned long)(V2_FRAME_TOTAL - 1));
+    kputs(" usable frames in use\n");
+    return -1;
 }
 
 static void frame_free(int f) {
-    if (f >= 0 && f < V2_FRAME_TOTAL)
+    if (f >= 0 && f < V2_FRAME_TOTAL) {
+        /* Double-free protection: fail-closed if already free */
+        if (frame_bitmap[f] != 0) {
+            kputs("[frame_free] WARNING: double-free detected for frame ");
+            kputdec((unsigned long)f);
+            kputs(" (ignoring)\n");
+            return;
+        }
+        frame_zero(f); /* Security: zero frame data before returning to pool */
         frame_bitmap[f] = 1;
+    }
 }
 
 /* Zero the 4096-byte real physical page backing frame f. Runs in S-mode
