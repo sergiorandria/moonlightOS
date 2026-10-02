@@ -859,6 +859,93 @@ lemma ipc_send_ep11_rejects:
   "c_send s 11 m st = (st, False)"
   by (simp add: c_send_def max_eps_def)
 
+(* ---- S4b compositor pins (gui server on EP10, server-owned surfaces) ----
+   Shipped C values, verbatim (userspace/gui/v2_main.c + surf.h, 40x30):
+   FILL tag 6 (S4a direct/surface fill), SURF_CREATE 7, SURF_DESTROY 8,
+   COMPOSE 9; replies R_OK 0 / R_DENY -1 (call/response discipline, one
+   reply per RPC); 4 server-owned surfaces of 40x30 px; 20px server-painted
+   chrome strip (direct-path y < 20 DENYed, COMPOSE repaints chrome).
+   There is no message datatype / FILL case to clone here: the model sends
+   raw nat lists, so deliveries⊆sends (c_integrity) + no_cross_deliver
+   already quantify over ALL payloads and the new tags inherit them by
+   instantiation (instance lemmas below pin exactly that). max_eps is
+   UNCHANGED (no-bump). Zero axioms. *)
+
+definition gui_fill_tag :: nat where
+  "gui_fill_tag = 6"
+
+definition gui_surf_create_tag :: nat where
+  "gui_surf_create_tag = 7"
+
+definition gui_surf_destroy_tag :: nat where
+  "gui_surf_destroy_tag = 8"
+
+definition gui_compose_tag :: nat where
+  "gui_compose_tag = 9"
+
+definition gui_surf_n :: nat where
+  "gui_surf_n = 4"
+
+definition gui_surf_w :: nat where
+  "gui_surf_w = 40"
+
+definition gui_surf_h :: nat where
+  "gui_surf_h = 30"
+
+definition gui_chrome_h :: nat where
+  "gui_chrome_h = 20"
+
+(* Tags pairwise distinct (new tags distinct from each other and from FILL). *)
+lemma gui_tags_distinct:
+  "gui_surf_create_tag \<noteq> gui_surf_destroy_tag \<and>
+   gui_surf_create_tag \<noteq> gui_compose_tag \<and>
+   gui_surf_destroy_tag \<noteq> gui_compose_tag \<and>
+   gui_fill_tag \<noteq> gui_surf_create_tag \<and>
+   gui_fill_tag \<noteq> gui_surf_destroy_tag \<and>
+   gui_fill_tag \<noteq> gui_compose_tag"
+  by (simp add: gui_fill_tag_def gui_surf_create_tag_def
+                gui_surf_destroy_tag_def gui_compose_tag_def)
+
+(* No-bump pin: the S4b RPC set rides the S4a bound unchanged. *)
+lemma max_eps_s4b_unchanged:
+  "max_eps = 11"
+  by (simp add: max_eps_def)
+
+(* Pilot legs fit the shipped surfaces (CREATE wh = 40x30; FILL 20x10 at
+   (5,5): 5+20 \<le> 40, 5+10 \<le> 30). *)
+lemma gui_pilot_legs_fit:
+  "gui_surf_w = 40 \<and> gui_surf_h = 30 \<and>
+   5 + 20 \<le> gui_surf_w \<and> 5 + 10 \<le> gui_surf_h"
+  by (simp add: gui_surf_w_def gui_surf_h_def)
+
+(* All three S4b RPC shapes satisfy the bounded-message gate. *)
+lemma ipc_s4b_shapes_msg_ok:
+  "msg_ok [gui_surf_create_tag, sid, wh, fl] \<and>
+   msg_ok [gui_surf_destroy_tag, sid] \<and>
+   msg_ok [gui_compose_tag]"
+  by (simp add: msg_ok_def max_msg_len_def)
+
+(* A SURF_CREATE-shaped send to EP10 preserves deliveries⊆sends ... *)
+lemma ipc_s4b_tagged_send_integrity:
+  "c_integrity st \<Longrightarrow>
+   c_integrity (fst (c_send s 10 [gui_surf_create_tag, sid, wh, fl] st))"
+  by (simp add: ipc_send_integrity)
+
+(* ... and the queued⊆sent invariant ... *)
+lemma ipc_s4b_tagged_queued_subset:
+  "set (sendq st j) \<subseteq> set (sent st) \<Longrightarrow>
+   set (sendq (fst (c_send s 10 [gui_surf_create_tag, sid, wh, fl] st)) j) \<subseteq>
+   set (sent (fst (c_send s 10 [gui_surf_create_tag, sid, wh, fl] st)))"
+  by (simp add: ipc_send_queued_subset)
+
+(* ... and EP separation (a tag-7 send to EP10 leaves every other EP
+   bit-identical): the no_cross_deliver argument, instantiated. *)
+lemma ipc_s4b_ep_separation:
+  "j \<noteq> 10 \<Longrightarrow>
+   sendq (fst (c_send s 10 [gui_surf_create_tag, sid, wh, fl] st)) j = sendq st j \<and>
+   recvq (fst (c_send s 10 [gui_surf_create_tag, sid, wh, fl] st)) j = recvq st j"
+  by (simp add: ep_separation_send)
+
 (* ---- PCI-scan bounds (S4a GUI: userspace/gui/pci.h + v2_main.c bind) ----
    The ELF scans bus 0 only (PCI_BUS0_ONLY): dev < 32, fn < 8. pci_cfg_off
    is the ECAM offset (bus*1MB + dev*2KB + fn*256); the bochs slot binds

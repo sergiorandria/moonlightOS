@@ -42,7 +42,7 @@ gcc -Wall -Wextra -Werror -o /tmp/test_aead tests/test_aead.c 2>&1 && /tmp/test_
 gcc -Wall -Wextra -Werror -o /tmp/test_crypt tests/test_crypt.c 2>&1 && /tmp/test_crypt || echo "FAIL: test_crypt"
 gcc -Wall -Wextra -Werror -o /tmp/test_gui tests/test_gui.c 2>&1 && /tmp/test_gui || echo "FAIL: test_gui"
 gcc -Wall -Wextra -Werror -o /tmp/test_rng tests/test_rng.c 2>&1 && /tmp/test_rng || echo "FAIL: test_rng"
-gcc -Wall -Wextra -o /tmp/test_shell_vfs tests/test_shell_vfs.c 2>&1 && /tmp/test_shell_vfs || echo "FAIL: test_shell_vfs"
+gcc -Wall -Wextra -no-pie -o /tmp/test_shell_vfs tests/test_shell_vfs.c userspace/vfs_server/server.c 2>&1 && /tmp/test_shell_vfs || echo "FAIL: test_shell_vfs"
 if command -v clang &>/dev/null; then
   make -C kernel 2>&1 | tail -n 1 || echo "FAIL: kernel build"
 else
@@ -201,6 +201,7 @@ if [ -f kernel/build/moonlight.elf ]; then
     # 100px red/green/blue bars at y=100/250/400. First validated FILL
     # prints "GUI: fill ok" once; any leg deviation parks marker-free.
     echo "$V2LOG" | grep -q "GUI: fill ok" && echo "v2 smoke: gui fill" || { echo "v2 smoke: FAIL (no gui fill)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "GUI: composed ok" && echo "v2 smoke: gui composed" || { echo "v2 smoke: FAIL (no gui composed)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "QREXEC: admin registered" && echo "v2 smoke: admin live" || { echo "v2 smoke: FAIL (no admin registered)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "VAULT: live ok" && echo "v2 smoke: vault live" || { echo "v2 smoke: FAIL (no vault live)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "AUD: deny rpc=2" && echo "v2 smoke: live deny" || { echo "v2 smoke: FAIL (no live deny)"; QEMU_FAIL=1; }
