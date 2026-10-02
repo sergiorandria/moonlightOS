@@ -35,6 +35,8 @@ Isolation: cross-surface reads impossible (index by `snd`-owned id only), LFB wr
 
 Bad `surf_id`, zero/oversize, unowned, chrome touch, `ovf!=0`, wrong `n` → `R_DENY`, zero pixels touched, single reply. Double-create → `DENY` (must destroy first). Destroy non-owned/missing → `DENY`. `COMPOSE` with clean surfaces → `R_OK`, no LFB touch (idempotent). Kernel `sqb` check + per-surface owner check — either denies alone.
 
+> R3 (2026-10-02): S4a clear starts at y=20; fullscreen clear would touch server chrome and is correctly DENYed.
+
 ## 5. Tests + proofs + markers
 
 - Host KATs: new `surf.h` pure logic (origin/last-pixel, chrome reject, wrap-safe `xe<x`, owner isolation, dirty idempotence) in `tests/test_gui.c`, `verify.sh [1f]`, `-Werror`.

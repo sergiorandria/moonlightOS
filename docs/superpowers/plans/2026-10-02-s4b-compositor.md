@@ -220,6 +220,7 @@ git commit -m "s4b: server surfaces + compose on EP10"
 ### Task 4: pilot client legs + QEMU gate + docs
 
 > R1 (2026-10-02): dims shrunk 200x150 → 64x48 (via 80x60; frame-pool fallback) to fit the 32-slot loader window (no-bump); values below updated. R2 (2026-10-02): dims shrunk 64x48 → 40x30 to free tid-10 cap slot 9 for the QX grant, legs resized to `20x10 at (5,5)` (no-bump); values below updated.
+> R3 (2026-10-02): S4a clear moved below chrome to `(0,20)+800x580` (no-bump, user.c-only); fullscreen clear would touch server chrome and is correctly DENYed.
 
 **Files:**
 - Modify: `kernel/user.c` (thread-A legs), `tools/verify.sh` (smoke expects), `docs/BUILD.md`, `docs/ARCHITECTURE.md`

@@ -191,8 +191,9 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
     /* S4a display legs: clear + 3 bars through the gui server.
      * Words pack lanes (xy = x<<16|y, wh = w<<16|h); GUI_WIDTH×GUI_HEIGHT
      * needs <=10 bits per lane. Color is 32-bit XRGB in the low 32 bits of
-     * word 3 (the server casts buf[3] to uint32_t). Legs: fullscreen
-     * black clear + 3 full-width 100px bars (red y=100, green y=250,
+     * word 3 (the server casts buf[3] to uint32_t). Legs: clear below
+     * chrome (0,20)+800x580; chrome strip is server-painted + 3 full-width
+     * 100px bars (red y=100, green y=250,
      * blue y=400). Geometry is server-validated (rect_fill_ok over the
      * GUI_WIDTH-wide stride paint walk: idx = (y+row)*GUI_WIDTH+(x+col),
      * byte offset idx*4). Each leg: SEND EP10 (expect 0) + RECV EP0
@@ -203,10 +204,10 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
         uint64_t rep[4];
         unsigned long s = 0, q = 0, o = 0;
         long n;
-        /* Clear: fullscreen black */
+        /* Clear below chrome (0,20)+800x580; chrome strip is server-painted */
         fill[0] = 6;
-        fill[1] = (0UL << 16) | 0UL;
-        fill[2] = (800UL << 16) | 600UL;
+        fill[1] = (0UL << 16) | 20UL;
+        fill[2] = (800UL << 16) | 580UL;
         fill[3] = COLOR_BLACK;
         if (usend(10, fill, 4) != 0)
             upark();
