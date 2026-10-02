@@ -179,6 +179,17 @@ static int gui_bind_lfb(void)
  * lines 18-19: *(.data*) *(.got*) *(.sdata*), *(.bss*) *(COMMON)). */
 static int gui_announced = 0;
 
+#include "surf.h"
+#define SURF_CREATE 7
+#define SURF_DESTROY 8
+#define COMPOSE 9
+static uint32_t surf[SURF_N][SURF_W*SURF_H];
+static uint8_t surf_owner[SURF_N] = {0xFF,0xFF,0xFF,0xFF};
+static uint8_t surf_dirty[SURF_N] = {0,0,0};
+static uint8_t surf_has[11] = {0}; /* indexed by snd tid; 1 = owns a surface */
+static uint8_t surf_id_of[11] = {0};
+static int gui_composed = 0;
+
 void gui_main(void)
 {
     unsigned long snd;
@@ -207,13 +218,48 @@ void gui_main(void)
          * passes qube_raw_ok), so enforce qube0-only here. Non-qube-0
          * sender -> DENY, zero pixels touched (S4b will add per-qube
          * surfaces; this stage is output-only for qube 0). */
-        (void)ovf;
+        if (ovf != 0) { u_reply(snd, R_DENY); continue; }
         if (sqb != 0) {
             u_reply(snd, R_DENY);
             continue;
         }
         if (n < 1)
             continue; /* not ours: silent drop, no reply (no waiter) */
+        if (n >= 2 && buf[0] == (uint64_t)SURF_CREATE) { /* [7, sid, wh, flags] */
+            uint32_t sid = (uint32_t)buf[1]; uint32_t wh = (n >= 3) ? (uint32_t)buf[2] : 0u;
+            if (n != 4 || sid >= (uint32_t)SURF_N || !surf_wh_ok(wh) || surf_owner[sid] != 0xFF || surf_has[snd]) { u_reply(snd, R_DENY); continue; }
+            surf_owner[sid] = (uint8_t)snd; surf_has[snd] = 1; surf_id_of[snd] = (uint8_t)sid; surf_dirty[sid] = 0;
+            u_reply(snd, R_OK); continue;
+        }
+        if (n == 2 && buf[0] == (uint64_t)SURF_DESTROY) {
+            uint32_t sid = (uint32_t)buf[1];
+            if (sid >= (uint32_t)SURF_N || surf_owner[sid] != (uint8_t)snd) { u_reply(snd, R_DENY); continue; }
+            surf_owner[sid] = 0xFF; surf_has[snd] = 0; surf_dirty[sid] = 0;
+            u_reply(snd, R_OK); continue;
+        }
+        if (n == 1 && buf[0] == (uint64_t)COMPOSE) {
+            /* bound: SURF_N * SURF_H * SURF_W */
+            for (uint32_t s = 0; s < (uint32_t)SURF_N; s++) { /* bound: SURF_N */
+                if (!surf_dirty[s]) continue;
+                /* full-surface blit at fixed slot origin (s*200 % 800, 20 + s*150 % 580) */
+                uint32_t ox = (s * 200u) % 800u; uint32_t oy = 20u + (s * 150u) % 430u;
+                for (uint32_t r = 0; r < (uint32_t)SURF_H; r++) /* bound: SURF_H */
+                    for (uint32_t c = 0; c < (uint32_t)SURF_W; c++) { /* bound: SURF_W */
+                        uint32_t idx = rect_off(ox + c, oy + r);
+                        if (idx == 0xFFFFFFFFu) continue;
+                        *(volatile uint32_t *)(GUI_LFB_UVA + (unsigned long)(idx * 4u)) = surf[s][r * SURF_W + c];
+                    }
+                surf_dirty[s] = 0;
+            }
+            /* chrome strip: top 20px solid qube color */
+            for (uint32_t y = 0; y < 20u; y++) /* bound: 20 */
+                for (uint32_t x = 0; x < 800u; x++) { /* bound: 800 */
+                    uint32_t idx = rect_off(x, y);
+                    *(volatile uint32_t *)(GUI_LFB_UVA + (unsigned long)(idx * 4u)) = 0x00112233u;
+                }
+            if (!gui_composed) { u_puts("GUI: composed ok\n"); gui_composed = 1; }
+            u_reply(snd, R_OK); continue;
+        }
         if (n < 4 || buf[0] != (uint64_t)FILL) {
             u_reply(snd, R_DENY);
             continue;
@@ -225,10 +271,20 @@ void gui_main(void)
         y = xy & 0xFFFFu;
         w = (wh >> 16) & 0xFFFFu;
         h = wh & 0xFFFFu;
+        if (surf_has[snd]) {
+            uint32_t sid = surf_id_of[snd];
+            if (surf_owner[sid] != (uint8_t)snd || !surf_fill_ok(sid, x, y, w, h)) { u_reply(snd, R_DENY); continue; }
+            for (row = 0; row < h; row++) /* bound: SURF_H */
+                for (col = 0; col < w; col++) /* bound: SURF_W */
+                    surf[sid][(y+row)*SURF_W + (x+col)] = color;
+            surf_dirty[sid] = 1;
+            u_reply(snd, R_OK); continue;
+        }
         if (!rect_fill_ok(x, y, w, h)) {
             u_reply(snd, R_DENY);
             continue;
         }
+        if (y < 20u) { u_reply(snd, R_DENY); continue; }
         /* bound: GUI_W*GUI_H total (rows <= GUI_H, cols <= GUI_W; the
          * validated rect gives w*h <= 800*600, and x+col < 800 /
          * y+row < 600, so rect_off below never hits its sentinel). */
