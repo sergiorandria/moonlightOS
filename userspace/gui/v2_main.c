@@ -243,8 +243,8 @@ void gui_main(void)
             /* bound: SURF_N * SURF_H * SURF_W */
             for (uint32_t s = 0; s < (uint32_t)SURF_N; s++) { /* bound: SURF_N */
                 if (!surf_dirty[s]) continue;
-                /* full-surface blit at fixed slot origin (s*64 % 800, 20 + s*48 % 430) */
-                uint32_t ox = (s * 64u) % 800u; uint32_t oy = 20u + (s * 48u) % 430u;
+                /* full-surface blit at fixed slot origin (s*40 % 800, 20 + s*30 % 430) */
+                uint32_t ox = (s * 40u) % 800u; uint32_t oy = 20u + (s * 30u) % 430u;
                 for (uint32_t r = 0; r < (uint32_t)SURF_H; r++) /* bound: SURF_H */
                     for (uint32_t c = 0; c < (uint32_t)SURF_W; c++) { /* bound: SURF_W */
                         uint32_t idx = rect_off(ox + c, oy + r);

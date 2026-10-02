@@ -23,7 +23,7 @@
 
 ### Task 1: surf.h pure surface math
 
-> R1 (2026-10-02): dims shrunk 200x150 → 64x48 (via 80x60; frame-pool fallback) to fit the 32-slot loader window (no-bump); values below updated.
+> R1 (2026-10-02): dims shrunk 200x150 → 64x48 (via 80x60; frame-pool fallback) to fit the 32-slot loader window (no-bump); values below updated. R2 (2026-10-02): dims shrunk 64x48 → 40x30 to free tid-10 cap slot 9 for the QX grant (no-bump); values below updated.
 
 **Files:**
 - Create: `userspace/gui/surf.h`
@@ -31,7 +31,7 @@
 
 **Interfaces:**
 - Consumes: `userspace/gui/rect.h` (`rect_fill_ok`, `rect_off`, `GUI_W/H/BPP`)
-- Produces: `SURF_N 4`, `SURF_W 64`, `SURF_H 48`, `SURF_MAX (SURF_W*SURF_H*4)`, `CHROME_H 20`, `int surf_wh_ok(uint32_t wh)`, `int surf_fill_ok(uint32_t sid, uint32_t x, uint32_t y, uint32_t w, uint32_t h)`, `uint32_t surf_px(uint32_t sid, uint32_t x, uint32_t y)` — later tasks use exact names.
+- Produces: `SURF_N 4`, `SURF_W 40`, `SURF_H 30`, `SURF_MAX (SURF_W*SURF_H*4)`, `CHROME_H 20`, `int surf_wh_ok(uint32_t wh)`, `int surf_fill_ok(uint32_t sid, uint32_t x, uint32_t y, uint32_t w, uint32_t h)`, `uint32_t surf_px(uint32_t sid, uint32_t x, uint32_t y)` — later tasks use exact names.
 
 - [ ] **Step 1: Create surf.h**
 
@@ -42,8 +42,8 @@
 #include <stdint.h>
 #include "rect.h"
 #define SURF_N 4
-#define SURF_W 64
-#define SURF_H 48
+#define SURF_W 40
+#define SURF_H 30
 #define SURF_MAX (SURF_W*SURF_H*4u)
 #define CHROME_H 20
 static inline int surf_wh_ok(uint32_t wh) {
@@ -120,7 +120,7 @@ git commit -m "s4b: surf.h KATs"
 
 ### Task 3: gui server surfaces + RPCs on EP10
 
-> R1 (2026-10-02): dims shrunk 200x150 → 64x48 (via 80x60; frame-pool fallback) to fit the 32-slot loader window (no-bump); values below updated. Companion fix (same dispatch): `surf_owner` is zero-init + runtime `0xFF` fill — a nonzero initializer emits a 4-byte `.data` that pushes `.bss` off page alignment, which the loader rejects (`elf.c:147`).
+> R1 (2026-10-02): dims shrunk 200x150 → 64x48 (via 80x60; frame-pool fallback) to fit the 32-slot loader window (no-bump); values below updated. R2 (2026-10-02): dims shrunk 64x48 → 40x30 to free tid-10 cap slot 9 for the QX grant (no-bump); values below updated. Companion fix (same dispatch): `surf_owner` is zero-init + runtime `0xFF` fill — a nonzero initializer emits a 4-byte `.data` that pushes `.bss` off page alignment, which the loader rejects (`elf.c:147`).
 
 **Files:**
 - Modify: `userspace/gui/v2_main.c:1-251`
@@ -168,8 +168,8 @@ if (n == 1 && buf[0] == (uint64_t)COMPOSE) {
     /* bound: SURF_N * SURF_H * SURF_W */
     for (uint32_t s = 0; s < (uint32_t)SURF_N; s++) { /* bound: SURF_N */
         if (!surf_dirty[s]) continue;
-        /* full-surface blit at fixed slot origin (s*64 % 800, 20 + s*48 % 430) */
-        uint32_t ox = (s * 64u) % 800u; uint32_t oy = 20u + (s * 48u) % 430u;
+        /* full-surface blit at fixed slot origin (s*40 % 800, 20 + s*30 % 430) */
+        uint32_t ox = (s * 40u) % 800u; uint32_t oy = 20u + (s * 30u) % 430u;
         for (uint32_t r = 0; r < (uint32_t)SURF_H; r++) /* bound: SURF_H */
             for (uint32_t c = 0; c < (uint32_t)SURF_W; c++) { /* bound: SURF_W */
                 uint32_t idx = rect_off(ox + c, oy + r);
@@ -219,7 +219,7 @@ git commit -m "s4b: server surfaces + compose on EP10"
 
 ### Task 4: pilot client legs + QEMU gate + docs
 
-> R1 (2026-10-02): dims shrunk 200x150 → 64x48 (via 80x60; frame-pool fallback) to fit the 32-slot loader window (no-bump); values below updated.
+> R1 (2026-10-02): dims shrunk 200x150 → 64x48 (via 80x60; frame-pool fallback) to fit the 32-slot loader window (no-bump); values below updated. R2 (2026-10-02): dims shrunk 64x48 → 40x30 to free tid-10 cap slot 9 for the QX grant, legs resized to `20x10 at (5,5)` (no-bump); values below updated.
 
 **Files:**
 - Modify: `kernel/user.c` (thread-A legs), `tools/verify.sh` (smoke expects), `docs/BUILD.md`, `docs/ARCHITECTURE.md`
@@ -234,9 +234,9 @@ git commit -m "s4b: server surfaces + compose on EP10"
 Find S4a 4-leg pattern in `kernel/user.c` (clear + red/green/blue bars, ends before `W1` NOTIFY leg). Append:
 
 ```c
-/* S4b pilot: create surface 0 64x48, fill 50x20 at (10,10) white, compose. */
-{ uint64_t m[4]; m[0]=7; m[1]=0; m[2]=(64u<<16)|48u; m[3]=0; u_send(10, m, 4); u_recv(0, m, 4, &s, &q, &o); }
-{ uint64_t m[4]; m[0]=6; m[1]=(10u<<16)|10u; m[2]=(50u<<16)|20u; m[3]=0xFFFFFFFFu; u_send(10, m, 4); u_recv(0, m, 4, &s, &q, &o); }
+/* S4b pilot: create surface 0 40x30, fill 20x10 at (5,5) white, compose. */
+{ uint64_t m[4]; m[0]=7; m[1]=0; m[2]=(40u<<16)|30u; m[3]=0; u_send(10, m, 4); u_recv(0, m, 4, &s, &q, &o); }
+{ uint64_t m[4]; m[0]=6; m[1]=(5u<<16)|5u; m[2]=(20u<<16)|10u; m[3]=0xFFFFFFFFu; u_send(10, m, 4); u_recv(0, m, 4, &s, &q, &o); }
 { uint64_t m[1]; m[0]=9; u_send(10, m, 1); u_recv(0, m, 4, &s, &q, &o); }
 ```
 
@@ -249,7 +249,7 @@ Expected: `GUI: up`, `GUI: fill ok`, `GUI: composed ok`, `no runnable left; park
 
 - [ ] **Step 3: Update docs smoke table**
 
-In `docs/BUILD.md` smoke list after `GUI: fill ok` add `GUI: composed ok # S4b: first COMPOSE`. In `docs/ARCHITECTURE.md` S4b entry flip `[TODO]` → `BUILT (no-bump)`, note `NSURF=4 64x48`, tags `7/8/9`.
+In `docs/BUILD.md` smoke list after `GUI: fill ok` add `GUI: composed ok # S4b: first COMPOSE`. In `docs/ARCHITECTURE.md` S4b entry flip `[TODO]` → `BUILT (no-bump)`, note `NSURF=4 40x30`, tags `7/8/9`.
 
 - [ ] **Step 4: Commit**
 

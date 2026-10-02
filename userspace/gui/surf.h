@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include "rect.h"
 #define SURF_N 4
-#define SURF_W 64
-#define SURF_H 48
+#define SURF_W 40
+#define SURF_H 30
 #define SURF_MAX (SURF_W*SURF_H*4u)
 #define CHROME_H 20
 static inline int surf_wh_ok(uint32_t wh) {
