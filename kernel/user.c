@@ -27,6 +27,12 @@
 #define REQ_UNMAP 3
 #define RESP_ERR -1
 
+/* S4a GUI color constants (XRGB 32-bit format) */
+#define COLOR_BLACK 0x00000000UL
+#define COLOR_RED 0x00FF0000UL
+#define COLOR_GREEN 0x0000FF00UL
+#define COLOR_BLUE 0x000000FFUL
+
 /* V2_INVOKE sub-operations (must match kernel kboot.c) */
 #define V2_INV_PT_ALLOC 6
 #define V2_INV_ELF_CHECK 7
@@ -183,13 +189,13 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
             upark();
     }
     /* S4a display legs: clear + 3 bars through the gui server.
-     * Words pack lanes (xy = x<<16|y, wh = w<<16|h); 800x600 needs
-     * <=10 bits per lane. Color is 32-bit XRGB in the low 32 bits of
+     * Words pack lanes (xy = x<<16|y, wh = w<<16|h); GUI_WIDTH×GUI_HEIGHT
+     * needs <=10 bits per lane. Color is 32-bit XRGB in the low 32 bits of
      * word 3 (the server casts buf[3] to uint32_t). Legs: fullscreen
      * black clear + 3 full-width 100px bars (red y=100, green y=250,
      * blue y=400). Geometry is server-validated (rect_fill_ok over the
-     * 800-wide stride paint walk: idx = (y+row)*800+(x+col), byte
-     * offset idx*4). Each leg: SEND EP10 (expect 0) + RECV EP0
+     * GUI_WIDTH-wide stride paint walk: idx = (y+row)*GUI_WIDTH+(x+col),
+     * byte offset idx*4). Each leg: SEND EP10 (expect 0) + RECV EP0
      * (expect [R_OK=0]); any deviation parks marker-free (no
      * GUI: fill ok ever prints). */
     {
@@ -197,38 +203,73 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
         uint64_t rep[4];
         unsigned long s = 0, q = 0, o = 0;
         long n;
+        /* Clear: fullscreen black */
         fill[0] = 6;
         fill[1] = (0UL << 16) | 0UL;
         fill[2] = (800UL << 16) | 600UL;
-        fill[3] = 0x00000000UL;
+        fill[3] = COLOR_BLACK;
         if (usend(10, fill, 4) != 0)
             upark();
         n = urecv(0, rep, 4, &s, &q, &o);
         if (n < 1 || rep[0] != 0)
             upark();
+        /* Red bar at y=100, height 100 */
         fill[0] = 6;
         fill[1] = (0UL << 16) | 100UL;
         fill[2] = (800UL << 16) | 100UL;
-        fill[3] = 0x00FF0000UL;
+        fill[3] = COLOR_RED;
         if (usend(10, fill, 4) != 0)
             upark();
         n = urecv(0, rep, 4, &s, &q, &o);
         if (n < 1 || rep[0] != 0)
             upark();
+        /* Green bar at y=250, height 100 */
         fill[0] = 6;
         fill[1] = (0UL << 16) | 250UL;
         fill[2] = (800UL << 16) | 100UL;
-        fill[3] = 0x0000FF00UL;
+        fill[3] = COLOR_GREEN;
         if (usend(10, fill, 4) != 0)
             upark();
         n = urecv(0, rep, 4, &s, &q, &o);
         if (n < 1 || rep[0] != 0)
             upark();
+        /* Blue bar at y=400, height 100 */
         fill[0] = 6;
         fill[1] = (0UL << 16) | 400UL;
         fill[2] = (800UL << 16) | 100UL;
-        fill[3] = 0x000000FFUL;
+        fill[3] = COLOR_BLUE;
         if (usend(10, fill, 4) != 0)
+            upark();
+        n = urecv(0, rep, 4, &s, &q, &o);
+        if (n < 1 || rep[0] != 0)
+            upark();
+    }
+    /* S4b pilot: create surface 0 200x150, fill 50x20 at (10,10) white, compose.
+     * Tag shapes (Task 3 RPCs on EP10): SURF_CREATE [7, sid, wh, flags],
+     * FILL [6, xy, wh, color] (surface-local once owned), COMPOSE [9].
+     * Each leg: SEND EP10 (expect 0) + RECV EP0 (expect [R_OK=0]); any
+     * deviation parks marker-free (COMPOSE prints GUI: composed ok
+     * unconditionally on a valid [9], so the guards keep that marker
+     * honest). Immediates only, no literals, no globals. */
+    {
+        uint64_t m[4];
+        uint64_t rep[4];
+        unsigned long s = 0, q = 0, o = 0;
+        long n;
+        m[0] = 7; m[1] = 0; m[2] = (200u<<16)|150u; m[3] = 0;
+        if (usend(10, m, 4) != 0)
+            upark();
+        n = urecv(0, rep, 4, &s, &q, &o);
+        if (n < 1 || rep[0] != 0)
+            upark();
+        m[0] = 6; m[1] = (10u<<16)|10u; m[2] = (50u<<16)|20u; m[3] = 0xFFFFFFFFu;
+        if (usend(10, m, 4) != 0)
+            upark();
+        n = urecv(0, rep, 4, &s, &q, &o);
+        if (n < 1 || rep[0] != 0)
+            upark();
+        m[0] = 9;
+        if (usend(10, m, 1) != 0)
             upark();
         n = urecv(0, rep, 4, &s, &q, &o);
         if (n < 1 || rep[0] != 0)

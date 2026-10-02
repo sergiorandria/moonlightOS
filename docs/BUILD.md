@@ -145,6 +145,7 @@ QREXEC: admin registered # live handshake (admin HELLO->EP3, RECV EP4 [R_OK], NO
 VAULT: live ok # thread-A ask leg: keys.sign T_CALL->ASK->DECIDE->DELIVER to EP8
 AUD: deny rpc=2 # thread-A deny leg: clipboard DENY (R_DENY consumed by A)
 GUI: fill ok # S4a: first validated FILL (thread-A 4-leg pattern: clear + red/green/blue bars)
+GUI: composed ok # S4b: first COMPOSE
 no runnable left; parking cpu
 ```
 
