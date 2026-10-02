@@ -29,15 +29,15 @@ int main(void) {
     CHECK(!pci_bar_ok(0x40000000u, 0x8000000u));
     CHECK(!pci_bar_ok(0x40000001u, 0x1000u));
     /* surf: wh validation. */
-    CHECK(surf_wh_ok((200u<<16)|150u));
-    CHECK(!surf_wh_ok((201u<<16)|150u));
+    CHECK(surf_wh_ok((64u<<16)|48u));
+    CHECK(!surf_wh_ok((65u<<16)|48u));
     CHECK(!surf_wh_ok((0u<<16)|10u));
     /* surf_fill_ok: sid bounds, surface-local bounds, wrap. */
     CHECK(surf_fill_ok(0, 0, 0, 1, 1));
     CHECK(!surf_fill_ok(4, 0, 0, 1, 1));
-    CHECK(!surf_fill_ok(0, 199, 149, 2, 2));
+    CHECK(!surf_fill_ok(0, 63, 47, 2, 2));
     CHECK(!surf_fill_ok(0, 0xFFFFFF00u, 0, 0x200u, 1));
-    CHECK(surf_px(1, 3, 2) == (2u*200u+3u));
+    CHECK(surf_px(1, 3, 2) == (2u*64u+3u));
     printf("PASS: test_gui\n");
     return 0;
 }

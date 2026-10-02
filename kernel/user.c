@@ -244,7 +244,7 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
         if (n < 1 || rep[0] != 0)
             upark();
     }
-    /* S4b pilot: create surface 0 200x150, fill 50x20 at (10,10) white, compose.
+    /* S4b pilot: create surface 0 64x48, fill 50x20 at (10,10) white, compose.
      * Tag shapes (Task 3 RPCs on EP10): SURF_CREATE [7, sid, wh, flags],
      * FILL [6, xy, wh, color] (surface-local once owned), COMPOSE [9].
      * Each leg: SEND EP10 (expect 0) + RECV EP0 (expect [R_OK=0]); any
@@ -256,7 +256,7 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
         uint64_t rep[4];
         unsigned long s = 0, q = 0, o = 0;
         long n;
-        m[0] = 7; m[1] = 0; m[2] = (200u<<16)|150u; m[3] = 0;
+        m[0] = 7; m[1] = 0; m[2] = (64u<<16)|48u; m[3] = 0;
         if (usend(10, m, 4) != 0)
             upark();
         n = urecv(0, rep, 4, &s, &q, &o);

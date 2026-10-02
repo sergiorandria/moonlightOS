@@ -184,8 +184,8 @@ static int gui_announced = 0;
 #define SURF_DESTROY 8
 #define COMPOSE 9
 static uint32_t surf[SURF_N][SURF_W*SURF_H];
-static uint8_t surf_owner[SURF_N] = {0xFF,0xFF,0xFF,0xFF};
-static uint8_t surf_dirty[SURF_N] = {0,0,0};
+static uint8_t surf_owner[SURF_N]; /* 0xFF = free; zero-init keeps .data empty so .bss stays page-aligned (loader rejects unaligned PT_LOAD); set to 0xFF at runtime before the service loop */
+static uint8_t surf_dirty[SURF_N] = {0,0,0,0};
 static uint8_t surf_has[11] = {0}; /* indexed by snd tid; 1 = owns a surface */
 static uint8_t surf_id_of[11] = {0};
 static int gui_composed = 0;
@@ -209,6 +209,8 @@ void gui_main(void)
     if (!gui_bind_lfb())
         u_park(); /* fail closed, marker-free: no "GUI: up" */
     u_puts("GUI: up\n");
+    for (uint32_t i = 0; i < (uint32_t)SURF_N; i++) /* bound: SURF_N */
+        surf_owner[i] = 0xFF; /* all slots free before first RECV */
     for (;;) { /* bound: inf - service loop */
         snd = 0;
         sqb = 0;
@@ -241,8 +243,8 @@ void gui_main(void)
             /* bound: SURF_N * SURF_H * SURF_W */
             for (uint32_t s = 0; s < (uint32_t)SURF_N; s++) { /* bound: SURF_N */
                 if (!surf_dirty[s]) continue;
-                /* full-surface blit at fixed slot origin (s*200 % 800, 20 + s*150 % 580) */
-                uint32_t ox = (s * 200u) % 800u; uint32_t oy = 20u + (s * 150u) % 430u;
+                /* full-surface blit at fixed slot origin (s*64 % 800, 20 + s*48 % 430) */
+                uint32_t ox = (s * 64u) % 800u; uint32_t oy = 20u + (s * 48u) % 430u;
                 for (uint32_t r = 0; r < (uint32_t)SURF_H; r++) /* bound: SURF_H */
                     for (uint32_t c = 0; c < (uint32_t)SURF_W; c++) { /* bound: SURF_W */
                         uint32_t idx = rect_off(ox + c, oy + r);

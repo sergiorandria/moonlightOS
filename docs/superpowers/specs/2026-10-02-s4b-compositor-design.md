@@ -8,7 +8,7 @@
 
 Stays in `tid10 / EP10 / qube8`. No `NTHREADS`, `V2_NEP`, `V2_CAP_THREADS`, `V2_FRAMES_MAX` changes. New RPC tags ride the existing `u_recv(GUI_EP, buf, 4)` loop in `userspace/gui/v2_main.c:205`.
 
-Server owns up to `NSURF=4` offscreens, each `200x150x4` max (fixed at compile time, gui-private `.bss` already mapped to tid10 — no new leaves, no ECAM change). LFB at `0x80C00000` stays the only display path; clients never name pixels outside their surface.
+Server owns up to `NSURF=4` offscreens, each `64x48x4` max (fixed at compile time, gui-private `.bss` already mapped to tid10 — no new leaves, no ECAM change). R1 correction: rev 1 shipped `200x150` (480KB, ~118 pages — rejected by the 32-slot loader window, `V2_ERR_OVERFLOW`); `80x60` (76.8KB, 19 pages) passed the loader but exhausted the 39-frame pool at spawn (22 frames already taken by the 7 earlier ELFs, gui needed 20); shipped `64x48` (49,152 B BSS, 13 pages, 36/39 frames). LFB at `0x80C00000` stays the only display path; clients never name pixels outside their surface.
 
 Layers: L0 kernel (EP routing + `GUIMMIO: tid=10 only` unchanged) → L1 gui server (surface store + compositor + chrome) → L2 clients (qube0 + one pilot qube, e.g. vault status) via `SEND EP10`.
 
@@ -25,7 +25,7 @@ Back-compat: S4a thread-A 4 FILL legs still pass (no bound surface → direct), 
 
 ## 3. Surfaces + composite + chrome
 
-Store: `static uint32_t surf[NSURF][SURF_W*SURF_H]` in gui `.bss` (no malloc; total `4*200*150*4 = 480KB`). `static uint8_t surf_owner[NSURF]` (`0xFF` = free) + dirty bits. All loops carry `/* bound: NSURF / SURF_H / SURF_W */`.
+Store: `static uint32_t surf[NSURF][SURF_W*SURF_H]` in gui `.bss` (no malloc; total `4*64*48*4 = 49,152 B (~12 pages BSS, fits 32-slot loader window and 39-frame pool)`). R1 correction: was `4*200*150*4 = 480KB` (~118 pages, overflowed the loader); `80x60` intermediate exhausted the frame pool. Companion fix: `surf_owner` is zero-init (BSS) + runtime `0xFF` fill — a nonzero initializer would emit a 4-byte `.data` that pushes `.bss` off page alignment, which the loader rejects (`elf.c:147`). `static uint8_t surf_owner[NSURF]` (`0xFF` = free) + dirty bits. All loops carry `/* bound: NSURF / SURF_H / SURF_W */`.
 
 Composite: fixed `surf_id` ascending, last-wins, clipped to `800x600` via `rect_off`. No alpha/scaling — blit dirty rects only. Chrome: top 20px reserved server-only — client `FILL` with `y<20` denied, server fills owner color + qube id after each `COMPOSE`.
 
