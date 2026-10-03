@@ -84,7 +84,7 @@ build/cryptblk.elf: cryptblk/v2_main.c cryptblk/cryptblk_start.S v2_user.ld cryp
 	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ cryptblk/v2_main.c cryptblk/cryptblk_start.S
 	ls -lh $@
 
-build/gui.elf: gui/v2_main.c gui/gui_start.S v2_user.ld gui/rect.h gui/pci.h
+build/gui.elf: gui/v2_main.c gui/gui_start.S v2_user.ld gui/rect.h gui/pci.h gui/surf.h
 	@mkdir -p build
 	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ gui/v2_main.c gui/gui_start.S
 	ls -lh $@

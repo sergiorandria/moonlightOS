@@ -276,7 +276,7 @@ gets `R_DENY`), reseeding its DRBG per service.
 | L0 address mechanics | kernel (`kernel/kboot.c`) | maps LFB + ECAM leaves ONLY into tid-10 tables, no display code | none (existing gates) |
 | L1 display server | gui ELF tid 10 / qube 8 (`userspace/gui/v2_main.c` → `userspace/build/gui.elf`, initrd 10) | binds bochs-display via bus-0 PCI scan, owns LFB leaf | serves FILL on EP10, replies R_OK/R_DENY |
 | L2 paint client | thread A qube 0 (`kernel/user.c`) | NONE — pixels only via server | SENDs FILL to EP10, RECVs reply on EP0 |
-| L3+ (S4b pilot BUILT no-bump; S4c not built) | thread-A qube 0 pilot legs (`kernel/user.c`) | NONE — pixels only via server | SURF_CREATE 7 / SURF_DESTROY 8 / COMPOSE 9 on EP10, NSURF=4 200x150 |
+| L3+ (S4b pilot BUILT no-bump; S4c not built) | thread-A qube 0 pilot legs (`kernel/user.c`) | NONE — pixels only via server | SURF_CREATE 7 / SURF_DESTROY 8 / COMPOSE 9 on EP10, NSURF=4 40x30 |
 
 Microkernel invariants (binding): (a) exactly one hardware path —
 LFB (`GUI_LFB_UVA 0x80C00000` = `l1_t[10][6]`, one l0 table = 2 MB ≥

@@ -1,4 +1,4 @@
-/* tests/test_gui.c - KATs for gui/rect.h + gui/pci.h. */
+/* tests/test_gui.c - KATs for gui/rect.h + gui/pci.h + gui/surf.h. */
 #include <stdio.h>
 #include <string.h>
 #include "../userspace/gui/rect.h"
