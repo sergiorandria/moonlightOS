@@ -105,6 +105,7 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
 #define VIRTIO_DEV_NET 1u
 #define VIRTIO_DEV_BLK 2u
 #define VIRTIO_DEV_RNG 4u
+#define VIRTIO_DEV_INPUT 18u
 #define PLIC_BASE 0x0c000000UL
 /* PLIC hart-0 contexts (sifive_plic, stride 0x80 enables / 0x1000 claim):
  * M-context set (0x0c002000 / 0x0c200000) reached via delegation,
@@ -121,6 +122,8 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
 #define PLIC_CLAIM_S 0x0c201004UL
 #define NET_IRQ_BIT 0x1UL /* notify bit the scause=9 handler raises on tid 6 */
 #define BLK_IRQ_BIT 0x2UL /* notify bit the scause=9 handler raises on tid 9 */
+#define KBD_IRQ_BIT 0x4UL /* notify bit the scause=9 handler raises on tid 10 (kbd) */
+#define MOUSE_IRQ_BIT 0x8UL /* notify bit the scause=9 handler raises on tid 10 (mouse) */
 
 /* Virtio IRQ discovery: Phase-2 NIC and FDE block IRQ (1+transport index),
  * discovered at boot; VIRTIO_IRQ_NOT_FOUND when no modern device exists
@@ -128,6 +131,10 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
 #define VIRTIO_IRQ_NOT_FOUND 0xFFFFFFFFUL
 static uint32_t net_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
 static uint32_t blk_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
+/* S4c input IRQs: Task 3 discovery fills these (first dev-18 = kbd, second
+ * = mouse); the Task 3 handler + PLIC setup are the real consumers. */
+static uint32_t kbd_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
+static uint32_t mouse_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
 
 /* V2_INV_WRITE/READ move exactly one 64-bit word: the caps.h model is
  * word-per-frame (fdata[f] = val), so the real store/load mirrors exactly
@@ -162,6 +169,15 @@ static uint64_t l0_blkmmio[512] __attribute__((aligned(4096)));
  * l1_t[6][5]. The 8 transport pages, RW, never X. Exclusivity asserted
  * at boot ("RNGMMIO"), with the NETMMIO gate tolerating tid 8. */
 static uint64_t l0_rngmmio[512] __attribute__((aligned(4096)));
+/* S4c Input U-leaves: keyboard and mouse MMIO transports for tid 10 only.
+ * kbd at l1_t[10][9] = UVA 0x81200000 (VPN[1] index 9, fresh: GUI uses 6/7).
+ * mouse at l1_t[10][10] = UVA 0x81400000 (VPN[1] index 10, fresh). Each maps
+ * 8 virtio-mmio transport pages (0x10001000+i*0x1000), RW never X. Presence
+ * + exclusivity asserted at boot (extended "GUIMMIO" gate below). */
+#define KBD_MMIO_UVA 0x81200000UL
+#define MOUSE_MMIO_UVA 0x81400000UL
+static uint64_t l0_kbdmmio[512] __attribute__((aligned(4096)));
+static uint64_t l0_mousemmio[512] __attribute__((aligned(4096)));
 /* S4a GUI configuration: Resolution and display parameters.
  * Current: 800×600×32 (XRGB, matches QEMU bochs-display default).
  * Future: Runtime negotiation via VBE/EDID (S4b). */
@@ -244,6 +260,14 @@ static void pagetable_init(void) {
     for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
         l0_rngmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
                                  PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+    /* S4c Input U-leaves: kbd and mouse transport pages for tid 10 only.
+     * Same shape as NET/BLK/RNG: 8 transport pages, RW never X. */
+    for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
+        l0_kbdmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
+                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+    for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
+        l0_mousemmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
+                                   PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* S4a GUI U-leaves (contents fixed pre-MMU; the BAR programming in
      * kboot() assigns this same GUI_LFB_PHYS, so leaf and BAR agree by
      * construction). W^X: RW, never X. */
@@ -281,13 +305,16 @@ static void pagetable_init(void) {
          * tables — asserted at boot: "RNGMMIO: tid=8 only" + "NETMMIO"). */
         if (t == 8)
             l1_t[t][5] = pte_table(l0_rngmmio);
-        /* S4a GUI: the LFB + ECAM U-leaves exist ONLY in tid 10's tables
-         * (GUI_LFB_UVA 0x80C00000 = VPN[1] 6, GUI_ECAM_UVA 0x80E00000 =
-         * VPN[1] 7). Every other l1_t[t][6] (except tid 9 BLK) and every
-         * other l1_t[t][7] stays 0 (asserted at boot: "GUIMMIO"). */
+        /* S4a GUI + S4c Input: LFB + ECAM + kbd + mouse U-leaves exist ONLY
+         * in tid 10's tables (GUI_LFB_UVA 0x80C00000 = VPN[1] 6, GUI_ECAM_UVA
+         * 0x80E00000 = VPN[1] 7, KBD_MMIO_UVA 0x81200000 = VPN[1] 9,
+         * MOUSE_MMIO_UVA 0x81400000 = VPN[1] 10). Exclusivity asserted at
+         * boot: "GUIMMIO" / "KBDMMIO" / "MOUSEMMIO" gates. */
         if (t == 10) {
             l1_t[t][6] = pte_table(l0_guifb);
             l1_t[t][7] = pte_table(l0_guiecam);
+            l1_t[t][9] = pte_table(l0_kbdmmio);
+            l1_t[t][10] = pte_table(l0_mousemmio);
         }
         root_pt_t[t][0] = pte_table(l1_m);
         root_pt_t[t][2] = pte_table(l1_t[t]);
@@ -2127,9 +2154,11 @@ void kboot(void) {
     /* BLKMMIO leaf gate: the transport U-leaf exists ONLY in tid 9's
      * tables (l1_t[9][6]); any other mapping is a leak — except tid 10,
      * which reuses leaf INDEX 6 for its own LFB table (per-thread l1_t
-     * isolation, no alias). Fail-closed like NETMMIO above. */
+     * isolation, no alias). S4c: additionally requires tid 10's input
+     * leaves (l1_t[10][9]/[10]) so a half-applied kernel fails this gate
+     * loudly too. Fail-closed like NETMMIO above. */
     {
-        int mmio_ok = (l1_t[9][6] != 0);
+        int mmio_ok = (l1_t[9][6] != 0) && (l1_t[10][9] != 0) && (l1_t[10][10] != 0);
         for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
             if (t != 9 && t != 10 && l1_t[t][6] != 0)
                 mmio_ok = 0;
@@ -2155,19 +2184,29 @@ void kboot(void) {
             kputs("[demo] FAIL rngmmio leak\n");
     }
     /* GUIMMIO leaf gate: the LFB + ECAM U-leaves exist ONLY in tid 10's
-     * tables (l1_t[10][6] = LFB, l1_t[10][7] = ECAM); any other mapping
+     * tables (l1_t[10][6] = LFB, l1_t[10][7] = ECAM), plus the S4c input
+     * leaves (l1_t[10][9] = kbd, l1_t[10][10] = mouse); any other mapping
      * is a leak. Index 6 is shared with BLK by design (tid 9 keeps its
      * own table — checked by the BLKMMIO gate above). Fail-closed:
      * mismatch prints marker-free "[demo] FAIL", so the smoke gate
      * misses the marker and fails instead of passing on a lie. */
     {
-        int mmio_ok = (l1_t[10][6] != 0) && (l1_t[10][7] != 0);
+        int mmio_ok = (l1_t[10][6] != 0) && (l1_t[10][7] != 0) && (l1_t[10][9] != 0) && (l1_t[10][10] != 0);
         for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
             if (t != 10 && t != 9 && l1_t[t][6] != 0)
                 mmio_ok = 0;
             if (t != 10 && l1_t[t][7] != 0)
                 mmio_ok = 0;
+            if (t != 10 && l1_t[t][9] != 0)
+                mmio_ok = 0;
+            if (t != 10 && l1_t[t][10] != 0)
+                mmio_ok = 0;
         }
+        /* S4c Task 3 owns discovery + IRQ handler (the real consumers of
+         * the IRQ vars); reference them here so -Werror stays clean with
+         * zero behavior change until Task 3 lands. */
+        (void)kbd_virtio_irq;
+        (void)mouse_virtio_irq;
         if (mmio_ok)
             kputs("GUIMMIO: tid=10 only\n");
         else
