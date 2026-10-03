@@ -784,7 +784,29 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     threads[9].wait_kind = V2_WK_NONE;
                 }
             }
-            if (src == 0 && !blk) {
+            /* S4c VirtIO input IRQs: keyboard and mouse for GUI qube (tid 10).
+             * Delivered independently; one trap can serve both if they fire
+             * together (QEMU can queue IRQs). Notify bits are or'd so the
+             * WAIT badge check detects either source. No per-IRQ print: typing
+             * generates high-frequency IRQs that would flood the transcript;
+             * the ELF's event poll after WAIT is the delivery proof. */
+            int input_irq = 0;
+            if (s == kbd_virtio_irq || m == kbd_virtio_irq) {
+                threads[10].notify |= KBD_IRQ_BIT;
+                input_irq = 1;
+            }
+            if (s == mouse_virtio_irq || m == mouse_virtio_irq) {
+                threads[10].notify |= MOUSE_IRQ_BIT;
+                input_irq = 1;
+            }
+            if (input_irq) {
+                if (threads[10].state == T_BLOCKED &&
+                    threads[10].wait_kind == V2_WK_WAIT) {
+                    threads[10].state = T_RUNNABLE;
+                    threads[10].wait_kind = V2_WK_NONE;
+                }
+            }
+            if (src == 0 && !blk && !input_irq) {
                 kputs("IRQ: unexpected\n");
             }
             if (s != 0)
@@ -1732,6 +1754,43 @@ void kboot(void) {
         *(volatile uint32_t *)PLIC_THRESH_M = 0;
         *(volatile uint32_t *)PLIC_THRESH_S = 0;
     }
+    /* S4c VirtIO input discovery: keyboard (first dev-18) and mouse (second
+     * dev-18). VirtIO-input spec uses device ID 18 for all input devices; the
+     * subtype (config.subsel) distinguishes keyboard=1 vs mouse=2 vs tablet=3.
+     * QEMU virtio-keyboard-device and virtio-mouse-device both present as
+     * dev-18. Simplified discovery: assume cmdline order (first=kbd, second=
+     * mouse) instead of reading config.subsel (avoids config-space parsing).
+     * IRQ = 1+ti as usual; none found leaves kbd/mouse_virtio_irq at 0xFFFFFFFF
+     * (handler matches nothing, fail-closed: no input but boot proceeds). */
+    {
+        int input_found = 0;
+        for (int ti = 0; ti < VIRTIO_NTRANSPORTS && input_found < 2; ti++) { /* bound: 8 */
+            volatile uint32_t *tr = (volatile uint32_t *)
+                (VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
+            if (tr[0] == 0x74726976u && tr[1] == 2u &&
+                tr[2] == (uint32_t)VIRTIO_DEV_INPUT) {
+                if (kbd_virtio_irq == VIRTIO_IRQ_NOT_FOUND) {
+                    kbd_virtio_irq = (uint32_t)(1 + ti);
+                    input_found++;
+                } else if (mouse_virtio_irq == VIRTIO_IRQ_NOT_FOUND) {
+                    mouse_virtio_irq = (uint32_t)(1 + ti);
+                    input_found++;
+                }
+            }
+        }
+    }
+    if (kbd_virtio_irq != VIRTIO_IRQ_NOT_FOUND) {
+        *(volatile uint32_t *)(PLIC_BASE + 4u * kbd_virtio_irq) = 1;
+        *(volatile uint32_t *)PLIC_ENABLE_M |= (1U << kbd_virtio_irq);
+        *(volatile uint32_t *)PLIC_ENABLE_S |= (1U << kbd_virtio_irq);
+        kputs("INPUT: kbd found\n");
+    }
+    if (mouse_virtio_irq != VIRTIO_IRQ_NOT_FOUND) {
+        *(volatile uint32_t *)(PLIC_BASE + 4u * mouse_virtio_irq) = 1;
+        *(volatile uint32_t *)PLIC_ENABLE_M |= (1U << mouse_virtio_irq);
+        *(volatile uint32_t *)PLIC_ENABLE_S |= (1U << mouse_virtio_irq);
+        kputs("INPUT: mouse found\n");
+    }
     /* S4a GUI PCI bind: QEMU leaves PCI BARs unprogrammed (no firmware
      * enumeration under OpenSBI), so the kernel assigns BAR0 before the
      * ELF's bind probe runs. Mechanics only (raw dword offsets, no PCI
@@ -2202,11 +2261,6 @@ void kboot(void) {
             if (t != 10 && l1_t[t][10] != 0)
                 mmio_ok = 0;
         }
-        /* S4c Task 3 owns discovery + IRQ handler (the real consumers of
-         * the IRQ vars); reference them here so -Werror stays clean with
-         * zero behavior change until Task 3 lands. */
-        (void)kbd_virtio_irq;
-        (void)mouse_virtio_irq;
         if (mmio_ok)
             kputs("GUIMMIO: tid=10 only\n");
         else

@@ -64,6 +64,7 @@ fi
 # mirror mode and the shell lives on serial as before.
 VGA_ARGS=""
 KBD_ARGS=""
+MOUSE_ARGS=""
 if [ "$DISP" != "-nographic" ]; then
   if $QEMU -device help 2>&1 | grep -q "bochs-display"; then
     VGA_ARGS="-device bochs-display"
@@ -73,11 +74,16 @@ if [ "$DISP" != "-nographic" ]; then
     VGA_ARGS="-device virtio-gpu-device"
   fi
 
-  # Keyboard: virtio-input over MMIO (riscv-virt has no PS/2). The graphical
-  # window feeds this device; kbd.c merges it with the UART. Absent headless:
-  # the driver logs UART-only fallback and the shell stays on serial.
+  # Keyboard + mouse: virtio-input over MMIO (riscv-virt has no PS/2).
+  # The graphical window feeds these devices; kbd.c merges kbd with the
+  # UART. Absent headless: the driver logs UART-only fallback and the
+  # shell stays on serial. S4c input needs both dev-18 transports for
+  # kernel discovery (first=kbd, second=mouse).
   if $QEMU -device help 2>&1 | grep -q "virtio-keyboard-device"; then
     KBD_ARGS="-device virtio-keyboard-device"
+  fi
+  if $QEMU -device help 2>&1 | grep -q "virtio-mouse-device"; then
+    MOUSE_ARGS="-device virtio-mouse-device"
   fi
 fi
 
@@ -154,10 +160,10 @@ fi
 if [[ "$*" == *"--gdb"* ]]; then
   echo "GDB on :1234 - connect with: riscv64-unknown-elf-gdb $ELF -ex 'target remote :1234'"
   # shellcheck disable=SC2086
-  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $RNG_ARGS $VIRTIO_MODERN $VGA_ARGS $KBD_ARGS $DISK_ARGS -S -s -serial mon:stdio $LOG_ARGS -no-reboot
+  exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $RNG_ARGS $VIRTIO_MODERN $VGA_ARGS $KBD_ARGS $MOUSE_ARGS $DISK_ARGS -S -s -serial mon:stdio $LOG_ARGS -no-reboot
 fi
 
-echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS $NET_ARGS $VIRTIO_MODERN $BIOS_ARGS -kernel $ELF -no-reboot $LOG_ARGS"
+echo "QEMU: $QEMU $CHERI_ARGS $DISP $VGA_ARGS $KBD_ARGS $MOUSE_ARGS $DISK_ARGS $NET_ARGS $VIRTIO_MODERN $BIOS_ARGS -kernel $ELF -no-reboot $LOG_ARGS"
 if [ -n "$DISK_ARGS" ]; then
   echo "(virtio-blk disk: $DISK 256M raw, owned by the userspace block compartment; --no-disk boots diskless)"
 else
@@ -170,4 +176,4 @@ else
 fi
 echo "(use --trace-int to re-enable -d int logging)"
 # shellcheck disable=SC2086
-exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $RNG_ARGS $VIRTIO_MODERN $DISP $VGA_ARGS $KBD_ARGS $DISK_ARGS -serial mon:stdio $LOG_ARGS -no-reboot
+exec $QEMU $CHERI_ARGS -m 256M $BIOS_ARGS -kernel "$ELF" $NET_ARGS $RNG_ARGS $VIRTIO_MODERN $DISP $VGA_ARGS $KBD_ARGS $MOUSE_ARGS $DISK_ARGS -serial mon:stdio $LOG_ARGS -no-reboot

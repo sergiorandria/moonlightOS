@@ -162,9 +162,16 @@ static const char keycode_to_ascii_shifted[128] = {
  * Returns 0 for non-printable keys (modifiers, function keys, arrows).
  * Handles Shift (uppercase), Ctrl (control codes 0x01-0x1A for Ctrl+A-Z). */
 static inline char keycode_to_ascii(uint16_t keycode, const kbd_modifiers_t *mods) {
-    /* Ctrl+letter: generate control codes (Ctrl+A=0x01, Ctrl+Z=0x1A) */
-    if (mods->ctrl && keycode >= KEY_A && keycode <= KEY_Z) {
-        return (char)(keycode - KEY_A + 1); /* 0x01 to 0x1A */
+    /* Ctrl+letter: derive from the unshifted table (KEY_A..KEY_Z are not
+     * contiguous in Linux keycodes, so keycode-KEY_A is wrong). */
+    if (mods->ctrl) {
+        char ch;
+        if (keycode >= 128)
+            return 0;
+        ch = keycode_to_ascii_unshifted[keycode];
+        if (ch >= 'a' && ch <= 'z')
+            return (char)(ch - 'a' + 1); /* 0x01 to 0x1A */
+        return 0;
     }
 
     /* Shift: use shifted table; otherwise unshifted */
