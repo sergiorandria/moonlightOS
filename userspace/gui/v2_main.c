@@ -3,11 +3,18 @@
  * FILL service on EP10. Paints NOTHING itself: every pixel arrives
  * through a validated FILL (layered: L2 client drives the pattern).
  * Fill tag FILL=6 (T_KEY 8 / T_KEY_ACK 10 live elsewhere); replies
- * R_OK 0 / R_DENY -1 (call/response discipline). */
+ * R_OK 0 / R_DENY -1 (call/response discipline).
+ * 
+ * S4c additions: VirtIO keyboard/mouse input, text console rendering.
+ * Input IRQs arrive via V2_WAIT (KBD_IRQ_BIT/MOUSE_IRQ_BIT notify bits).
+ * Console: 100×37 character grid, 8×16 VGA font, direct LFB rendering. */
 #include <stdint.h>
 
 #include "rect.h"
 #include "pci.h"
+#include "virtio_input.h"
+#include "console.h"
+#include "input.h"
 
 #define GUI_TID 10
 #define GUI_QUBE 8
@@ -18,11 +25,12 @@
 
 /* V2 UABI numbers (kernel/kboot.c; vault/firewall precedent). No INVOKE:
  * the LFB/ECAM leaves are kernel-mapped (Task 3); this ELF only loads
- * and stores through the pre-mapped VAs below. */
+ * and stores through the pre-mapped VAs below. S4c adds WAIT for input IRQs. */
 #define V2_PUTC 1
 #define V2_PARK 2
 #define V2_SEND 3
 #define V2_RECV 4
+#define V2_WAIT 6
 
 /* WANT (Task 3 implements): the kernel pre-maps these windows into the
  * tid-10 tables ONLY (per-thread l1_t[10][i]; BLK precedent l1_t[9][6]).
@@ -31,9 +39,14 @@
  * TID-10-ONLY tables: every thread owns its l1_t, so no alias). ECAM:
  * GUI_ECAM_UVA 0x80E00000 = VPN[1] index 7 (fresh index), window >= 64KB
  * covering the bus-0 config range (32 dev x 2KB). The ECAM leaf must be
- * RW: the BAR mask probe below writes all-ones and restores. */
+ * RW: the BAR mask probe below writes all-ones and restores.
+ * S4c: KBD_MMIO_UVA/MOUSE_MMIO_UVA (VPN[1] indices 9,10) map VirtIO input. */
 #define GUI_LFB_UVA 0x80C00000UL
 #define GUI_ECAM_UVA 0x80E00000UL
+
+/* S4c input IRQ notify bits (kernel sets these in s_trap_handler, tid 10 reads via WAIT) */
+#define KBD_IRQ_BIT 0x4UL
+#define MOUSE_IRQ_BIT 0x8UL
 
 /* PCI config-space dwords (ECAM offset from the function base). */
 #define PCI_CFG_ID 0x00u
@@ -67,6 +80,11 @@ static void u_puts(const char *s)
 static long u_send(unsigned long ep, const uint64_t *p, unsigned long n)
 {
     return u_ecall3(V2_SEND, (long)ep, (long)p, (long)n);
+}
+
+static long u_wait(void)
+{
+    return u_ecall3(V2_WAIT, 0, 0, 0);
 }
 
 /* RECV returns words-written in a0, kernel-stamped sender in a1,
@@ -175,6 +193,195 @@ static int gui_bind_lfb(void)
     return 0;
 }
 
+/* S4c VirtIO input device initialization: minimal virtqueue setup for eventq.
+ * VirtIO-input spec (v1.1 section 5.8): device provides two queues:
+ *   queue 0 (eventq): device→driver event stream (EV_KEY, EV_REL, etc.)
+ *   queue 1 (statusq): driver→device LED/force-feedback (not used here)
+ * Minimal setup: single-descriptor ring (16 slots), no indirect, no packed.
+ * Production virtio drivers use dynamic multi-descriptor chains + indirect
+ * descriptors for scatter-gather; S4c uses statically allocated flat rings. */
+
+/* VirtIO eventq ring state (kbd and mouse each have independent rings) */
+typedef struct {
+    virtq_desc_t desc[16];  /* Descriptor ring (16 slots) */
+    virtq_avail_t avail;    /* Available ring (driver→device) */
+    virtq_used_t used;      /* Used ring (device→driver) */
+    struct virtio_input_event events[16]; /* Event buffer (one per descriptor) */
+    uint16_t last_used_idx; /* Last processed used.idx (for polling) */
+} virtio_input_ring_t;
+
+static virtio_input_ring_t kbd_ring;
+static virtio_input_ring_t mouse_ring;
+
+/* S4c input arming flag (Task 1: 0 = dormant). File scope + non-const so
+ * the compiler keeps the init/poll/render path in the binary (a const or
+ * function-local flag folds at -O2 and silently drops the audited S4c
+ * code, shrinking .text/.bss and voiding the budget measurement below).
+ * Zero-init keeps it in .bss (see the .data-alignment note at
+ * surf_owner). Task 2 flips this to 1 alongside the l1_t[10][9]/[10]
+ * leaf wiring; the short-circuit in gui_main then arms the probe. */
+int input_armed = 0;
+
+/* Initialize one VirtIO input device: reset, feature negotiation, queue setup.
+ * Returns 1 on success, 0 on failure (device not responding or malformed).
+ * Fail-closed: the presence probe below performs NO writes before the
+ * device answers MAGIC/VERSION/DEVICE_ID, so a wrong/absent transport is
+ * never reset and the caller can skip input and stay on the S4b path. */
+static int virtio_input_init(volatile uint32_t *mmio, virtio_input_ring_t *ring) {
+    /* Step 0: Presence probe (reads only — no STATUS write yet).
+     * MAGIC must read "virt" (0x74726976), VERSION 2 (modern MMIO
+     * transport), DEVICE_ID 18 (input). Any mismatch -> return 0. */
+    if (mmio[VIRTIO_MMIO_MAGIC / 4] != 0x74726976u)
+        return 0; /* No VirtIO transport here */
+    if (mmio[VIRTIO_MMIO_VERSION / 4] != 2u)
+        return 0; /* Legacy transport: outside the S4c driver model */
+    if (mmio[VIRTIO_MMIO_DEVICE_ID / 4] != 18u)
+        return 0; /* Transport holds a different device (net/blk/rng) */
+
+    /* Step 1: Device reset (VIRTIO_MMIO_STATUS = 0) */
+    mmio[VIRTIO_MMIO_STATUS / 4] = 0;
+    
+    /* Step 2: Acknowledge device (STATUS |= ACKNOWLEDGE) */
+    mmio[VIRTIO_MMIO_STATUS / 4] = VIRTIO_STATUS_ACKNOWLEDGE;
+    
+    /* Step 3: Driver ready (STATUS |= DRIVER) */
+    mmio[VIRTIO_MMIO_STATUS / 4] = VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER;
+    
+    /* Step 4: Feature negotiation (S4c: no features required, accept defaults) */
+    mmio[VIRTIO_MMIO_DRIVER_FEATURES_SEL / 4] = 0;
+    mmio[VIRTIO_MMIO_DRIVER_FEATURES / 4] = 0;
+    
+    /* Step 5: Features OK (STATUS |= FEATURES_OK) */
+    mmio[VIRTIO_MMIO_STATUS / 4] = VIRTIO_STATUS_ACKNOWLEDGE | 
+                                    VIRTIO_STATUS_DRIVER | 
+                                    VIRTIO_STATUS_FEATURES_OK;
+    
+    /* Verify FEATURES_OK stuck (device accepted our feature set) */
+    if ((mmio[VIRTIO_MMIO_STATUS / 4] & VIRTIO_STATUS_FEATURES_OK) == 0)
+        return 0; /* Device rejected features */
+    
+    /* Step 6: Queue setup (queue 0 = eventq) */
+    mmio[VIRTIO_MMIO_QUEUE_SEL / 4] = 0; /* Select queue 0 */
+    
+    uint32_t qmax = mmio[VIRTIO_MMIO_QUEUE_NUM_MAX / 4];
+    if (qmax < 16) return 0; /* Need at least 16 slots */
+    
+    mmio[VIRTIO_MMIO_QUEUE_NUM / 4] = 16; /* Use 16 slots */
+    
+    /* Program queue physical addresses (guest-physical = user virtual in S4c) */
+    uint64_t desc_pa = (uint64_t)(uintptr_t)ring->desc;
+    uint64_t avail_pa = (uint64_t)(uintptr_t)&ring->avail;
+    uint64_t used_pa = (uint64_t)(uintptr_t)&ring->used;
+    
+    mmio[VIRTIO_MMIO_QUEUE_DESC_LOW / 4] = (uint32_t)desc_pa;
+    mmio[VIRTIO_MMIO_QUEUE_DESC_HIGH / 4] = (uint32_t)(desc_pa >> 32);
+    mmio[VIRTIO_MMIO_QUEUE_DRIVER_LOW / 4] = (uint32_t)avail_pa;
+    mmio[VIRTIO_MMIO_QUEUE_DRIVER_HIGH / 4] = (uint32_t)(avail_pa >> 32);
+    mmio[VIRTIO_MMIO_QUEUE_DEVICE_LOW / 4] = (uint32_t)used_pa;
+    mmio[VIRTIO_MMIO_QUEUE_DEVICE_HIGH / 4] = (uint32_t)(used_pa >> 32);
+    
+    /* Initialize descriptor ring: all slots point to event buffers (write-only) */
+    for (int i = 0; i < 16; i++) { /* bound: 16 */
+        ring->desc[i].addr = (uint64_t)(uintptr_t)&ring->events[i];
+        ring->desc[i].len = sizeof(struct virtio_input_event);
+        ring->desc[i].flags = VIRTQ_DESC_F_WRITE; /* Device writes */
+        ring->desc[i].next = 0;
+    }
+    
+    /* Initialize available ring: make all 16 descriptors available */
+    ring->avail.flags = 0;
+    ring->avail.idx = 16; /* Wrapped at 65536; device sees 16 available */
+    for (int i = 0; i < 16; i++) { /* bound: 16 */
+        ring->avail.ring[i] = (uint16_t)i;
+    }
+    
+    /* Initialize used ring tracking */
+    ring->last_used_idx = 0;
+    
+    /* Queue ready */
+    mmio[VIRTIO_MMIO_QUEUE_READY / 4] = 1;
+    
+    /* Step 7: Driver OK (STATUS |= DRIVER_OK) */
+    mmio[VIRTIO_MMIO_STATUS / 4] = VIRTIO_STATUS_ACKNOWLEDGE | 
+                                    VIRTIO_STATUS_DRIVER | 
+                                    VIRTIO_STATUS_FEATURES_OK | 
+                                    VIRTIO_STATUS_DRIVER_OK;
+    
+    return 1;
+}
+
+/* Poll VirtIO input eventq: process all pending events in used ring.
+ * Returns number of events processed. Updates last_used_idx.
+ * Bound: each iteration consumes one used-ring slot (last_used_idx++),
+ * so trips <= 65536 (uint16 wrap distance); desc_id is validated < 16
+ * before indexing events[]. */
+static int virtio_input_poll(volatile uint32_t *mmio, virtio_input_ring_t *ring,
+                             kbd_modifiers_t *kbd_mods, mouse_state_t *mouse,
+                             console_t *con) {
+    int n = 0;
+    
+    /* Check if new events available (used.idx advanced) */
+    while (ring->last_used_idx != ring->used.idx) { /* bound: <=65536 (uint16 wrap) */
+        /* Get completed descriptor */
+        uint16_t idx = ring->last_used_idx % 16;
+        uint32_t desc_id = ring->used.ring[idx].id;
+        
+        if (desc_id >= 16) break; /* Invalid descriptor ID */
+        
+        struct virtio_input_event *ev = &ring->events[desc_id];
+        
+        /* Process event based on type */
+        if (ev->type == EV_KEY) {
+            /* Keyboard or mouse button event */
+            int pressed = (ev->value == 1); /* 1=press, 0=release, 2=repeat */
+            
+            /* Update modifiers first */
+            update_modifiers(kbd_mods, ev->code, pressed);
+            
+            /* Convert to ASCII on press (ignore release and repeat) */
+            if (pressed && ev->value == 1) {
+                char ch = keycode_to_ascii(ev->code, kbd_mods);
+                if (ch != 0) {
+                    console_putc(con, ch);
+                }
+            }
+            
+            /* Mouse buttons */
+            mouse_button(mouse, ev->code, pressed);
+            
+        } else if (ev->type == EV_REL) {
+            /* Mouse relative motion */
+            if (ev->code == REL_X) {
+                mouse_move(mouse, (int)ev->value, 0);
+            } else if (ev->code == REL_Y) {
+                mouse_move(mouse, 0, (int)ev->value);
+            }
+        }
+        /* EV_SYN ignored (synchronization marker) */
+        
+        /* Re-add descriptor to available ring for device reuse */
+        uint16_t avail_idx = ring->avail.idx % 16;
+        ring->avail.ring[avail_idx] = (uint16_t)desc_id;
+        ring->avail.idx++;
+        
+        ring->last_used_idx++;
+        n++;
+    }
+    
+    /* Notify device if we processed events (kick device to refill) */
+    if (n > 0) {
+        mmio[VIRTIO_MMIO_QUEUE_NOTIFY / 4] = 0; /* Notify queue 0 */
+        
+        /* Acknowledge IRQ (clear INTERRUPT_STATUS) */
+        uint32_t isr = mmio[VIRTIO_MMIO_INTERRUPT_STATUS / 4];
+        if (isr != 0) {
+            mmio[VIRTIO_MMIO_INTERRUPT_ACK / 4] = isr;
+        }
+    }
+    
+    return n;
+}
+
 /* First-valid marker: .bss flag (v2_user.ld provides .data/.bss RW,
  * lines 18-19: *(.data*) *(.got*) *(.sdata*), *(.bss*) *(COMMON)). */
 static int gui_announced = 0;
@@ -206,12 +413,73 @@ void gui_main(void)
     uint32_t color;
     uint32_t row;
     uint32_t col;
+    
+    /* S4c: Console and input state. console_mode defaults to 0 (surface
+     * mode) so the S4b FILL/COMPOSE path is live; Task 3 legs rely on it. */
+    static console_t console;
+    static kbd_modifiers_t kbd_mods;
+    static mouse_state_t mouse;
+    int input_ready = 0;
+    int console_mode = 0; /* 0=surface mode, 1=console mode (toggle with F1) */
+    
     if (!gui_bind_lfb())
         u_park(); /* fail closed, marker-free: no "GUI: up" */
     u_puts("GUI: up\n");
+    
+    /* S4c input gate (Task 1: dormant). Task 2 has not mapped
+     * KBD/MOUSE_MMIO_UVA yet (l1_t[10][9]/[10] are zero on the S4b
+     * kernel), and U-mode cannot safely probe an unmapped window: ANY
+     * load/store there raises a fault that parks this thread, killing
+     * the S4b service loop below. So the init calls stay off
+     * (input_armed = 0): input_ready stays 0, the u_wait() leg in the
+     * service loop is skipped, and FILL/COMPOSE keep serving. Task 2
+     * flips input_armed to 1 alongside the leaf wiring; from then on
+     * any init-0 (probe mismatch above) still skips input and falls
+     * through here — input init never parks this thread. */
+    volatile uint32_t *kbd_mmio = (volatile uint32_t *)KBD_MMIO_UVA;
+    volatile uint32_t *mouse_mmio = (volatile uint32_t *)MOUSE_MMIO_UVA;
+
+    if (input_armed &&
+        virtio_input_init(kbd_mmio, &kbd_ring) &&
+        virtio_input_init(mouse_mmio, &mouse_ring))
+        input_ready = 1;
+
+    if (input_ready) {
+        console_init(&console);
+        kbd_modifiers_init(&kbd_mods);
+        mouse_init(&mouse);
+        u_puts("INPUT: kbd and mouse ready\n");
+        console_puts(&console, "MoonlightOS S4c Console\n");
+        console_puts(&console, "Type to test keyboard, move mouse for cursor.\n");
+        console_puts(&console, "F1: toggle surface/console mode\n\n");
+    }
+    
     for (uint32_t i = 0; i < (uint32_t)SURF_N; i++) /* bound: SURF_N */
         surf_owner[i] = 0xFF; /* all slots free before first RECV */
     for (;;) { /* bound: inf - service loop */
+        /* S4c input leg: skipped unless input_ready (dormant in Task 1,
+         * so the S4b path below stays live). Task 3 note: V2_WAIT blocks
+         * when notify is empty, so this leg must not starve the RECV
+         * below — poll input only when notified, then always fall
+         * through to RECV. */
+        if (input_ready) {
+            long notify_bits = u_wait();
+            
+            if (notify_bits & KBD_IRQ_BIT) {
+                virtio_input_poll(kbd_mmio, &kbd_ring, &kbd_mods, &mouse, &console);
+            }
+            if (notify_bits & MOUSE_IRQ_BIT) {
+                virtio_input_poll(mouse_mmio, &mouse_ring, &kbd_mods, &mouse, &console);
+            }
+            
+            /* Render console if in console mode */
+            if (console_mode) {
+                volatile uint32_t *fb = (volatile uint32_t *)GUI_LFB_UVA;
+                console_render_with_cursor(&console, fb);
+                cursor_render(fb, mouse.x, mouse.y);
+            }
+        }
+        
         snd = 0;
         sqb = 0;
         ovf = 0;
