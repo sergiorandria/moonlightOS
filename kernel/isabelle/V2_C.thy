@@ -946,6 +946,84 @@ lemma ipc_s4b_ep_separation:
    recvq (fst (c_send s 10 [gui_surf_create_tag, sid, wh, fl] st)) j = recvq st j"
   by (simp add: ep_separation_send)
 
+(* ---- S4c input-IRQ pins (VirtIO keyboard/mouse for the gui qube) ----
+   Shipped values, verbatim (kernel/kboot.c S4c: KBD_IRQ_BIT 0x4UL /
+   MOUSE_IRQ_BIT 0x8UL; userspace/gui/v2_main.c polls the eventq only
+   for IRQ bits WAIT actually returned, phase-split so armed input
+   cannot starve FILL/COMPOSE). The model notifies raw nat signals, so
+   deliveries\<subseteq>sends (c_integrity) + take-and-clear WAIT already
+   quantify over ALL signals and the new bits inherit them by
+   instantiation (instance lemmas below pin exactly that). max_eps is
+   UNCHANGED (no-bump). Zero axioms. *)
+
+definition kbd_irq_bit :: nat where
+  "kbd_irq_bit = 4"
+
+definition mouse_irq_bit :: nat where
+  "mouse_irq_bit = 8"
+
+(* Bits distinct (two independent IRQ sources). *)
+lemma input_irq_bits_distinct:
+  "kbd_irq_bit \<noteq> mouse_irq_bit"
+  by (simp add: kbd_irq_bit_def mouse_irq_bit_def)
+
+(* No-bump pin: the S4c IRQ set rides the S4a bound unchanged. *)
+lemma max_eps_s4c_unchanged:
+  "max_eps = 11"
+  by (simp add: max_eps_def)
+
+(* A kbd NOTIFY preserves deliveries\<subseteq>sends ... *)
+lemma ipc_s4c_kbd_notify_integrity:
+  "c_integrity st \<Longrightarrow> c_integrity (c_notify t kbd_irq_bit st)"
+  by (simp add: ipc_notify_integrity)
+
+(* ... and a mouse NOTIFY ... *)
+lemma ipc_s4c_mouse_notify_integrity:
+  "c_integrity st \<Longrightarrow> c_integrity (c_notify t mouse_irq_bit st)"
+  by (simp add: ipc_notify_integrity)
+
+(* ... and WAIT preserves it after a kbd IRQ fired ... *)
+lemma ipc_s4c_input_wait_integrity:
+  "c_integrity st \<Longrightarrow> c_integrity (fst (c_wait t (c_notify u kbd_irq_bit st)))"
+  by (simp add: ipc_notify_integrity ipc_wait_integrity)
+
+(* A kbd IRQ accumulates on the target thread (the badge WAIT takes). *)
+lemma ipc_s4c_kbd_accumulates:
+  "t < nthreads_of st \<Longrightarrow>
+   ntfy (c_notify t kbd_irq_bit st) t = ntfy st t \<union> {kbd_irq_bit}"
+  by (simp add: ipc_notify_accumulates)
+
+(* A kbd IRQ wakes a WAIT-blocked gui qube (tid 10) ... *)
+lemma ipc_s4c_kbd_wakes_gui:
+  "\<lbrakk>10 < nthreads_of st; wk st 10 = 3\<rbrakk> \<Longrightarrow>
+   v (cm (c_notify 10 kbd_irq_bit st)) = tcb_resume 10 (v (cm st)) \<and>
+   wk (c_notify 10 kbd_irq_bit st) 10 = 0 \<and>
+   kbd_irq_bit \<in> ntfy (c_notify 10 kbd_irq_bit st) 10"
+  by (simp add: ipc_notify_wakes)
+
+(* ... but never disturbs its rendezvous block. *)
+lemma ipc_s4c_kbd_keeps_rendezvous:
+  "\<lbrakk>10 < nthreads_of st; wk st 10 \<noteq> 3\<rbrakk> \<Longrightarrow>
+   v (cm (c_notify 10 kbd_irq_bit st)) = v (cm st) \<and>
+   wk (c_notify 10 kbd_irq_bit st) = wk st \<and>
+   kbd_irq_bit \<in> ntfy (c_notify 10 kbd_irq_bit st) 10"
+  by (simp add: ipc_notify_keeps_rendezvous)
+
+(* WAIT takes a pending kbd bit and clears it (poll-only-when-notified:
+   the ELF polls the eventq only for bits WAIT returned). *)
+lemma ipc_s4c_kbd_take_clears:
+  "let st1 = c_notify 1 4 init_cstate;
+       (st2, bits) = c_wait 1 st1
+   in (bits, ntfy st2 (1::nat), wk st2 (1::nat)) = ({4}, {}, 0)"
+  by eval
+
+(* Same shape for the mouse bit. *)
+lemma ipc_s4c_mouse_take_clears:
+  "let st1 = c_notify 1 8 init_cstate;
+       (st2, bits) = c_wait 1 st1
+   in (bits, ntfy st2 (1::nat), wk st2 (1::nat)) = ({8}, {}, 0)"
+  by eval
+
 (* ---- PCI-scan bounds (S4a GUI: userspace/gui/pci.h + v2_main.c bind) ----
    The ELF scans bus 0 only (PCI_BUS0_ONLY): dev < 32, fn < 8. pci_cfg_off
    is the ECAM offset (bus*1MB + dev*2KB + fn*256); the bochs slot binds
@@ -1106,5 +1184,41 @@ lemma rng_tid8_only: "rng_leaf t \<Longrightarrow> t = 8"
   by (simp add: rng_leaf_def)
 lemma rng_mutant_leak_rejected: "rng_leaf 6 = False"
   by (simp add: rng_leaf_def)
+
+(* ---- Input-transport scan bounds (gui virtio-kbd/mouse: v2_main.c
+   KBD/MOUSE_MMIO_UVA + kboot tid-10 leaves + dev-18 discovery) ----
+   The gui ELF probes the 8 virtio-mmio transports (VIRTIO_NTRANSPORTS
+   8): input_scan n is the covered prefix (capped at 8, so index 8 is
+   the OOB sentinel, never a transport). Both U-leaves exist ONLY in
+   tid 10's tables (l1_t[10][9] kbd, l1_t[10][10] mouse, boot-asserted
+   "GUIMMIO: tid=10 only"): input_leaf pins the owner, and the tid-9
+   mutant pin rejects the BLK-neighbor alias. Discovery takes the
+   first dev-18 as kbd and the second as mouse (cmdline order).
+   Zero axioms. *)
+
+definition input_scan :: "nat \<Rightarrow> nat" where
+  "input_scan n = (if n \<le> 8 then n else 8)"
+
+definition input_leaf :: "nat \<Rightarrow> bool" where
+  "input_leaf t = (t = 10)"
+
+lemma input_mmio_covers: "input_scan 8 = 8"
+  by (simp add: input_scan_def)
+lemma input_tid10_only: "input_leaf t \<Longrightarrow> t = 10"
+  by (simp add: input_leaf_def)
+lemma input_mutant_leak_rejected: "input_leaf 9 = False"
+  by (simp add: input_leaf_def)
+
+(* Falsifiability: the new invariants can fail (a foreign bit is not
+   the kbd bit; a non-gui thread does not own the input leaf). *)
+lemma input_invariants_nontrivial:
+  "(\<exists>b. b \<noteq> kbd_irq_bit) \<and> (\<exists>t. \<not> input_leaf t)"
+proof -
+  have w1: "mouse_irq_bit \<noteq> kbd_irq_bit"
+    by (simp add: kbd_irq_bit_def mouse_irq_bit_def)
+  have w2: "\<not> input_leaf 9"
+    by (simp add: input_leaf_def)
+  from w1 w2 show ?thesis by blast
+qed
 
 end

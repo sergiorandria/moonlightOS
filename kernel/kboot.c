@@ -521,6 +521,15 @@ static v2_caps_t caps;
 uctx_t *cur_ctx; /* read by trap.S */
 uintptr_t trap_stack_top;
 
+/* S4c live input (Task 4): post-halt IRQ traps must not save over a live
+ * thread. The trap entry stores into cur_ctx unconditionally, but in halt
+ * cur is a stale victim (its regs hold that thread's BLOCKED resume
+ * state) — saving halt regs there would destroy it, and the woken thread
+ * could never resume. So halt points cur_ctx here (cur itself stays a
+ * valid tid: fault paths index threads[cur]). Zero-init BSS, written
+ * only by trap entry from halt. */
+static uctx_t halt_ctx;
+
 static uint8_t kstack[16384] __attribute__((aligned(16)));
 uint8_t *kstack_top = kstack + sizeof(kstack);
 static uint8_t trap_stack[4096] __attribute__((aligned(16)));
@@ -723,6 +732,17 @@ static void halt_no_runnable(void) {
      * the CPU truly parks. */
     sbi_set_timer(~0UL);
     asm volatile("csrc sie, %0" :: "r"(1UL << 5) : "memory"); /* clear STIE */
+    /* S4c live input (Task 4): traps clear sstatus.SIE on entry, so a halt
+     * reached from any trap context parks with SIE=0 — post-park IRQs
+     * (input) would pend forever with no trap and no wake. Re-enable SIE
+     * so WFI still traps (STIE stays cleared + timer maxed: no tick spam,
+     * marker still prints once per entry). Point cur_ctx at the halt
+     * save area (never a live thread: entry would clobber its BLOCKED
+     * resume state) and sscratch at the trap stack (stale user-sp would
+     * fault the entry store under SUM=0). */
+    asm volatile("csrs sstatus, %0" :: "r"(1UL << 1) : "memory"); /* SIE */
+    cur_ctx = &halt_ctx;
+    asm volatile("csrw sscratch, %0" :: "r"(trap_stack_top) : "memory");
     for (;;)
         asm volatile("wfi");
     __builtin_unreachable();
@@ -791,6 +811,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
              * generates high-frequency IRQs that would flood the transcript;
              * the ELF's event poll after WAIT is the delivery proof. */
             int input_irq = 0;
+            int input_woke = 0;
             if (s == kbd_virtio_irq || m == kbd_virtio_irq) {
                 threads[10].notify |= KBD_IRQ_BIT;
                 input_irq = 1;
@@ -804,6 +825,12 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     threads[10].wait_kind == V2_WK_WAIT) {
                     threads[10].state = T_RUNNABLE;
                     threads[10].wait_kind = V2_WK_NONE;
+                    /* Wake-delivery (NOTIFY precedent): a thread woken
+                     * from WAIT resumes past the ecall with stale a0, so
+                     * pre-deliver the pending bits as its WAIT return;
+                     * pending stays set, so a re-WAIT still collects. */
+                    threads[10].regs[10] = threads[10].notify;
+                    input_woke = 1;
                 }
             }
             if (src == 0 && !blk && !input_irq) {
@@ -813,6 +840,16 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 *(volatile uint32_t *)PLIC_CLAIM_S = s;
             if (m != 0)
                 *(volatile uint32_t *)PLIC_CLAIM_M = m;
+            /* S4c live input (Task 4): a post-halt wake leaves nobody
+             * scheduled (halt is not a thread) — run the woken server
+             * now (SEND-handoff precedent: enter_thread from handler).
+             * Pre-park this only fires for a WAIT-blocked input server
+             * and is a no-op for everyone else. */
+            if (input_woke) {
+                int n = pick_next();
+                if (n >= 0)
+                    enter_thread(n);
+            }
             return;
         }
         kputs("[trap] unexpected interrupt\n");
@@ -1754,14 +1791,19 @@ void kboot(void) {
         *(volatile uint32_t *)PLIC_THRESH_M = 0;
         *(volatile uint32_t *)PLIC_THRESH_S = 0;
     }
-    /* S4c VirtIO input discovery: keyboard (first dev-18) and mouse (second
-     * dev-18). VirtIO-input spec uses device ID 18 for all input devices; the
-     * subtype (config.subsel) distinguishes keyboard=1 vs mouse=2 vs tablet=3.
-     * QEMU virtio-keyboard-device and virtio-mouse-device both present as
-     * dev-18. Simplified discovery: assume cmdline order (first=kbd, second=
-     * mouse) instead of reading config.subsel (avoids config-space parsing).
-     * IRQ = 1+ti as usual; none found leaves kbd/mouse_virtio_irq at 0xFFFFFFFF
-     * (handler matches nothing, fail-closed: no input but boot proceeds). */
+    /* S4c VirtIO input discovery: mouse (first dev-18) and keyboard
+     * (second dev-18). VirtIO-input spec uses device ID 18 for all input
+     * devices; the subtype (config.subsel) distinguishes keyboard=1 vs
+     * mouse=2 vs tablet=3. QEMU virtio-keyboard-device and
+     * virtio-mouse-device both present as dev-18. Simplified discovery:
+     * QEMU attaches backends last-first, so in scan order the LAST-listed
+     * input device comes first: with `-device ...keyboard... -device
+     * ...mouse...` the mouse is the first dev-18 and the keyboard the
+     * second (Task 4 measured: keypresses claim 1+ti of the SECOND
+     * dev-18; a config.subsel read would remove the order assumption).
+     * IRQ = 1+ti as usual; none found leaves kbd/mouse_virtio_irq at
+     * 0xFFFFFFFF (handler matches nothing, fail-closed: no input but
+     * boot proceeds). */
     {
         int input_found = 0;
         for (int ti = 0; ti < VIRTIO_NTRANSPORTS && input_found < 2; ti++) { /* bound: 8 */
@@ -1769,11 +1811,11 @@ void kboot(void) {
                 (VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
             if (tr[0] == 0x74726976u && tr[1] == 2u &&
                 tr[2] == (uint32_t)VIRTIO_DEV_INPUT) {
-                if (kbd_virtio_irq == VIRTIO_IRQ_NOT_FOUND) {
-                    kbd_virtio_irq = (uint32_t)(1 + ti);
-                    input_found++;
-                } else if (mouse_virtio_irq == VIRTIO_IRQ_NOT_FOUND) {
+                if (mouse_virtio_irq == VIRTIO_IRQ_NOT_FOUND) {
                     mouse_virtio_irq = (uint32_t)(1 + ti);
+                    input_found++;
+                } else if (kbd_virtio_irq == VIRTIO_IRQ_NOT_FOUND) {
+                    kbd_virtio_irq = (uint32_t)(1 + ti);
                     input_found++;
                 }
             }

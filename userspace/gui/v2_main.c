@@ -31,6 +31,11 @@
 #define V2_SEND 3
 #define V2_RECV 4
 #define V2_WAIT 6
+#define V2_INVOKE 7
+#define V2_INV_FRAME_PA 16 /* (vpn,0,0,0): PA of the caller's mapped frame; <0 INVALID */
+/* U-image base (v2_user.ld BASE = kboot V2_U_END): the frame-window vpn
+ * of a U VA is (va - GUI_U_BASE) >> 12. */
+#define GUI_U_BASE 0x80800000UL
 
 /* WANT (Task 3 implements): the kernel pre-maps these windows into the
  * tid-10 tables ONLY (per-thread l1_t[10][i]; BLK precedent l1_t[9][6]).
@@ -85,6 +90,54 @@ static long u_send(unsigned long ep, const uint64_t *p, unsigned long n)
 static long u_wait(void)
 {
     return u_ecall3(V2_WAIT, 0, 0, 0);
+}
+
+static long u_ecall4(long sys, long a0, long a1, long a2, long a3)
+{
+    register long r_a0 asm("a0") = a0;
+    register long r_a1 asm("a1") = a1;
+    register long r_a2 asm("a2") = a2;
+    register long r_a3 asm("a3") = a3;
+    register long r_a7 asm("a7") = sys;
+    asm volatile("ecall"
+                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
+                 : "r"(r_a7)
+                 : "memory");
+    return r_a0;
+}
+
+static long u_invoke(long op, long a1, long a2, long a3)
+{
+    return u_ecall4(V2_INVOKE, op, a1, a2, a3);
+}
+
+static void gui_fence(void)
+{
+    asm volatile("fence iorw,iorw" ::: "memory");
+}
+
+/* Translate a U VA range to guest-physical for virtio queue programming
+ * (net/blk precedent: the device DMAs by PA, and U VAs are frame-window
+ * aliases, NOT identity — programming the VA makes the device scribble
+ * the wrong RAM and the poll below sees nothing). Returns 0 on any
+ * failure (below BASE, INVOKE reject, or the range straddles a page:
+ * loader frames are not PA-contiguous). 0 is never a valid PA (frames
+ * live at 0x81000000+), so callers fail closed on 0. */
+static uint64_t gui_va_to_pa(uintptr_t va, unsigned long len)
+{
+    unsigned long vpn;
+    unsigned long off;
+    long pa_base;
+    if (va < GUI_U_BASE)
+        return 0;
+    vpn = (unsigned long)((va - GUI_U_BASE) >> 12);
+    off = (unsigned long)(va & 0xFFFUL);
+    if (off + len > 4096UL)
+        return 0; /* straddles pages: no single PA */
+    pa_base = u_invoke((long)V2_INV_FRAME_PA, (long)vpn, 0, 0);
+    if (pa_base < 0)
+        return 0;
+    return (uint64_t)pa_base + (uint64_t)off;
 }
 
 /* RECV returns words-written in a0, kernel-stamped sender in a1,
@@ -213,13 +266,18 @@ typedef struct {
 static virtio_input_ring_t kbd_ring;
 static virtio_input_ring_t mouse_ring;
 
-/* S4c input arming flag (Task 1: 0 = dormant). File scope + non-const so
- * the compiler keeps the init/poll/render path in the binary (a const or
- * function-local flag folds at -O2 and silently drops the audited S4c
- * code, shrinking .text/.bss and voiding the budget measurement below).
- * Zero-init keeps it in .bss (see the .data-alignment note at
- * surf_owner). Task 2 flips this to 1 alongside the l1_t[10][9]/[10]
- * leaf wiring; the short-circuit in gui_main then arms the probe. */
+/* S4c input arming flag (Task 4: armed at runtime in gui_main).
+ * File scope + non-const so the compiler keeps the init/poll/render
+ * path in the binary (a const or function-local flag folds at -O2 and
+ * silently drops the audited S4c code, shrinking .text/.bss and
+ * voiding the budget measurement below). Zero-init keeps it in .bss
+ * (see the .data-alignment note at surf_owner): a =1 initializer
+ * would emit a file-backed .data LOAD whose lld-packed BSS tail is
+ * page-misaligned, and v2_elf_load rejects it ([spawn] gui ELF FAIL).
+ * Task 2 wired the l1_t[10][9]/[10] leaves and Task 3 the
+ * IRQ/discovery legs; Task 4 arms the probe at runtime (any init-0
+ * still skips input and falls through to the S4b loop, so a
+ * deviceless boot stays marker-clean instead of parking). */
 int input_armed = 0;
 
 /* Initialize one VirtIO input device: reset, feature negotiation, queue setup.
@@ -268,10 +326,14 @@ static int virtio_input_init(volatile uint32_t *mmio, virtio_input_ring_t *ring)
     
     mmio[VIRTIO_MMIO_QUEUE_NUM / 4] = 16; /* Use 16 slots */
     
-    /* Program queue physical addresses (guest-physical = user virtual in S4c) */
-    uint64_t desc_pa = (uint64_t)(uintptr_t)ring->desc;
-    uint64_t avail_pa = (uint64_t)(uintptr_t)&ring->avail;
-    uint64_t used_pa = (uint64_t)(uintptr_t)&ring->used;
+    /* Program queue physical addresses (translated VA->PA: the device
+     * DMAs by guest-physical; fail closed when any range straddles a
+     * page or the vpn is unmapped). */
+    uint64_t desc_pa = gui_va_to_pa((uintptr_t)ring->desc, sizeof(ring->desc));
+    uint64_t avail_pa = gui_va_to_pa((uintptr_t)&ring->avail, sizeof(ring->avail));
+    uint64_t used_pa = gui_va_to_pa((uintptr_t)&ring->used, sizeof(ring->used));
+    if (desc_pa == 0 || avail_pa == 0 || used_pa == 0)
+        return 0;
     
     mmio[VIRTIO_MMIO_QUEUE_DESC_LOW / 4] = (uint32_t)desc_pa;
     mmio[VIRTIO_MMIO_QUEUE_DESC_HIGH / 4] = (uint32_t)(desc_pa >> 32);
@@ -282,7 +344,11 @@ static int virtio_input_init(volatile uint32_t *mmio, virtio_input_ring_t *ring)
     
     /* Initialize descriptor ring: all slots point to event buffers (write-only) */
     for (int i = 0; i < 16; i++) { /* bound: 16 */
-        ring->desc[i].addr = (uint64_t)(uintptr_t)&ring->events[i];
+        uint64_t ev_pa = gui_va_to_pa((uintptr_t)&ring->events[i],
+                                      sizeof(ring->events[i]));
+        if (ev_pa == 0)
+            return 0;
+        ring->desc[i].addr = ev_pa;
         ring->desc[i].len = sizeof(struct virtio_input_event);
         ring->desc[i].flags = VIRTQ_DESC_F_WRITE; /* Device writes */
         ring->desc[i].next = 0;
@@ -290,6 +356,7 @@ static int virtio_input_init(volatile uint32_t *mmio, virtio_input_ring_t *ring)
     
     /* Initialize available ring: make all 16 descriptors available */
     ring->avail.flags = 0;
+    gui_fence();
     ring->avail.idx = 16; /* Wrapped at 65536; device sees 16 available */
     for (int i = 0; i < 16; i++) { /* bound: 16 */
         ring->avail.ring[i] = (uint16_t)i;
@@ -321,6 +388,7 @@ static int virtio_input_poll(volatile uint32_t *mmio, virtio_input_ring_t *ring,
     int n = 0;
     
     /* Check if new events available (used.idx advanced) */
+    gui_fence();
     while (ring->last_used_idx != ring->used.idx) { /* bound: <=65536 (uint16 wrap) */
         /* Get completed descriptor */
         uint16_t idx = ring->last_used_idx % 16;
@@ -343,6 +411,12 @@ static int virtio_input_poll(volatile uint32_t *mmio, virtio_input_ring_t *ring,
                 char ch = keycode_to_ascii(ev->code, kbd_mods);
                 if (ch != 0) {
                     console_putc(con, ch);
+                    /* Transcript echo (Task 4 live-input evidence): the
+                     * console buffer renders to the framebuffer only, so
+                     * mirror each placed char to serial (human typing
+                     * rate bounds the volume; a deviceless boot never
+                     * reaches here). */
+                    u_putc(ch);
                 }
             }
             
@@ -370,6 +444,7 @@ static int virtio_input_poll(volatile uint32_t *mmio, virtio_input_ring_t *ring,
     
     /* Notify device if we processed events (kick device to refill) */
     if (n > 0) {
+        gui_fence();
         mmio[VIRTIO_MMIO_QUEUE_NOTIFY / 4] = 0; /* Notify queue 0 */
         
         /* Acknowledge IRQ (clear INTERRUPT_STATUS) */
@@ -414,32 +489,61 @@ void gui_main(void)
     uint32_t row;
     uint32_t col;
     
-    /* S4c: Console and input state. console_mode defaults to 0 (surface
-     * mode) so the S4b FILL/COMPOSE path is live; Task 3 legs rely on it. */
+    /* S4c: Console and input state. Phase 1 below serves the one-shot
+     * FILL/COMPOSE stream with the S4b path pristine (no WAIT inside, so
+     * armed input cannot starve FILL/COMPOSE at boot); phase 2 (after
+     * COMPOSE) takes the console live on WAIT-driven input. */
     static console_t console;
     static kbd_modifiers_t kbd_mods;
     static mouse_state_t mouse;
     int input_ready = 0;
-    int console_mode = 0; /* 0=surface mode, 1=console mode (toggle with F1) */
     
     if (!gui_bind_lfb())
         u_park(); /* fail closed, marker-free: no "GUI: up" */
     u_puts("GUI: up\n");
     
-    /* S4c input gate (Task 1: dormant). Task 2 has not mapped
-     * KBD/MOUSE_MMIO_UVA yet (l1_t[10][9]/[10] are zero on the S4b
-     * kernel), and U-mode cannot safely probe an unmapped window: ANY
-     * load/store there raises a fault that parks this thread, killing
-     * the S4b service loop below. So the init calls stay off
-     * (input_armed = 0): input_ready stays 0, the u_wait() leg in the
-     * service loop is skipped, and FILL/COMPOSE keep serving. Task 2
-     * flips input_armed to 1 alongside the leaf wiring; from then on
-     * any init-0 (probe mismatch above) still skips input and falls
-     * through here — input init never parks this thread. */
-    volatile uint32_t *kbd_mmio = (volatile uint32_t *)KBD_MMIO_UVA;
-    volatile uint32_t *mouse_mmio = (volatile uint32_t *)MOUSE_MMIO_UVA;
+    /* S4c input gate (Task 4: armed). Task 2 mapped KBD/MOUSE_MMIO_UVA
+     * (l1_t[10][9]/[10], all 8 transports each) and Task 3 the
+     * IRQ/discovery legs, so the probes below touch mapped windows
+     * (reads to absent transports return non-magic, same shape as the
+     * kernel discovery scan). Any init-0 (probe mismatch below) still
+     * skips input and falls through here — input init never parks
+     * this thread, and the S4b service loop below stays live. */
+    volatile uint32_t *kbd_mmio = (volatile uint32_t *)0;
+    volatile uint32_t *mouse_mmio = (volatile uint32_t *)0;
+    int input_found = 0;
 
-    if (input_armed &&
+    /* S4c discovery scan (Task 4, mirrors the kboot scan): the leaves
+     * map all 8 transports but never say which slot holds dev-18, so
+     * probe every slot's MAGIC/VERSION/DEVICE_ID (reads only — no
+     * STATUS write before a slot answers). QEMU attaches backends
+     * last-first, so the first dev-18 in scan order is the mouse and
+     * the second is the keyboard (Task 4 measured keypresses arriving
+     * on the second slot's IRQ). Both leaves map identical PAs, so one
+     * window scans all. The WIP probed slot 0 only and could never go
+     * live. */
+    for (int ti = 0; ti < 8 && input_found < 2; ti++) { /* bound: 8 */
+        volatile uint32_t *tr =
+            (volatile uint32_t *)(KBD_MMIO_UVA + (unsigned long)ti * 0x1000UL);
+        if (tr[VIRTIO_MMIO_MAGIC / 4] != 0x74726976u)
+            continue;
+        if (tr[VIRTIO_MMIO_VERSION / 4] != 2u)
+            continue;
+        if (tr[VIRTIO_MMIO_DEVICE_ID / 4] != 18u)
+            continue;
+        if (input_found == 0) {
+            mouse_mmio = tr;
+            input_found = 1;
+        } else {
+            kbd_mmio = tr;
+            input_found = 2;
+        }
+    }
+
+    /* Arm S4c input (Task 4): assignment, not initializer, so the flag
+     * stays zero-init in .bss (3-LOAD shape the loader accepts). */
+    input_armed = 1;
+    if (input_armed && input_found == 2 &&
         virtio_input_init(kbd_mmio, &kbd_ring) &&
         virtio_input_init(mouse_mmio, &mouse_ring))
         input_ready = 1;
@@ -450,36 +554,19 @@ void gui_main(void)
         mouse_init(&mouse);
         u_puts("INPUT: kbd and mouse ready\n");
         console_puts(&console, "MoonlightOS S4c Console\n");
-        console_puts(&console, "Type to test keyboard, move mouse for cursor.\n");
-        console_puts(&console, "F1: toggle surface/console mode\n\n");
+        console_puts(&console, "Type to test keyboard, move mouse for cursor.\n\n");
     }
     
     for (uint32_t i = 0; i < (uint32_t)SURF_N; i++) /* bound: SURF_N */
         surf_owner[i] = 0xFF; /* all slots free before first RECV */
-    for (;;) { /* bound: inf - service loop */
-        /* S4c input leg: skipped unless input_ready (dormant in Task 1,
-         * so the S4b path below stays live). Task 3 note: V2_WAIT blocks
-         * when notify is empty, so this leg must not starve the RECV
-         * below — poll input only when notified, then always fall
-         * through to RECV. */
-        if (input_ready) {
-            long notify_bits = u_wait();
-            
-            if (notify_bits & KBD_IRQ_BIT) {
-                virtio_input_poll(kbd_mmio, &kbd_ring, &kbd_mods, &mouse, &console);
-            }
-            if (notify_bits & MOUSE_IRQ_BIT) {
-                virtio_input_poll(mouse_mmio, &mouse_ring, &kbd_mods, &mouse, &console);
-            }
-            
-            /* Render console if in console mode */
-            if (console_mode) {
-                volatile uint32_t *fb = (volatile uint32_t *)GUI_LFB_UVA;
-                console_render_with_cursor(&console, fb);
-                cursor_render(fb, mouse.x, mouse.y);
-            }
-        }
-        
+    for (;;) { /* bound: inf - phase-1 service loop (S4b FILL/COMPOSE) */
+        /* Phase 1 carries NO input leg by design (Task 4): V2_WAIT
+         * blocks when notify is empty, so a WAIT-before-RECV here
+         * would park this thread at boot and the S4b SEND stream
+         * (which never NOTIFies) would wedge its sender — the S4b
+         * markers are the canary. Input IRQs/notifications during
+         * this ms-short burst accumulate (kernel notify bits +
+         * 16-slot rings) and phase 2 drains them. */
         snd = 0;
         sqb = 0;
         ovf = 0;
@@ -528,7 +615,16 @@ void gui_main(void)
                     *(volatile uint32_t *)(GUI_LFB_UVA + (unsigned long)(idx * 4u)) = 0x00112233u;
                 }
             if (!gui_composed) { u_puts("GUI: composed ok\n"); gui_composed = 1; }
-            u_reply(snd, R_OK); continue;
+            u_reply(snd, R_OK);
+            /* S4c phase split (Task 4): the FILL/COMPOSE stream is
+             * one-shot (thread A parks right after this pilot), so no
+             * future RECV traffic exists — break into the WAIT-driven
+             * input loop below instead of blocking in RECV forever (an
+             * input IRQ cannot wake a RECV block). Dormant servers
+             * (!input_ready) stay in the phase-1 S4b loop. */
+            if (input_ready)
+                break;
+            continue;
         }
         if (n < 4 || buf[0] != (uint64_t)FILL) {
             u_reply(snd, R_DENY);
@@ -573,5 +669,30 @@ void gui_main(void)
             gui_announced = 1;
         }
         u_reply(snd, R_OK);
+    }
+
+    /* Phase 2: S4c live input (reached only via the COMPOSE break when
+     * input_ready: the demo stream is served, thread A parked). Console
+     * takeover: render the banner put in the buffer at init, then serve
+     * key/mouse IRQs WAIT-driven, poll-only-when-notified (rings are
+     * touched only for IRQ bits WAIT actually returned). No IPC sender
+     * remains, so the WAIT block starves nothing; a future F1 toggle
+     * between surface/console modes is honest remainder (Task 5). */
+    if (input_ready && gui_composed) {
+        volatile uint32_t *fb = (volatile uint32_t *)GUI_LFB_UVA;
+        u_puts("INPUT: console live\n");
+        console_render_with_cursor(&console, fb);
+        cursor_render(fb, mouse.x, mouse.y);
+        for (;;) { /* bound: inf - phase-2 input service loop */
+            long notify_bits = u_wait();
+            if (notify_bits & KBD_IRQ_BIT)
+                virtio_input_poll(kbd_mmio, &kbd_ring, &kbd_mods, &mouse,
+                                  &console);
+            if (notify_bits & MOUSE_IRQ_BIT)
+                virtio_input_poll(mouse_mmio, &mouse_ring, &kbd_mods, &mouse,
+                                  &console);
+            console_render_with_cursor(&console, fb);
+            cursor_render(fb, mouse.x, mouse.y);
+        }
     }
 }

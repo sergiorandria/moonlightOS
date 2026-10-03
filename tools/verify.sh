@@ -41,6 +41,7 @@ gcc -Wall -Wextra -Werror -o /tmp/test_netfw tests/test_netfw.c 2>&1 && /tmp/tes
 gcc -Wall -Wextra -Werror -o /tmp/test_aead tests/test_aead.c 2>&1 && /tmp/test_aead || echo "FAIL: test_aead"
 gcc -Wall -Wextra -Werror -o /tmp/test_crypt tests/test_crypt.c 2>&1 && /tmp/test_crypt || echo "FAIL: test_crypt"
 gcc -Wall -Wextra -Werror -o /tmp/test_gui tests/test_gui.c 2>&1 && /tmp/test_gui || echo "FAIL: test_gui"
+gcc -Wall -Wextra -Werror -o /tmp/test_input tests/test_input.c 2>&1 && /tmp/test_input || echo "FAIL: test_input"
 gcc -Wall -Wextra -Werror -o /tmp/test_rng tests/test_rng.c 2>&1 && /tmp/test_rng || echo "FAIL: test_rng"
 gcc -Wall -Wextra -no-pie -o /tmp/test_shell_vfs tests/test_shell_vfs.c userspace/vfs_server/server.c 2>&1 && /tmp/test_shell_vfs || echo "FAIL: test_shell_vfs"
 if command -v clang &>/dev/null; then
@@ -144,7 +145,11 @@ if [ -f kernel/build/moonlight.elf ]; then
         truncate -s 256M "$DISK"
       fi
     fi
-    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -device virtio-rng-device -global virtio-mmio.force-legacy=off -drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 -device bochs-display 2>&1 | tr -d '\0')
+    # S4c input devices: virtio-keyboard/mouse over MMIO. Attached even
+    # headless (-nographic feeds them no keys, but the dev-18 transports
+    # enumerate so kernel discovery + the userspace probe run; live
+    # typing instead needs a windowed/VNC display, see run_qemu.sh).
+    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -device virtio-rng-device -global virtio-mmio.force-legacy=off -drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 -device bochs-display -device virtio-keyboard-device -device virtio-mouse-device 2>&1 | tr -d '\0')
     # Fail closed: every missing marker flips the gate to FAIL (a smoke
     # that only prints FAIL lines but reports PASS proves nothing).
     QEMU_FAIL=0
@@ -201,6 +206,11 @@ if [ -f kernel/build/moonlight.elf ]; then
     # 100px red/green/blue bars at y=100/250/400. First validated FILL
     # prints "GUI: fill ok" once; any leg deviation parks marker-free.
     echo "$V2LOG" | grep -q "GUI: fill ok" && echo "v2 smoke: gui fill" || { echo "v2 smoke: FAIL (no gui fill)"; QEMU_FAIL=1; }
+    # S4c input gate: kernel discovery (both dev-18 transports) + the
+    # armed userspace probe (fails closed to the S4b loop when absent).
+    echo "$V2LOG" | grep -q "INPUT: kbd found" && echo "v2 smoke: input kbd" || { echo "v2 smoke: FAIL (no input kbd)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "INPUT: mouse found" && echo "v2 smoke: input mouse" || { echo "v2 smoke: FAIL (no input mouse)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "INPUT: kbd and mouse ready" && echo "v2 smoke: input userspace" || { echo "v2 smoke: FAIL (no input userspace)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUI: composed ok" && echo "v2 smoke: gui composed" || { echo "v2 smoke: FAIL (no gui composed)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "QREXEC: admin registered" && echo "v2 smoke: admin live" || { echo "v2 smoke: FAIL (no admin registered)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "VAULT: live ok" && echo "v2 smoke: vault live" || { echo "v2 smoke: FAIL (no vault live)"; QEMU_FAIL=1; }
