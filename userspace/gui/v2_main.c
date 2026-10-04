@@ -270,14 +270,17 @@ static virtio_input_ring_t mouse_ring;
  * File scope + non-const so the compiler keeps the init/poll/render
  * path in the binary (a const or function-local flag folds at -O2 and
  * silently drops the audited S4c code, shrinking .text/.bss and
- * voiding the budget measurement below). Zero-init keeps it in .bss
- * (see the .data-alignment note at surf_owner): a =1 initializer
- * would emit a file-backed .data LOAD whose lld-packed BSS tail is
- * page-misaligned, and v2_elf_load rejects it ([spawn] gui ELF FAIL).
- * Task 2 wired the l1_t[10][9]/[10] leaves and Task 3 the
- * IRQ/discovery legs; Task 4 arms the probe at runtime (any init-0
- * still skips input and falls through to the S4b loop, so a
- * deviceless boot stays marker-clean instead of parking). */
+ * voiding the budget measurement below). Zero-init keeps it in .bss:
+ * a =1 initializer would move it to .data, and v2_user.ld lays .data
+ * immediately before .bss (no ALIGN between), so the linker splits the
+ * RW segment into a file-backed .data LOAD plus its own BSS LOAD at
+ * data-end (measured 0x80803008 for a 4-byte .data) — page-misaligned,
+ * and v2_elf_plan (kernel/elf.h) rejects any PT_LOAD with
+ * (p_vaddr & PAGE_MASK) != 0 ([spawn] gui ELF FAIL, measured both
+ * shapes with readelf). Task 2 wired the l1_t[10][9]/[10] leaves and
+ * Task 3 the IRQ/discovery legs; Task 4 arms the probe at runtime
+ * (any init-0 still skips input and falls through to the S4b loop, so
+ * a deviceless boot stays marker-clean instead of parking). */
 int input_armed = 0;
 
 /* Initialize one VirtIO input device: reset, feature negotiation, queue setup.
@@ -540,8 +543,10 @@ void gui_main(void)
         }
     }
 
-    /* Arm S4c input (Task 4): assignment, not initializer, so the flag
-     * stays zero-init in .bss (3-LOAD shape the loader accepts). */
+    /* Arm S4c input (Task 4): assignment, not initializer, so the
+     * flag stays zero-init in .bss and the RW segment stays one
+     * page-aligned LOAD (3-LOAD shape the loader accepts; split
+     * mechanism noted at the flag declaration above). */
     input_armed = 1;
     if (input_armed && input_found == 2 &&
         virtio_input_init(kbd_mmio, &kbd_ring) &&

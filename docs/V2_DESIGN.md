@@ -666,16 +666,48 @@ per-function where not).
     untouched (shape reference for pixel math only, fixed 0x40000000
     framebuffer never mapped by the v2 kernel).
   - KNOWN DEFERRED / honest remainder (not built): S4b (surfaces,
-    compositor, trusted chrome) / S4c (input/keyboard, focus,
-    clipboard RPC, console migration — serial stays primary);
-    `kbd.c` gap stays open (referenced by `run_qemu.sh`, file absent
-    in-tree, owned by S4c); fallback display devices (ramfb,
+    compositor, trusted chrome) / S4c remainder (focus, clipboard
+    RPC — input/keyboard + single-qube console BUILT 2026-10-04, see
+    the S4c entry below); `kbd.c` gap stays open (referenced by
+    `run_qemu.sh`, file absent in-tree, owned by S4c); fallback display devices (ramfb,
     virtio-gpu — bochs-only this stage); multi-bus PCI scan (bus-0
      only); resolution assumed 800×600×32 from QEMU default, unchecked
      (explicit VBE programming deferred to S4b, no scaling); Stage 4
      time/console, USB HCI + `usb` qube,
     RX-from-wire, live AppVM→firewall→net traffic, §7 non-goals
     unchanged.
+- **S4c — VirtIO keyboard/mouse input + single-qube console.**
+  - BUILT 2026-10-04: gui ELF (tid 10, qube 8) binds virtio-input over
+    tid-10-only U-leaves (`l1_t[10][9]` kbd / `l1_t[10][10]` mouse,
+    boot-asserted `GUIMMIO: tid=10 only`; `KBD_IRQ_BIT 0x4` /
+    `MOUSE_IRQ_BIT 0x8` → tid-10 notify, markers `INPUT: kbd found` /
+    `INPUT: mouse found`); phase-split loop (phase 1 pristine S4b
+    FILL/COMPOSE on EP10 tags 6/7/8/9 with no WAIT inside; phase 2
+    WAIT-driven input, poll-only-when-notified, 100×37 console,
+    `INPUT: kbd and mouse ready` + `INPUT: console live`); discovery
+    takes the first dev-18 as mouse, second as keyboard (QEMU
+    last-first attach, measured); queue PAs via `V2_INV_FRAME_PA` +
+    `fence iorw,iorw`. Host KATs `tests/test_input.c`
+    (`PASS: test_input`, gated `verify.sh [1f]`); smoke-pinned by the
+    three `INPUT:` greps (`verify.sh [4/4]`, fail-closed) + device
+    attach on the QEMU cmdline (`verify.sh`, conditional in
+    `run_qemu.sh`); proved by the `ipc_s4c_*` / `input_*` pins in
+    `V2_C.thy` (0 sorry, 0 axioms; `max_eps = 11` unchanged). No bump:
+    `gui.elf` stays 9 mapped pages (max vpn 8, slot-9 QX grant; font
+    trimmed to 128 glyphs with a `ch & 0x7F` render mask).
+  - SCOPE-OUT (model gap, deliberate): the pins cover notify/wait
+    integrity + transport ownership; the kboot post-halt wake path
+    (`halt_ctx`, SIE re-enable, wake-delivery, schedule-from-handler)
+    is canary/VNC-verified only — no HOL counterpart (see the
+    retro-spec §5).
+  - KNOWN ISSUE (PARKED, top remainder): burst-typing race — ~1 in 3
+    burst runs take a store fault (`cause=0xf`, trap-entry epc) and
+    park the GUI; paced typing green (~1500 IRQs); suspect unproven
+    (re-trap nesting vs `sscratch`/SUM); GDB follow-up proposed
+    (retro-spec §5). Further remainder: per-qube focus + keystroke
+    routing, trusted input indicator, clipboard RPC, ANSI, F1 toggle,
+    mouse-button actions, CP437 upper half, `config.subsel`
+    discovery.
 - **RNG hardening — vault-owned virtio-rng + demo hardening.**
   - BUILT 2026-10-01: vault ELF binds the virtio-rng device over its
     tid-8-only U-leaf (`RNGMMIO: tid=8 only`), mixes 32B hardware

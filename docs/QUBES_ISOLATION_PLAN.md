@@ -91,7 +91,7 @@ minted at creation by AdminVM; the label travels on every IPC (like
 | NetVM/FirewallVM split | `net` qube (`userspace/net/v2_main.c` → `userspace/build/net.elf`, initrd 4, thread 6, qube 5) + `firewall` filter server (`userspace/firewall/fw.h` + `userspace/firewall/v2_main.c` → `userspace/build/firewall.elf`, initrd 3, thread 5, qube 4); host tests `tests/test_netfw.c` + `tests/test_qargs.c`; proofs `kernel/isabelle/Qubes_C.thy` | [HAVE] S3 (USB HCI still TODO) |
 | Encrypted storage | `cryptblk` qube (blk MMIO+IRQ, sector AEAD, `/dev/blk0` ciphertext + `/` plaintext views: `userspace/cryptblk/v2_main.c` → `userspace/build/cryptblk.elf`, initrd 9, thread 9, qube 7) + `vault` qube (KEKs/VMK, per-label slot release: `userspace/vault/v2_main.c` → `userspace/build/vault.elf`, initrd 8, thread 8, qube 6); crypto `userspace/crypt/`; host tests `tests/test_aead.c` + `tests/test_crypt.c`; proofs `kernel/isabelle/Qubes_D.thy` | [HAVE] FDE (templates/overlays/disposables/updates/backup stay TODO) |
 | USBVM | `usb` qube + new USB HCI driver (bulk-only first, no isochronous) | [TODO] S3 |
-| GUI domain | `gui` server (`userspace/gui/v2_main.c` → `userspace/build/gui.elf`, initrd 10, thread 10, qube 8; FILL tag 6, R_OK 0/R_DENY -1; host test `tests/test_gui.c`; proofs `max_eps = 11` + `pci_scan_covers`-family in `kernel/isabelle/V2_C.thy`) | [HAVE] S4a (bring-up: bochs bind + FILL service + 4-leg pattern; markers `GUI: up` / `GUIMMIO: tid=10 only` / `GUI: fill ok`); S4b pilot BUILT 2026-10-02 (server-owned surfaces 4x40x30, tags 7/8/9 on EP10, 20px chrome, marker `GUI: composed ok`); S4c stays [TODO] |
+| GUI domain | `gui` server (`userspace/gui/v2_main.c` → `userspace/build/gui.elf`, initrd 10, thread 10, qube 8; FILL tag 6, R_OK 0/R_DENY -1; host test `tests/test_gui.c`; proofs `max_eps = 11` + `pci_scan_covers`-family in `kernel/isabelle/V2_C.thy`) | [HAVE] S4a (bring-up: bochs bind + FILL service + 4-leg pattern; markers `GUI: up` / `GUIMMIO: tid=10 only` / `GUI: fill ok`); S4b pilot BUILT 2026-10-02 (server-owned surfaces 4x40x30, tags 7/8/9 on EP10, 20px chrome, marker `GUI: composed ok`); S4c input BUILT 2026-10-04 (virtio-kbd/mouse over tid-10-only leaves `l1_t[10][9]`/`[10]`, WAIT-driven single-qube console, markers `INPUT: kbd found` / `INPUT: mouse found` / `INPUT: kbd and mouse ready`; focus/clipboard stay [TODO]) |
 | TemplateVM + overlays | `vfs_server` extensions: ro root caps + per-qube rw overlay, COW | [TODO] S5 |
 | DisposableVMs | `mem_server` overlay-from-template + destroy-on-close | [TODO] S5 |
 | Updates | atomic template swap + hash pin + rollback slot | [TODO] S5 |
@@ -276,7 +276,7 @@ usb         AdminVM     device.attach ask   "attach USB device?"
     1..8 (never hardcoded); S2 deferred (c) closed (`v2_qask_t`
     arg0/arg1, `T_DECIDE` re-attaches). Refinements + deferred list in
     `V2_DESIGN.md` §9 S3 entry.
-- **S4 — GUI isolation (partial: S4a BUILT 2026-09-25, S4b pilot BUILT 2026-10-02, S4c TODO).**
+- **S4 — GUI isolation (partial: S4a BUILT 2026-09-25, S4b pilot BUILT 2026-10-02, S4c input BUILT 2026-10-04).**
   Target: surfaces, trusted chrome, focus gesture, clipboard RPC.
   *Demo:* two qubes, spoofed prompt visibly untrusted (not built).
   - S4a BUILT (bring-up): `userspace/gui/rect.h` + `pci.h`
@@ -303,9 +303,18 @@ usb         AdminVM     device.attach ask   "attach USB device?"
     in `verify.sh [4/4]`; tag pins + `max_eps = 11` unchanged in
     `kernel/isabelle/V2_C.thy`, 0 sorry, 0 axioms; no-bump: no
     NTHREADS/V2_NEP/frames/slots change).
-  - S4c `[TODO]`: per-qube surfaces, compositor, trusted chrome,
-    focus gesture, clipboard RPC, input/keyboard (`kbd.c` gap stays
-    open — referenced by `tools/run_qemu.sh`, absent in-tree),
+  - S4c input BUILT 2026-10-04 (virtio-keyboard/mouse → single-qube
+    100×37 console: `l1_t[10][9]`/`[10]` tid-10-only leaves,
+    `KBD_IRQ_BIT 0x4`/`MOUSE_IRQ_BIT 0x8`, WAIT-driven
+    poll-only-when-notified loop, KATs `tests/test_input.c`, pins
+    `ipc_s4c_*`/`input_*` in `V2_C.thy`, markers `INPUT: kbd found` /
+    `INPUT: mouse found` / `INPUT: kbd and mouse ready` /
+    `INPUT: console live` in `verify.sh [4/4]`; burst-typing race
+    PARKED as known issue, wake path canary-verified only — see
+    `V2_DESIGN.md` §9 S4c entry + retro-spec).
+  - S4c remainder `[TODO]`: per-qube surfaces, compositor, trusted
+    chrome, focus gesture, clipboard RPC, input/keyboard (`kbd.c` gap
+    stays open — referenced by `tools/run_qemu.sh`, absent in-tree),
     console migration (serial stays primary), fallback devices
     (ramfb/virtio-gpu), multi-bus PCI, resolution negotiation.
 - **FDE — encrypted storage (S5-storage partial).**

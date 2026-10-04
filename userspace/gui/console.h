@@ -147,7 +147,10 @@ static inline void console_render(const console_t *con, volatile uint32_t *fb) {
     for (int row = 0; row < CONSOLE_ROWS; row++) { /* bound: CONSOLE_ROWS (37) */
         for (int col = 0; col < CONSOLE_COLS; col++) { /* bound: CONSOLE_COLS (100) */
             uint8_t ch = con->cells[row][col];
-            const uint8_t *glyph = font_8x16[ch]; /* 16 bytes: one per scanline */
+            /* Mask to 0x7F: the table holds 128 glyphs (upper-half CP437
+             * is honest remainder, absent); putc/init only store < 0x7F,
+             * so the mask is defense-in-depth, never a live path. */
+            const uint8_t *glyph = font_8x16[ch & 0x7F]; /* 16 bytes: one per scanline */
 
             /* Character top-left corner in framebuffer coordinates */
             int char_x = col * 8;
@@ -188,7 +191,7 @@ static inline void console_render_with_cursor(const console_t *con, volatile uin
     if (con->cursor_y >= 0 && con->cursor_y < CONSOLE_ROWS &&
         con->cursor_x >= 0 && con->cursor_x < CONSOLE_COLS) {
         uint8_t ch = con->cells[con->cursor_y][con->cursor_x];
-        const uint8_t *glyph = font_8x16[ch];
+        const uint8_t *glyph = font_8x16[ch & 0x7F]; /* masked: 128-glyph table (see above) */
 
         int char_x = con->cursor_x * 8;
         int char_y = con->cursor_y * 16;
