@@ -43,6 +43,9 @@ CHERI_ARGS="-M virt"
 # SSH/headless sessions instead of silently going fully -nographic.
 if [[ "$*" == *"--nographic"* ]]; then
   DISP="-nographic"
+elif [[ "$*" == *"--vnc"* ]]; then
+  echo "VNC display: connect with a VNC viewer to 127.0.0.1:5900"
+  DISP="-display vnc=127.0.0.1:0"
 elif [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
   if $QEMU -display help 2>&1 | grep -q "gtk"; then
     DISP="-display gtk"
@@ -53,8 +56,7 @@ elif [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
     DISP="-display vnc=127.0.0.1:0"
   fi
 else
-  echo "No DISPLAY/WAYLAND_DISPLAY set - starting VNC on :0 instead of going fully headless."
-  echo "Connect with a VNC viewer to 127.0.0.1:5900 to see the framebuffer."
+  echo "No DISPLAY/WAYLAND_DISPLAY set. Use --vnc to enable VNC display on :0, or pass --nographic for serial-only."
   DISP="-display vnc=127.0.0.1:0"
 fi
 

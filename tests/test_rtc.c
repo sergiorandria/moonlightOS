@@ -33,10 +33,12 @@ int main(void) {
     assert(rtc_set_alarm_ns(1000000000ull) == true);
     assert(rtc_alarm_armed() == true);
     assert(rtc_alarm_pending() == false);
+    assert(host_rtc[RTC_ALARM_STAT / 4u] == 1u); /* alarm is running */
     assert(rtc_driver_handle_irq() == 0);
     rtc_sim_advance(999999999ull);
     assert(rtc_alarm_pending() == false);
     rtc_sim_advance(1ull);
+    assert(host_rtc[RTC_ALARM_STAT / 4u] == 0u); /* alarm stopped on fire */
     assert(rtc_alarm_pending() == true);
     assert(rtc_driver_handle_irq() == 1);
     assert(rtc_alarm_armed() == false);

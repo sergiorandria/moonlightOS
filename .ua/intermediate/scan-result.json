@@ -1,0 +1,2835 @@
+{
+  "name": "moonlightOS",
+  "description": "S-mode RISC-V microkernel with U-mode userspace, spec-first and partially verified in Isabelle/HOL. Note: this project has over 100 source files; consider scoping analysis to a subdirectory for faster results.",
+  "languages": [
+    "c",
+    "ld",
+    "makefile",
+    "markdown",
+    "python",
+    "s",
+    "shell",
+    "thy",
+    "unknown",
+    "yaml"
+  ],
+  "frameworks": [
+    "GitHub Actions",
+    "Isabelle/HOL"
+  ],
+  "files": [
+    {
+      "path": ".clang-format",
+      "language": "unknown",
+      "sizeLines": 294,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".clangd",
+      "language": "unknown",
+      "sizeLines": 20,
+      "fileCategory": "code"
+    },
+    {
+      "path": ".github/workflows/cheri.yml",
+      "language": "yaml",
+      "sizeLines": 42,
+      "fileCategory": "infra"
+    },
+    {
+      "path": ".github/workflows/verify.yml",
+      "language": "yaml",
+      "sizeLines": 24,
+      "fileCategory": "infra"
+    },
+    {
+      "path": "CODE_REVIEW_ANALYSIS.md",
+      "language": "markdown",
+      "sizeLines": 472,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "CRYPTO_HARDENING.md",
+      "language": "markdown",
+      "sizeLines": 439,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "PLAN.md",
+      "language": "markdown",
+      "sizeLines": 187,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "README.md",
+      "language": "markdown",
+      "sizeLines": 72,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "REFACTORING_APPLIED.md",
+      "language": "markdown",
+      "sizeLines": 313,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "TROUBLESHOOTING.md",
+      "language": "markdown",
+      "sizeLines": 551,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "language": "markdown",
+      "sizeLines": 443,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/BUILD.md",
+      "language": "markdown",
+      "sizeLines": 203,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/CAPABILITIES.md",
+      "language": "markdown",
+      "sizeLines": 81,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/LINUX.md",
+      "language": "markdown",
+      "sizeLines": 151,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/PRODUCTION.md",
+      "language": "markdown",
+      "sizeLines": 81,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/QUBES_ISOLATION_PLAN.md",
+      "language": "markdown",
+      "sizeLines": 379,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/REPRODUCIBLE.md",
+      "language": "markdown",
+      "sizeLines": 55,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/SECURITY.md",
+      "language": "markdown",
+      "sizeLines": 32,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/SYSCALLS.md",
+      "language": "markdown",
+      "sizeLines": 48,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/THREAT_MODEL.md",
+      "language": "markdown",
+      "sizeLines": 28,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/USAGE.md",
+      "language": "markdown",
+      "sizeLines": 194,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/V2_DESIGN.md",
+      "language": "markdown",
+      "sizeLines": 711,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-14-v2-stage3-capabilities-memory.md",
+      "language": "markdown",
+      "sizeLines": 773,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-15-v2-stage4-hardening-realimpl.md",
+      "language": "markdown",
+      "sizeLines": 172,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-15-v2-stage5-elf-process.md",
+      "language": "markdown",
+      "sizeLines": 96,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-19-qubes-s1-s2.md",
+      "language": "markdown",
+      "sizeLines": 472,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-19-qubes-s3-net-firewall.md",
+      "language": "markdown",
+      "sizeLines": 408,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-21-fde-encrypted-files.md",
+      "language": "markdown",
+      "sizeLines": 303,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-24-live-qrexec-traffic.md",
+      "language": "markdown",
+      "sizeLines": 492,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-25-audit-lifecycle-gaps.md",
+      "language": "markdown",
+      "sizeLines": 354,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-25-s4a-gui-bringup.md",
+      "language": "markdown",
+      "sizeLines": 327,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-28-rng-harden-demos.md",
+      "language": "markdown",
+      "sizeLines": 413,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-10-01-shell-harness.md",
+      "language": "markdown",
+      "sizeLines": 192,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-14-v2-stage3-capabilities-memory-design.md",
+      "language": "markdown",
+      "sizeLines": 125,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-19-qubes-s1-s2-design.md",
+      "language": "markdown",
+      "sizeLines": 134,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-19-qubes-s3-net-firewall-design.md",
+      "language": "markdown",
+      "sizeLines": 148,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-21-fde-encrypted-files-design.md",
+      "language": "markdown",
+      "sizeLines": 141,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-24-live-qrexec-traffic-design.md",
+      "language": "markdown",
+      "sizeLines": 253,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-audit-lifecycle-gaps-design.md",
+      "language": "markdown",
+      "sizeLines": 161,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-25-s4a-gui-bringup-design.md",
+      "language": "markdown",
+      "sizeLines": 216,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-09-28-rng-harden-demos-design.md",
+      "language": "markdown",
+      "sizeLines": 196,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-10-01-shell-harness-design.md",
+      "language": "markdown",
+      "sizeLines": 179,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "kernel/Makefile",
+      "language": "makefile",
+      "sizeLines": 35,
+      "fileCategory": "infra"
+    },
+    {
+      "path": "kernel/caps.h",
+      "language": "c",
+      "sizeLines": 471,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/elf.c",
+      "language": "c",
+      "sizeLines": 198,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/elf.h",
+      "language": "c",
+      "sizeLines": 57,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/initrd.c",
+      "language": "c",
+      "sizeLines": 45,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/initrd.h",
+      "language": "c",
+      "sizeLines": 12,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/initrd_data.c",
+      "language": "c",
+      "sizeLines": 12312,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/ipc.h",
+      "language": "c",
+      "sizeLines": 185,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/isabelle/Qubes_A.thy",
+      "language": "thy",
+      "sizeLines": 511,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/isabelle/Qubes_B.thy",
+      "language": "thy",
+      "sizeLines": 380,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/isabelle/Qubes_C.thy",
+      "language": "thy",
+      "sizeLines": 590,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/isabelle/Qubes_D.thy",
+      "language": "thy",
+      "sizeLines": 514,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/isabelle/ROOT",
+      "language": "unknown",
+      "sizeLines": 10,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/isabelle/V2_A.thy",
+      "language": "thy",
+      "sizeLines": 204,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/isabelle/V2_B.thy",
+      "language": "thy",
+      "sizeLines": 131,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/isabelle/V2_C.thy",
+      "language": "thy",
+      "sizeLines": 1023,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/isabelle/V2_D.thy",
+      "language": "thy",
+      "sizeLines": 697,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/kboot.c",
+      "language": "c",
+      "sizeLines": 2403,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/linker.ld",
+      "language": "ld",
+      "sizeLines": 24,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/qube.h",
+      "language": "c",
+      "sizeLines": 218,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/start.S",
+      "language": "s",
+      "sizeLines": 29,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/trap.S",
+      "language": "s",
+      "sizeLines": 141,
+      "fileCategory": "code"
+    },
+    {
+      "path": "kernel/user.c",
+      "language": "c",
+      "sizeLines": 501,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/bench_ipc.c",
+      "language": "c",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/fuzz_syscall.c",
+      "language": "c",
+      "sizeLines": 38,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/host_console_shim.c",
+      "language": "c",
+      "sizeLines": 57,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/host_emul.c",
+      "language": "c",
+      "sizeLines": 47,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/stub_globals.c",
+      "language": "c",
+      "sizeLines": 21,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_abi.c",
+      "language": "c",
+      "sizeLines": 24,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_aead.c",
+      "language": "c",
+      "sizeLines": 230,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_batch4.c",
+      "language": "c",
+      "sizeLines": 383,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_batch5.c",
+      "language": "c",
+      "sizeLines": 689,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_batch6.c",
+      "language": "c",
+      "sizeLines": 376,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_crypt.c",
+      "language": "c",
+      "sizeLines": 342,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_gui.c",
+      "language": "c",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_libc.c",
+      "language": "c",
+      "sizeLines": 1050,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_netfw.c",
+      "language": "c",
+      "sizeLines": 171,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_newlibc.c",
+      "language": "c",
+      "sizeLines": 336,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_plic.c",
+      "language": "c",
+      "sizeLines": 89,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_power.c",
+      "language": "c",
+      "sizeLines": 78,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_qargs.c",
+      "language": "c",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_qlabels.c",
+      "language": "c",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_qube_policy.c",
+      "language": "c",
+      "sizeLines": 59,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_rng.c",
+      "language": "c",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_rtc.c",
+      "language": "c",
+      "sizeLines": 80,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_sched_server.c",
+      "language": "c",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_shell.c",
+      "language": "c",
+      "sizeLines": 130,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_shell_vfs.c",
+      "language": "c",
+      "sizeLines": 52,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_timer.c",
+      "language": "c",
+      "sizeLines": 74,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_uart.c",
+      "language": "c",
+      "sizeLines": 91,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_v2caps.c",
+      "language": "c",
+      "sizeLines": 288,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_v2ipc.c",
+      "language": "c",
+      "sizeLines": 128,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/test_vfs.c",
+      "language": "c",
+      "sizeLines": 191,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/attest.py",
+      "language": "python",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tools/build_qemu.sh",
+      "language": "shell",
+      "sizeLines": 11,
+      "fileCategory": "script"
+    },
+    {
+      "path": "tools/mkinitrd.sh",
+      "language": "shell",
+      "sizeLines": 118,
+      "fileCategory": "script"
+    },
+    {
+      "path": "tools/run_qemu.sh",
+      "language": "shell",
+      "sizeLines": 173,
+      "fileCategory": "script"
+    },
+    {
+      "path": "tools/verify.sh",
+      "language": "shell",
+      "sizeLines": 247,
+      "fileCategory": "script"
+    },
+    {
+      "path": "userspace/Makefile",
+      "language": "makefile",
+      "sizeLines": 145,
+      "fileCategory": "infra"
+    },
+    {
+      "path": "userspace/abi/cap.h",
+      "language": "c",
+      "sizeLines": 69,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/abi/cheri.h",
+      "language": "c",
+      "sizeLines": 89,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/abi/iommu.h",
+      "language": "c",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/abi/linux_abi.h",
+      "language": "c",
+      "sizeLines": 415,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/abi/types.h",
+      "language": "c",
+      "sizeLines": 80,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/abi/vspace.h",
+      "language": "c",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/adminvm/adminvm_start.S",
+      "language": "s",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/adminvm/v2_main.c",
+      "language": "c",
+      "sizeLines": 191,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/crypt/aead.h",
+      "language": "c",
+      "sizeLines": 357,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/crypt/crypt_util.h",
+      "language": "c",
+      "sizeLines": 21,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/crypt/kdf.h",
+      "language": "c",
+      "sizeLines": 182,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/crypt/kdf_production.h",
+      "language": "c",
+      "sizeLines": 409,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/crypt/sha256.h",
+      "language": "c",
+      "sizeLines": 150,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/cryptblk/cryptblk_start.S",
+      "language": "s",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/cryptblk/layout.h",
+      "language": "c",
+      "sizeLines": 441,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/cryptblk/slot.h",
+      "language": "c",
+      "sizeLines": 107,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/cryptblk/v2_main.c",
+      "language": "c",
+      "sizeLines": 1730,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/drivers/block.c",
+      "language": "c",
+      "sizeLines": 820,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/drivers/plic.c",
+      "language": "c",
+      "sizeLines": 230,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/drivers/power.c",
+      "language": "c",
+      "sizeLines": 120,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/drivers/rtc.c",
+      "language": "c",
+      "sizeLines": 208,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/drivers/timer.c",
+      "language": "c",
+      "sizeLines": 171,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/drivers/uart.c",
+      "language": "c",
+      "sizeLines": 229,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/drivers/vga.c",
+      "language": "c",
+      "sizeLines": 164,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/drivers/virtio_mmio.h",
+      "language": "c",
+      "sizeLines": 308,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/drivers/virtio_net.c",
+      "language": "c",
+      "sizeLines": 492,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/example/cat.c",
+      "language": "c",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/example/hello.c",
+      "language": "c",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/example/linux_demo.c",
+      "language": "c",
+      "sizeLines": 177,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/example/ls.c",
+      "language": "c",
+      "sizeLines": 47,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/firewall/firewall_start.S",
+      "language": "s",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/firewall/fw.h",
+      "language": "c",
+      "sizeLines": 100,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/firewall/v2_main.c",
+      "language": "c",
+      "sizeLines": 327,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/gui/gui_start.S",
+      "language": "s",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/gui/pci.h",
+      "language": "c",
+      "sizeLines": 59,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/gui/rect.h",
+      "language": "c",
+      "sizeLines": 59,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/gui/v2_main.c",
+      "language": "c",
+      "sizeLines": 251,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/lib/moonlight.c",
+      "language": "c",
+      "sizeLines": 98,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/lib/moonlight.h",
+      "language": "c",
+      "sizeLines": 50,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/lib/start.S",
+      "language": "s",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/lib/v2_start.S",
+      "language": "s",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/SRCS",
+      "language": "unknown",
+      "sizeLines": 1,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/aio.h",
+      "language": "c",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/ar.h",
+      "language": "c",
+      "sizeLines": 17,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/arpa/inet.h",
+      "language": "c",
+      "sizeLines": 10,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/assert.h",
+      "language": "c",
+      "sizeLines": 11,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/bits/ml_fd.h",
+      "language": "c",
+      "sizeLines": 21,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/bits/ml_sys.h",
+      "language": "c",
+      "sizeLines": 80,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/byteswap.h",
+      "language": "c",
+      "sizeLines": 9,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/complex.h",
+      "language": "c",
+      "sizeLines": 99,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/cpio.h",
+      "language": "c",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/crypt.h",
+      "language": "c",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/ctype.h",
+      "language": "c",
+      "sizeLines": 19,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/dirent.h",
+      "language": "c",
+      "sizeLines": 44,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/dlfcn.h",
+      "language": "c",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/elf.h",
+      "language": "c",
+      "sizeLines": 184,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/endian.h",
+      "language": "c",
+      "sizeLines": 63,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/err.h",
+      "language": "c",
+      "sizeLines": 16,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/errno.h",
+      "language": "c",
+      "sizeLines": 144,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/execinfo.h",
+      "language": "c",
+      "sizeLines": 9,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/fcntl.h",
+      "language": "c",
+      "sizeLines": 66,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/fenv.h",
+      "language": "c",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/float.h",
+      "language": "c",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/fmtmsg.h",
+      "language": "c",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/fnmatch.h",
+      "language": "c",
+      "sizeLines": 14,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/fts.h",
+      "language": "c",
+      "sizeLines": 62,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/ftw.h",
+      "language": "c",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/getopt.h",
+      "language": "c",
+      "sizeLines": 23,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/glob.h",
+      "language": "c",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/grp.h",
+      "language": "c",
+      "sizeLines": 10,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/iconv.h",
+      "language": "c",
+      "sizeLines": 15,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/ifaddrs.h",
+      "language": "c",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/inttypes.h",
+      "language": "c",
+      "sizeLines": 88,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/iso646.h",
+      "language": "c",
+      "sizeLines": 14,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/langinfo.h",
+      "language": "c",
+      "sizeLines": 66,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/libgen.h",
+      "language": "c",
+      "sizeLines": 5,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/limits.h",
+      "language": "c",
+      "sizeLines": 35,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/locale.h",
+      "language": "c",
+      "sizeLines": 60,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/malloc.h",
+      "language": "c",
+      "sizeLines": 34,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/math.h",
+      "language": "c",
+      "sizeLines": 215,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/monetary.h",
+      "language": "c",
+      "sizeLines": 10,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/mqueue.h",
+      "language": "c",
+      "sizeLines": 30,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/ndbm.h",
+      "language": "c",
+      "sizeLines": 31,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/net/ethernet.h",
+      "language": "c",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/net/if.h",
+      "language": "c",
+      "sizeLines": 81,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/net/if_arp.h",
+      "language": "c",
+      "sizeLines": 48,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/net/route.h",
+      "language": "c",
+      "sizeLines": 49,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/netdb.h",
+      "language": "c",
+      "sizeLines": 90,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/netinet/ether.h",
+      "language": "c",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/netinet/if_ether.h",
+      "language": "c",
+      "sizeLines": 31,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/netinet/in.h",
+      "language": "c",
+      "sizeLines": 21,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/netinet/ip.h",
+      "language": "c",
+      "sizeLines": 76,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/netinet/ip_icmp.h",
+      "language": "c",
+      "sizeLines": 42,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/netinet/tcp.h",
+      "language": "c",
+      "sizeLines": 78,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/netinet/udp.h",
+      "language": "c",
+      "sizeLines": 19,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/nl_types.h",
+      "language": "c",
+      "sizeLines": 14,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/paths.h",
+      "language": "c",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/poll.h",
+      "language": "c",
+      "sizeLines": 76,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/pthread.h",
+      "language": "c",
+      "sizeLines": 214,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/pwd.h",
+      "language": "c",
+      "sizeLines": 38,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/regex.h",
+      "language": "c",
+      "sizeLines": 42,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sched.h",
+      "language": "c",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/search.h",
+      "language": "c",
+      "sizeLines": 44,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/semaphore.h",
+      "language": "c",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/setjmp.h",
+      "language": "c",
+      "sizeLines": 34,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/shadow.h",
+      "language": "c",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/signal.h",
+      "language": "c",
+      "sizeLines": 132,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/spawn.h",
+      "language": "c",
+      "sizeLines": 54,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdalign.h",
+      "language": "c",
+      "sizeLines": 7,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdarg.h",
+      "language": "c",
+      "sizeLines": 10,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdatomic.h",
+      "language": "c",
+      "sizeLines": 89,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdbit.h",
+      "language": "c",
+      "sizeLines": 217,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdbool.h",
+      "language": "c",
+      "sizeLines": 9,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdckdint.h",
+      "language": "c",
+      "sizeLines": 6,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stddef.h",
+      "language": "c",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdint.h",
+      "language": "c",
+      "sizeLines": 104,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdio.h",
+      "language": "c",
+      "sizeLines": 122,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdlib.h",
+      "language": "c",
+      "sizeLines": 104,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stdnoreturn.h",
+      "language": "c",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/string.h",
+      "language": "c",
+      "sizeLines": 47,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/strings.h",
+      "language": "c",
+      "sizeLines": 15,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/stropts.h",
+      "language": "c",
+      "sizeLines": 102,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/auxv.h",
+      "language": "c",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/dir.h",
+      "language": "c",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/epoll.h",
+      "language": "c",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/eventfd.h",
+      "language": "c",
+      "sizeLines": 15,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/file.h",
+      "language": "c",
+      "sizeLines": 10,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/inotify.h",
+      "language": "c",
+      "sizeLines": 51,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/ioctl.h",
+      "language": "c",
+      "sizeLines": 17,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/ipc.h",
+      "language": "c",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/mman.h",
+      "language": "c",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/msg.h",
+      "language": "c",
+      "sizeLines": 31,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/param.h",
+      "language": "c",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/personality.h",
+      "language": "c",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/prctl.h",
+      "language": "c",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/queue.h",
+      "language": "c",
+      "sizeLines": 74,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/random.h",
+      "language": "c",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/resource.h",
+      "language": "c",
+      "sizeLines": 55,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/select.h",
+      "language": "c",
+      "sizeLines": 9,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/sem.h",
+      "language": "c",
+      "sizeLines": 42,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/sendfile.h",
+      "language": "c",
+      "sizeLines": 7,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/shm.h",
+      "language": "c",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/signalfd.h",
+      "language": "c",
+      "sizeLines": 37,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/socket.h",
+      "language": "c",
+      "sizeLines": 115,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/stat.h",
+      "language": "c",
+      "sizeLines": 140,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/statfs.h",
+      "language": "c",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/statvfs.h",
+      "language": "c",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/syscall.h",
+      "language": "c",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/sysinfo.h",
+      "language": "c",
+      "sizeLines": 21,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/time.h",
+      "language": "c",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/timeb.h",
+      "language": "c",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/timerfd.h",
+      "language": "c",
+      "sizeLines": 15,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/times.h",
+      "language": "c",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/types.h",
+      "language": "c",
+      "sizeLines": 23,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/uio.h",
+      "language": "c",
+      "sizeLines": 8,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/un.h",
+      "language": "c",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/utsname.h",
+      "language": "c",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/vfs.h",
+      "language": "c",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sys/wait.h",
+      "language": "c",
+      "sizeLines": 34,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/sysexits.h",
+      "language": "c",
+      "sizeLines": 21,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/syslog.h",
+      "language": "c",
+      "sizeLines": 55,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/tar.h",
+      "language": "c",
+      "sizeLines": 51,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/termios.h",
+      "language": "c",
+      "sizeLines": 106,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/tgmath.h",
+      "language": "c",
+      "sizeLines": 60,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/threads.h",
+      "language": "c",
+      "sizeLines": 78,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/time.h",
+      "language": "c",
+      "sizeLines": 67,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/uchar.h",
+      "language": "c",
+      "sizeLines": 15,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/ucontext.h",
+      "language": "c",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/ulimit.h",
+      "language": "c",
+      "sizeLines": 9,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/unistd.h",
+      "language": "c",
+      "sizeLines": 143,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/utime.h",
+      "language": "c",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/utmpx.h",
+      "language": "c",
+      "sizeLines": 47,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/wchar.h",
+      "language": "c",
+      "sizeLines": 108,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/wctype.h",
+      "language": "c",
+      "sizeLines": 35,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/include/wordexp.h",
+      "language": "c",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/aio.c",
+      "language": "c",
+      "sizeLines": 254,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/complex.c",
+      "language": "c",
+      "sizeLines": 383,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/crypt.c",
+      "language": "c",
+      "sizeLines": 761,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/ctype.c",
+      "language": "c",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/dir.c",
+      "language": "c",
+      "sizeLines": 260,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/dlfcn.c",
+      "language": "c",
+      "sizeLines": 219,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/env.c",
+      "language": "c",
+      "sizeLines": 118,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/err.c",
+      "language": "c",
+      "sizeLines": 74,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/errno.c",
+      "language": "c",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/ether.c",
+      "language": "c",
+      "sizeLines": 134,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/execinfo.c",
+      "language": "c",
+      "sizeLines": 66,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/fcntl.c",
+      "language": "c",
+      "sizeLines": 79,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/fenv.c",
+      "language": "c",
+      "sizeLines": 149,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/file.c",
+      "language": "c",
+      "sizeLines": 465,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/fmtmsg.c",
+      "language": "c",
+      "sizeLines": 38,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/fts.c",
+      "language": "c",
+      "sizeLines": 444,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/getopt.c",
+      "language": "c",
+      "sizeLines": 313,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/glob.c",
+      "language": "c",
+      "sizeLines": 1122,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/iconv.c",
+      "language": "c",
+      "sizeLines": 347,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/inet.c",
+      "language": "c",
+      "sizeLines": 517,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/langinfo.c",
+      "language": "c",
+      "sizeLines": 72,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/libgen.c",
+      "language": "c",
+      "sizeLines": 65,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/locale.c",
+      "language": "c",
+      "sizeLines": 99,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/math.c",
+      "language": "c",
+      "sizeLines": 1610,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/monetary.c",
+      "language": "c",
+      "sizeLines": 253,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/mqueue.c",
+      "language": "c",
+      "sizeLines": 394,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/ndbm.c",
+      "language": "c",
+      "sizeLines": 453,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/netif.c",
+      "language": "c",
+      "sizeLines": 130,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/nltypes.c",
+      "language": "c",
+      "sizeLines": 134,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/poll.c",
+      "language": "c",
+      "sizeLines": 496,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/popen.c",
+      "language": "c",
+      "sizeLines": 103,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/proc.c",
+      "language": "c",
+      "sizeLines": 524,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/pthread.c",
+      "language": "c",
+      "sizeLines": 1608,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/ptimer.c",
+      "language": "c",
+      "sizeLines": 287,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/pwdgrp.c",
+      "language": "c",
+      "sizeLines": 378,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/random.c",
+      "language": "c",
+      "sizeLines": 93,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/regex.c",
+      "language": "c",
+      "sizeLines": 827,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/resource.c",
+      "language": "c",
+      "sizeLines": 135,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/scanf.c",
+      "language": "c",
+      "sizeLines": 773,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/sched.c",
+      "language": "c",
+      "sizeLines": 55,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/search.c",
+      "language": "c",
+      "sizeLines": 192,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/sem.c",
+      "language": "c",
+      "sizeLines": 236,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/sendfile.c",
+      "language": "c",
+      "sizeLines": 35,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/setjmp.S",
+      "language": "s",
+      "sizeLines": 155,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/shadow.c",
+      "language": "c",
+      "sizeLines": 196,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/signal.c",
+      "language": "c",
+      "sizeLines": 363,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/sock.c",
+      "language": "c",
+      "sizeLines": 205,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/softfloat.c",
+      "language": "c",
+      "sizeLines": 802,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/spawn.c",
+      "language": "c",
+      "sizeLines": 292,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/statvfs.c",
+      "language": "c",
+      "sizeLines": 54,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/stdio.c",
+      "language": "c",
+      "sizeLines": 1943,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/stdlib.c",
+      "language": "c",
+      "sizeLines": 1148,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/string.c",
+      "language": "c",
+      "sizeLines": 410,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/strings.c",
+      "language": "c",
+      "sizeLines": 72,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/stropts.c",
+      "language": "c",
+      "sizeLines": 143,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/syscall.c",
+      "language": "c",
+      "sizeLines": 19,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/sysevent.c",
+      "language": "c",
+      "sizeLines": 1018,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/syslog.c",
+      "language": "c",
+      "sizeLines": 93,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/sysstat.c",
+      "language": "c",
+      "sizeLines": 326,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/sysvipc.c",
+      "language": "c",
+      "sizeLines": 869,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/termios.c",
+      "language": "c",
+      "sizeLines": 104,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/threads.c",
+      "language": "c",
+      "sizeLines": 205,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/time.c",
+      "language": "c",
+      "sizeLines": 1017,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/ucontext.c",
+      "language": "c",
+      "sizeLines": 101,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/unistd.c",
+      "language": "c",
+      "sizeLines": 564,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/utime.c",
+      "language": "c",
+      "sizeLines": 116,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/utmpx.c",
+      "language": "c",
+      "sizeLines": 142,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/wchar.c",
+      "language": "c",
+      "sizeLines": 1206,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/src/wctype.c",
+      "language": "c",
+      "sizeLines": 176,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/libc/start.S",
+      "language": "s",
+      "sizeLines": 31,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/mem_server/server.c",
+      "language": "c",
+      "sizeLines": 223,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/mem_server/v2_main.c",
+      "language": "c",
+      "sizeLines": 143,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/net/net_start.S",
+      "language": "s",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/net/v2_main.c",
+      "language": "c",
+      "sizeLines": 507,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/qrexec_server/qrexec_start.S",
+      "language": "s",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/qrexec_server/v2_main.c",
+      "language": "c",
+      "sizeLines": 402,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/sched_server/server.c",
+      "language": "c",
+      "sizeLines": 70,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/sh/shell.c",
+      "language": "c",
+      "sizeLines": 1017,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/user.ld",
+      "language": "ld",
+      "sizeLines": 16,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/v2_user.ld",
+      "language": "ld",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/vault/rng_mix.h",
+      "language": "c",
+      "sizeLines": 17,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/vault/rng_scan.h",
+      "language": "c",
+      "sizeLines": 17,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/vault/v2_main.c",
+      "language": "c",
+      "sizeLines": 851,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/vault/vault_start.S",
+      "language": "s",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "userspace/vfs_server/server.c",
+      "language": "c",
+      "sizeLines": 733,
+      "fileCategory": "code"
+    }
+  ],
+  "totalFiles": 361,
+  "filteredByIgnore": 0,
+  "estimatedComplexity": "large",
+  "importMap": {
+    ".clang-format": [],
+    ".clangd": [],
+    ".github/workflows/cheri.yml": [],
+    ".github/workflows/verify.yml": [],
+    "CODE_REVIEW_ANALYSIS.md": [],
+    "CRYPTO_HARDENING.md": [],
+    "PLAN.md": [],
+    "README.md": [],
+    "REFACTORING_APPLIED.md": [],
+    "TROUBLESHOOTING.md": [],
+    "docs/ARCHITECTURE.md": [],
+    "docs/BUILD.md": [],
+    "docs/CAPABILITIES.md": [],
+    "docs/LINUX.md": [],
+    "docs/PRODUCTION.md": [],
+    "docs/QUBES_ISOLATION_PLAN.md": [],
+    "docs/REPRODUCIBLE.md": [],
+    "docs/SECURITY.md": [],
+    "docs/SYSCALLS.md": [],
+    "docs/THREAT_MODEL.md": [],
+    "docs/USAGE.md": [],
+    "docs/V2_DESIGN.md": [],
+    "docs/superpowers/plans/2026-09-14-v2-stage3-capabilities-memory.md": [],
+    "docs/superpowers/plans/2026-09-15-v2-stage4-hardening-realimpl.md": [],
+    "docs/superpowers/plans/2026-09-15-v2-stage5-elf-process.md": [],
+    "docs/superpowers/plans/2026-09-19-qubes-s1-s2.md": [],
+    "docs/superpowers/plans/2026-09-19-qubes-s3-net-firewall.md": [],
+    "docs/superpowers/plans/2026-09-21-fde-encrypted-files.md": [],
+    "docs/superpowers/plans/2026-09-24-live-qrexec-traffic.md": [],
+    "docs/superpowers/plans/2026-09-25-audit-lifecycle-gaps.md": [],
+    "docs/superpowers/plans/2026-09-25-s4a-gui-bringup.md": [],
+    "docs/superpowers/plans/2026-09-28-rng-harden-demos.md": [],
+    "docs/superpowers/plans/2026-10-01-shell-harness.md": [],
+    "docs/superpowers/specs/2026-09-14-v2-stage3-capabilities-memory-design.md": [],
+    "docs/superpowers/specs/2026-09-19-qubes-s1-s2-design.md": [],
+    "docs/superpowers/specs/2026-09-19-qubes-s3-net-firewall-design.md": [],
+    "docs/superpowers/specs/2026-09-21-fde-encrypted-files-design.md": [],
+    "docs/superpowers/specs/2026-09-24-live-qrexec-traffic-design.md": [],
+    "docs/superpowers/specs/2026-09-25-audit-lifecycle-gaps-design.md": [],
+    "docs/superpowers/specs/2026-09-25-s4a-gui-bringup-design.md": [],
+    "docs/superpowers/specs/2026-09-28-rng-harden-demos-design.md": [],
+    "docs/superpowers/specs/2026-10-01-shell-harness-design.md": [],
+    "kernel/Makefile": [],
+    "kernel/caps.h": [],
+    "kernel/elf.c": [
+      "kernel/caps.h",
+      "kernel/elf.h",
+      "kernel/ipc.h"
+    ],
+    "kernel/elf.h": [],
+    "kernel/initrd.c": [
+      "kernel/initrd.h"
+    ],
+    "kernel/initrd.h": [],
+    "kernel/initrd_data.c": [
+      "kernel/initrd.h"
+    ],
+    "kernel/ipc.h": [],
+    "kernel/isabelle/Qubes_A.thy": [],
+    "kernel/isabelle/Qubes_B.thy": [],
+    "kernel/isabelle/Qubes_C.thy": [],
+    "kernel/isabelle/Qubes_D.thy": [],
+    "kernel/isabelle/ROOT": [],
+    "kernel/isabelle/V2_A.thy": [],
+    "kernel/isabelle/V2_B.thy": [],
+    "kernel/isabelle/V2_C.thy": [],
+    "kernel/isabelle/V2_D.thy": [],
+    "kernel/kboot.c": [
+      "kernel/caps.h",
+      "kernel/elf.h",
+      "kernel/initrd.h",
+      "kernel/ipc.h",
+      "kernel/qube.h",
+      "userspace/firewall/fw.h"
+    ],
+    "kernel/linker.ld": [],
+    "kernel/qube.h": [],
+    "kernel/start.S": [],
+    "kernel/trap.S": [],
+    "kernel/user.c": [],
+    "tests/bench_ipc.c": [],
+    "tests/fuzz_syscall.c": [],
+    "tests/host_console_shim.c": [],
+    "tests/host_emul.c": [],
+    "tests/stub_globals.c": [],
+    "tests/test_abi.c": [],
+    "tests/test_aead.c": [
+      "userspace/crypt/aead.h",
+      "userspace/crypt/kdf.h",
+      "userspace/crypt/sha256.h"
+    ],
+    "tests/test_batch4.c": [],
+    "tests/test_batch5.c": [],
+    "tests/test_batch6.c": [],
+    "tests/test_crypt.c": [
+      "userspace/crypt/aead.h",
+      "userspace/crypt/kdf.h",
+      "userspace/crypt/sha256.h",
+      "userspace/cryptblk/layout.h",
+      "userspace/cryptblk/slot.h"
+    ],
+    "tests/test_gui.c": [
+      "userspace/gui/pci.h",
+      "userspace/gui/rect.h"
+    ],
+    "tests/test_libc.c": [],
+    "tests/test_netfw.c": [
+      "userspace/firewall/fw.h"
+    ],
+    "tests/test_newlibc.c": [],
+    "tests/test_plic.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h",
+      "userspace/drivers/plic.c"
+    ],
+    "tests/test_power.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h",
+      "userspace/drivers/power.c"
+    ],
+    "tests/test_qargs.c": [
+      "kernel/qube.h"
+    ],
+    "tests/test_qlabels.c": [
+      "kernel/qube.h"
+    ],
+    "tests/test_qube_policy.c": [
+      "kernel/qube.h"
+    ],
+    "tests/test_rng.c": [
+      "userspace/vault/rng_mix.h",
+      "userspace/vault/rng_scan.h"
+    ],
+    "tests/test_rtc.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h",
+      "userspace/drivers/rtc.c"
+    ],
+    "tests/test_sched_server.c": [],
+    "tests/test_shell.c": [],
+    "tests/test_shell_vfs.c": [
+      "userspace/lib/moonlight.c",
+      "userspace/sh/shell.c"
+    ],
+    "tests/test_timer.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h",
+      "userspace/drivers/timer.c"
+    ],
+    "tests/test_uart.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h",
+      "userspace/drivers/uart.c"
+    ],
+    "tests/test_v2caps.c": [
+      "kernel/caps.h"
+    ],
+    "tests/test_v2ipc.c": [
+      "kernel/ipc.h"
+    ],
+    "tests/test_vfs.c": [],
+    "tools/attest.py": [],
+    "tools/build_qemu.sh": [],
+    "tools/mkinitrd.sh": [],
+    "tools/run_qemu.sh": [],
+    "tools/verify.sh": [],
+    "userspace/Makefile": [],
+    "userspace/abi/cap.h": [
+      "userspace/abi/cheri.h"
+    ],
+    "userspace/abi/cheri.h": [],
+    "userspace/abi/iommu.h": [
+      "userspace/abi/cap.h",
+      "userspace/abi/types.h"
+    ],
+    "userspace/abi/linux_abi.h": [],
+    "userspace/abi/types.h": [],
+    "userspace/abi/vspace.h": [
+      "userspace/abi/cap.h",
+      "userspace/abi/types.h"
+    ],
+    "userspace/adminvm/adminvm_start.S": [],
+    "userspace/adminvm/v2_main.c": [],
+    "userspace/crypt/aead.h": [],
+    "userspace/crypt/crypt_util.h": [],
+    "userspace/crypt/kdf.h": [],
+    "userspace/crypt/kdf_production.h": [],
+    "userspace/crypt/sha256.h": [],
+    "userspace/cryptblk/cryptblk_start.S": [],
+    "userspace/cryptblk/layout.h": [],
+    "userspace/cryptblk/slot.h": [],
+    "userspace/cryptblk/v2_main.c": [
+      "kernel/qube.h",
+      "userspace/crypt/aead.h",
+      "userspace/crypt/kdf.h",
+      "userspace/cryptblk/layout.h",
+      "userspace/cryptblk/slot.h"
+    ],
+    "userspace/drivers/block.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h",
+      "userspace/abi/iommu.h",
+      "userspace/drivers/virtio_mmio.h"
+    ],
+    "userspace/drivers/plic.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h"
+    ],
+    "userspace/drivers/power.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h"
+    ],
+    "userspace/drivers/rtc.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h"
+    ],
+    "userspace/drivers/timer.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h"
+    ],
+    "userspace/drivers/uart.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h"
+    ],
+    "userspace/drivers/vga.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h",
+      "userspace/abi/vspace.h"
+    ],
+    "userspace/drivers/virtio_mmio.h": [
+      "userspace/abi/types.h"
+    ],
+    "userspace/drivers/virtio_net.c": [
+      "userspace/abi/cap.h",
+      "userspace/abi/cheri.h",
+      "userspace/abi/iommu.h",
+      "userspace/drivers/virtio_mmio.h"
+    ],
+    "userspace/example/cat.c": [
+      "userspace/lib/moonlight.h"
+    ],
+    "userspace/example/hello.c": [],
+    "userspace/example/linux_demo.c": [],
+    "userspace/example/ls.c": [
+      "userspace/lib/moonlight.h"
+    ],
+    "userspace/firewall/firewall_start.S": [],
+    "userspace/firewall/fw.h": [],
+    "userspace/firewall/v2_main.c": [
+      "kernel/qube.h",
+      "userspace/firewall/fw.h"
+    ],
+    "userspace/gui/gui_start.S": [],
+    "userspace/gui/pci.h": [],
+    "userspace/gui/rect.h": [],
+    "userspace/gui/v2_main.c": [
+      "userspace/gui/pci.h",
+      "userspace/gui/rect.h"
+    ],
+    "userspace/lib/moonlight.c": [
+      "userspace/lib/moonlight.h"
+    ],
+    "userspace/lib/moonlight.h": [],
+    "userspace/lib/start.S": [],
+    "userspace/lib/v2_start.S": [],
+    "userspace/libc/SRCS": [],
+    "userspace/libc/include/aio.h": [
+      "userspace/libc/include/signal.h",
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/ar.h": [],
+    "userspace/libc/include/arpa/inet.h": [],
+    "userspace/libc/include/assert.h": [
+      "userspace/libc/include/stdlib.h"
+    ],
+    "userspace/libc/include/bits/ml_fd.h": [],
+    "userspace/libc/include/bits/ml_sys.h": [],
+    "userspace/libc/include/byteswap.h": [
+      "userspace/libc/include/endian.h",
+      "userspace/libc/include/stdint.h"
+    ],
+    "userspace/libc/include/complex.h": [],
+    "userspace/libc/include/cpio.h": [],
+    "userspace/libc/include/crypt.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/ctype.h": [],
+    "userspace/libc/include/dirent.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/dlfcn.h": [],
+    "userspace/libc/include/elf.h": [
+      "userspace/libc/include/stdint.h"
+    ],
+    "userspace/libc/include/endian.h": [
+      "userspace/libc/include/stdint.h"
+    ],
+    "userspace/libc/include/err.h": [
+      "userspace/libc/include/stdarg.h"
+    ],
+    "userspace/libc/include/errno.h": [],
+    "userspace/libc/include/execinfo.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/fcntl.h": [
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/fenv.h": [],
+    "userspace/libc/include/float.h": [],
+    "userspace/libc/include/fmtmsg.h": [],
+    "userspace/libc/include/fnmatch.h": [],
+    "userspace/libc/include/fts.h": [
+      "userspace/libc/include/sys/stat.h"
+    ],
+    "userspace/libc/include/ftw.h": [
+      "userspace/libc/include/sys/stat.h"
+    ],
+    "userspace/libc/include/getopt.h": [],
+    "userspace/libc/include/glob.h": [
+      "userspace/libc/include/dirent.h",
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/sys/stat.h"
+    ],
+    "userspace/libc/include/grp.h": [
+      "userspace/libc/include/pwd.h"
+    ],
+    "userspace/libc/include/iconv.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/ifaddrs.h": [
+      "userspace/libc/include/sys/socket.h"
+    ],
+    "userspace/libc/include/inttypes.h": [
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/stdint.h"
+    ],
+    "userspace/libc/include/iso646.h": [],
+    "userspace/libc/include/langinfo.h": [],
+    "userspace/libc/include/libgen.h": [],
+    "userspace/libc/include/limits.h": [],
+    "userspace/libc/include/locale.h": [],
+    "userspace/libc/include/malloc.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/math.h": [],
+    "userspace/libc/include/monetary.h": [
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/mqueue.h": [
+      "userspace/libc/include/fcntl.h",
+      "userspace/libc/include/signal.h",
+      "userspace/libc/include/sys/types.h",
+      "userspace/libc/include/time.h"
+    ],
+    "userspace/libc/include/ndbm.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/net/ethernet.h": [],
+    "userspace/libc/include/net/if.h": [],
+    "userspace/libc/include/net/if_arp.h": [],
+    "userspace/libc/include/net/route.h": [],
+    "userspace/libc/include/netdb.h": [
+      "userspace/libc/include/stdint.h",
+      "userspace/libc/include/sys/socket.h"
+    ],
+    "userspace/libc/include/netinet/ether.h": [],
+    "userspace/libc/include/netinet/if_ether.h": [],
+    "userspace/libc/include/netinet/in.h": [],
+    "userspace/libc/include/netinet/ip.h": [],
+    "userspace/libc/include/netinet/ip_icmp.h": [],
+    "userspace/libc/include/netinet/tcp.h": [],
+    "userspace/libc/include/netinet/udp.h": [],
+    "userspace/libc/include/nl_types.h": [],
+    "userspace/libc/include/paths.h": [],
+    "userspace/libc/include/poll.h": [
+      "userspace/libc/include/sys/types.h",
+      "userspace/libc/include/time.h"
+    ],
+    "userspace/libc/include/pthread.h": [
+      "userspace/libc/include/sched.h",
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/time.h"
+    ],
+    "userspace/libc/include/pwd.h": [
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/regex.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/sched.h": [],
+    "userspace/libc/include/search.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/semaphore.h": [
+      "userspace/libc/include/time.h"
+    ],
+    "userspace/libc/include/setjmp.h": [
+      "userspace/libc/include/signal.h"
+    ],
+    "userspace/libc/include/shadow.h": [
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/stdio.h"
+    ],
+    "userspace/libc/include/signal.h": [
+      "userspace/libc/include/time.h"
+    ],
+    "userspace/libc/include/spawn.h": [
+      "userspace/libc/include/signal.h",
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/stdalign.h": [],
+    "userspace/libc/include/stdarg.h": [],
+    "userspace/libc/include/stdatomic.h": [
+      "userspace/libc/include/stdint.h"
+    ],
+    "userspace/libc/include/stdbit.h": [
+      "userspace/libc/include/limits.h",
+      "userspace/libc/include/stdint.h"
+    ],
+    "userspace/libc/include/stdbool.h": [],
+    "userspace/libc/include/stdckdint.h": [],
+    "userspace/libc/include/stddef.h": [],
+    "userspace/libc/include/stdint.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/stdio.h": [
+      "userspace/libc/include/stdarg.h",
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/stdlib.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/stdnoreturn.h": [],
+    "userspace/libc/include/string.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/strings.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/include/stropts.h": [
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/sys/auxv.h": [],
+    "userspace/libc/include/sys/dir.h": [],
+    "userspace/libc/include/sys/epoll.h": [],
+    "userspace/libc/include/sys/eventfd.h": [],
+    "userspace/libc/include/sys/file.h": [],
+    "userspace/libc/include/sys/inotify.h": [],
+    "userspace/libc/include/sys/ioctl.h": [],
+    "userspace/libc/include/sys/ipc.h": [],
+    "userspace/libc/include/sys/mman.h": [],
+    "userspace/libc/include/sys/msg.h": [],
+    "userspace/libc/include/sys/param.h": [],
+    "userspace/libc/include/sys/personality.h": [],
+    "userspace/libc/include/sys/prctl.h": [],
+    "userspace/libc/include/sys/queue.h": [],
+    "userspace/libc/include/sys/random.h": [],
+    "userspace/libc/include/sys/resource.h": [],
+    "userspace/libc/include/sys/select.h": [],
+    "userspace/libc/include/sys/sem.h": [
+      "userspace/libc/include/sys/time.h"
+    ],
+    "userspace/libc/include/sys/sendfile.h": [],
+    "userspace/libc/include/sys/shm.h": [
+      "userspace/libc/include/sys/time.h"
+    ],
+    "userspace/libc/include/sys/signalfd.h": [],
+    "userspace/libc/include/sys/socket.h": [],
+    "userspace/libc/include/sys/stat.h": [],
+    "userspace/libc/include/sys/statfs.h": [],
+    "userspace/libc/include/sys/statvfs.h": [],
+    "userspace/libc/include/sys/syscall.h": [],
+    "userspace/libc/include/sys/sysinfo.h": [],
+    "userspace/libc/include/sys/time.h": [],
+    "userspace/libc/include/sys/timeb.h": [
+      "userspace/libc/include/sys/time.h"
+    ],
+    "userspace/libc/include/sys/timerfd.h": [
+      "userspace/libc/include/sys/time.h"
+    ],
+    "userspace/libc/include/sys/times.h": [],
+    "userspace/libc/include/sys/types.h": [],
+    "userspace/libc/include/sys/uio.h": [],
+    "userspace/libc/include/sys/un.h": [],
+    "userspace/libc/include/sys/utsname.h": [],
+    "userspace/libc/include/sys/vfs.h": [],
+    "userspace/libc/include/sys/wait.h": [],
+    "userspace/libc/include/sysexits.h": [],
+    "userspace/libc/include/syslog.h": [],
+    "userspace/libc/include/tar.h": [],
+    "userspace/libc/include/termios.h": [
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/tgmath.h": [
+      "userspace/libc/include/complex.h",
+      "userspace/libc/include/math.h"
+    ],
+    "userspace/libc/include/threads.h": [
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/stdint.h",
+      "userspace/libc/include/time.h"
+    ],
+    "userspace/libc/include/time.h": [
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/uchar.h": [
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/stdint.h",
+      "userspace/libc/include/wchar.h"
+    ],
+    "userspace/libc/include/ucontext.h": [
+      "userspace/libc/include/signal.h"
+    ],
+    "userspace/libc/include/ulimit.h": [],
+    "userspace/libc/include/unistd.h": [
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/stdint.h",
+      "userspace/libc/include/sys/types.h"
+    ],
+    "userspace/libc/include/utime.h": [
+      "userspace/libc/include/sys/time.h",
+      "userspace/libc/include/sys/types.h",
+      "userspace/libc/include/time.h"
+    ],
+    "userspace/libc/include/utmpx.h": [
+      "userspace/libc/include/sys/types.h",
+      "userspace/libc/include/time.h"
+    ],
+    "userspace/libc/include/wchar.h": [
+      "userspace/libc/include/stdarg.h",
+      "userspace/libc/include/stddef.h",
+      "userspace/libc/include/stdint.h",
+      "userspace/libc/include/stdio.h",
+      "userspace/libc/include/time.h"
+    ],
+    "userspace/libc/include/wctype.h": [
+      "userspace/libc/include/wchar.h"
+    ],
+    "userspace/libc/include/wordexp.h": [
+      "userspace/libc/include/stddef.h"
+    ],
+    "userspace/libc/src/aio.c": [],
+    "userspace/libc/src/complex.c": [],
+    "userspace/libc/src/crypt.c": [],
+    "userspace/libc/src/ctype.c": [],
+    "userspace/libc/src/dir.c": [],
+    "userspace/libc/src/dlfcn.c": [],
+    "userspace/libc/src/env.c": [],
+    "userspace/libc/src/err.c": [],
+    "userspace/libc/src/errno.c": [],
+    "userspace/libc/src/ether.c": [],
+    "userspace/libc/src/execinfo.c": [],
+    "userspace/libc/src/fcntl.c": [],
+    "userspace/libc/src/fenv.c": [],
+    "userspace/libc/src/file.c": [],
+    "userspace/libc/src/fmtmsg.c": [],
+    "userspace/libc/src/fts.c": [],
+    "userspace/libc/src/getopt.c": [],
+    "userspace/libc/src/glob.c": [],
+    "userspace/libc/src/iconv.c": [],
+    "userspace/libc/src/inet.c": [],
+    "userspace/libc/src/langinfo.c": [],
+    "userspace/libc/src/libgen.c": [],
+    "userspace/libc/src/locale.c": [],
+    "userspace/libc/src/math.c": [],
+    "userspace/libc/src/monetary.c": [],
+    "userspace/libc/src/mqueue.c": [],
+    "userspace/libc/src/ndbm.c": [],
+    "userspace/libc/src/netif.c": [],
+    "userspace/libc/src/nltypes.c": [],
+    "userspace/libc/src/poll.c": [],
+    "userspace/libc/src/popen.c": [],
+    "userspace/libc/src/proc.c": [],
+    "userspace/libc/src/pthread.c": [],
+    "userspace/libc/src/ptimer.c": [],
+    "userspace/libc/src/pwdgrp.c": [],
+    "userspace/libc/src/random.c": [],
+    "userspace/libc/src/regex.c": [],
+    "userspace/libc/src/resource.c": [],
+    "userspace/libc/src/scanf.c": [],
+    "userspace/libc/src/sched.c": [],
+    "userspace/libc/src/search.c": [],
+    "userspace/libc/src/sem.c": [],
+    "userspace/libc/src/sendfile.c": [],
+    "userspace/libc/src/setjmp.S": [],
+    "userspace/libc/src/shadow.c": [],
+    "userspace/libc/src/signal.c": [],
+    "userspace/libc/src/sock.c": [],
+    "userspace/libc/src/softfloat.c": [],
+    "userspace/libc/src/spawn.c": [],
+    "userspace/libc/src/statvfs.c": [],
+    "userspace/libc/src/stdio.c": [],
+    "userspace/libc/src/stdlib.c": [],
+    "userspace/libc/src/string.c": [],
+    "userspace/libc/src/strings.c": [],
+    "userspace/libc/src/stropts.c": [],
+    "userspace/libc/src/syscall.c": [],
+    "userspace/libc/src/sysevent.c": [],
+    "userspace/libc/src/syslog.c": [],
+    "userspace/libc/src/sysstat.c": [],
+    "userspace/libc/src/sysvipc.c": [],
+    "userspace/libc/src/termios.c": [],
+    "userspace/libc/src/threads.c": [],
+    "userspace/libc/src/time.c": [],
+    "userspace/libc/src/ucontext.c": [],
+    "userspace/libc/src/unistd.c": [],
+    "userspace/libc/src/utime.c": [],
+    "userspace/libc/src/utmpx.c": [],
+    "userspace/libc/src/wchar.c": [],
+    "userspace/libc/src/wctype.c": [],
+    "userspace/libc/start.S": [],
+    "userspace/mem_server/server.c": [],
+    "userspace/mem_server/v2_main.c": [],
+    "userspace/net/net_start.S": [],
+    "userspace/net/v2_main.c": [
+      "kernel/qube.h"
+    ],
+    "userspace/qrexec_server/qrexec_start.S": [],
+    "userspace/qrexec_server/v2_main.c": [
+      "kernel/qube.h"
+    ],
+    "userspace/sched_server/server.c": [],
+    "userspace/sh/shell.c": [
+      "userspace/lib/moonlight.h"
+    ],
+    "userspace/user.ld": [],
+    "userspace/v2_user.ld": [],
+    "userspace/vault/rng_mix.h": [],
+    "userspace/vault/rng_scan.h": [],
+    "userspace/vault/v2_main.c": [
+      "kernel/qube.h",
+      "userspace/crypt/kdf.h",
+      "userspace/cryptblk/slot.h",
+      "userspace/vault/rng_mix.h",
+      "userspace/vault/rng_scan.h"
+    ],
+    "userspace/vault/vault_start.S": [],
+    "userspace/vfs_server/server.c": [
+      "userspace/abi/types.h"
+    ]
+  }
+}

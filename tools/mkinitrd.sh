@@ -20,18 +20,27 @@ ELF_DIR="userspace/build"
 # ELF binaries to include (in order). Index 0 must be mem_server.elf.
 # Every entry here must have a matching build rule in userspace/Makefile;
 # do not list aspirational binaries (a missing entry used to warn forever).
+# 
+# Kernel boot loads (Production Microkernel):
+#   Index 0  → tid 2 (mem_server, required)
+#   Index 1  → tid 1 (moonsh shell - application)
+#   Index 2  → unused (was adminvm)
+#   Index 3  → tid 3 (console service - text rendering)
+#   Index 4  → tid 4 (tty service - line discipline)
+#   Index 5-9: unused (deferred services)
+#   Index 10 → tid 10 (gui service - hardware driver)
 ELFS=(
-    "mem_server.elf"
-    "qrexec.elf"
-    "adminvm.elf"
-    "firewall.elf"
-    "net.elf"
-    "moonsh.elf"
-    "ls.elf"
-    "cat.elf"
-    "vault.elf"
-    "cryptblk.elf"
-    "gui.elf"
+    "mem_server.elf"      # 0 → tid 2
+    "moonsh.elf"          # 1 → tid 1 (shell application)
+    "UNUSED"              # 2 (placeholder)
+    "console.elf"         # 3 → tid 3 (console service)
+    "tty.elf"             # 4 → tid 4 (tty service)
+    "UNUSED"              # 5 (placeholder)
+    "UNUSED"              # 6 (placeholder)
+    "UNUSED"              # 7 (placeholder)
+    "UNUSED"              # 8 (placeholder)
+    "UNUSED"              # 9 (placeholder)
+    "gui.elf"             # 10 → tid 10 (gui hardware driver)
 )
 REQUIRED="mem_server.elf"
 
@@ -44,7 +53,13 @@ NAMES=()
 OFFSETS=()
 SIZES=()
 for elf in "${ELFS[@]}"; do
-    if [ -f "$ELF_DIR/$elf" ]; then
+    if [ "$elf" = "UNUSED" ]; then
+        # Placeholder slot - keep index, emit empty
+        echo "  UNUSED slot (index held for compatibility)"
+        NAMES+=("UNUSED")
+        OFFSETS+=("0")
+        SIZES+=("0")
+    elif [ -f "$ELF_DIR/$elf" ]; then
         echo "  Adding $elf..."
         SIZE=$(stat -c%s "$ELF_DIR/$elf")
         # Pad to 4096 bytes
@@ -66,7 +81,16 @@ for elf in "${ELFS[@]}"; do
             rm -f "$TMP_INITRD"
             exit 1
         fi
-        echo "  WARNING: $elf not found, skipping"
+        # SPARSE SLOT (no compaction): indices are a pinned ABI (kboot's
+        # initrd_lookup(0..10), shell_programs.h, test_shell_programs.c).
+        # A missing optional keeps its index with size 0, which
+        # initrd_lookup rejects (sz == 0 -> -1). Compacting here would
+        # shift every later index and boot the WRONG image (isolation
+        # break: e.g. net entered as firewall with firewall's MMIO).
+        echo "  WARNING: $elf not found, emitting empty slot (index held)"
+        NAMES+=("$elf (missing)")
+        OFFSETS+=("0")
+        SIZES+=("0")
     fi
 done
 

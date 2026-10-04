@@ -58,9 +58,12 @@ The kernel source lives in `kernel/` and builds with stock clang:
 
 ### Scheduling
 
-Lowest-numbered-Runnable (mirrors the proven `V2_A.sched_step`). Timer
-preemption is the SBI timer interrupt (`scause=5`, 100ms @ 10MHz). Terminal
-state is `wfi` when no thread is Runnable (prints `no runnable left; parking cpu`).
+Round-robin by TID: each selection scans from the current thread's successor,
+wrapping at the end of the thread table; `Yield` also rotates when a peer is
+runnable. The bounded scan is O(NTHREADS). Timer preemption is the SBI timer
+interrupt (`scause=5`, 100ms @ 10MHz). Terminal state is `wfi` when no thread
+is Runnable (prints `no runnable left; parking cpu`). The scheduler transition
+and a three-thread rotation trace are pinned in `kernel/isabelle/V2_A.thy`.
 
 ### IPC (Stage 2, addressed per-thread 2026-09-24)
 

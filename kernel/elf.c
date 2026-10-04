@@ -1,87 +1,39 @@
+/* kernel/elf.c - ELF64 loader (frames + caps side). Validation lives in
+ * elf.h (v2_elf_plan); this file only executes an already-validated plan.
+ *
+ * Host-testable: tests/test_elf.c includes this file with V2_FRAME_PTR
+ * pointed at a host array and its own frame_alloc_slot/frame_release, so
+ * the copy bounds and the rollback path run under ASan/UBSan. */
 #include "elf.h"
-#include "ipc.h"
 #include "caps.h"
+#include "ipc.h"
 
-#define V2_FRAME_PHYS_BASE 0x81000000UL
+/* Writable view of a pool frame. Kernel: the S-only identity map of the
+ * pool (VA == PA). Overridable for the host test. */
+#ifndef V2_FRAME_PTR
+#define V2_FRAME_PTR(f) ((volatile uint8_t *)(V2_FRAME_PHYS_BASE + (unsigned long)(f) * PAGE_SIZE))
+#endif
 
-/* Frame allocation helper - uses existing frame_pool from kboot.c */
-extern int frame_alloc_slot(v2_caps_t *caps, unsigned long tid);
-
-/* Validate ELF header and program headers */
-static int v2_elf_validate(const elf_ehdr_t *ehdr, size_t elf_size)
+/* One page the loader has allocated, kept so a failed load can undo it. */
+typedef struct
 {
-    if (elf_size < sizeof(elf_ehdr_t))
-        return 0;
-    if (ehdr->e_ident[0] != 0x7F || ehdr->e_ident[1] != 'E' ||
-        ehdr->e_ident[2] != 'L' || ehdr->e_ident[3] != 'F')
-        return 0;
-    if (ehdr->e_ident[4] != ELF_CLASS_64)
-        return 0;
-    if (ehdr->e_ident[5] != ELF_DATA_LSB)
-        return 0;
-    if (ehdr->e_ident[6] != ELF_VERSION)
-        return 0;
-    if (ehdr->e_type != ELF_TYPE_EXEC)
-        return 0;
-    if (ehdr->e_machine != ELF_MACHINE_RISCV)
-        return 0;
-    if (ehdr->e_version != ELF_VERSION)
-        return 0;
-    if (ehdr->e_phentsize != sizeof(elf_phdr_t))
-        return 0;
-    if (ehdr->e_phnum < 1 || ehdr->e_phnum > 8)
-        return 0;
-    if (ehdr->e_phoff + ehdr->e_phnum * sizeof(elf_phdr_t) > elf_size)
-        return 0;
-    return 1;
-}
+    unsigned long vpn;
+    unsigned long slot;
+    unsigned long frame;
+} v2_elf_page_t;
 
-/* Validate a single PT_LOAD segment */
-static int v2_elf_validate_phdr(const elf_phdr_t *ph, size_t elf_size)
-{
-    if (ph->p_type != ELF_PT_LOAD)
-        return 1; /* ignore non-PT_LOAD */
-    if (ph->p_filesz > ph->p_memsz)
-        return 0;
-    if (ph->p_offset + ph->p_filesz > elf_size)
-        return 0;
-    if (ph->p_vaddr + ph->p_memsz < ph->p_vaddr) /* overflow */
-        return 0;
-    if ((ph->p_flags & (ELF_PF_W | ELF_PF_X)) == (ELF_PF_W | ELF_PF_X))
-        return 0; /* W^X violation */
-    if (ph->p_align == 0 || (ph->p_align & (ph->p_align - 1)) != 0)
-        return 0; /* alignment must be power of 2 */
-    if (ph->p_vaddr % ph->p_align != 0)
-        return 0;
-    return 1;
-}
-
-/* Compute rights from p_flags */
-static unsigned long v2_elf_rights_from_flags(uint32_t flags)
-{
-    unsigned long rights = 0;
-    if (flags & ELF_PF_R) rights |= V2_RIGHT_R;
-    if (flags & ELF_PF_W) rights |= V2_RIGHT_W;
-    if (flags & ELF_PF_X) rights |= V2_RIGHT_X;
-    return rights;
-}
-
-/* Find or allocate a frame and map it at vpn with rights.
- * frame_alloc_slot returns the new cap slot index (>= 0) or a negative
- * errno; the kernel (allocator authority) then specializes the fresh RW
- * cap to the segment rights directly (minting X from RW would fail closed,
- * so attenuation is not used here). vpn is the frame-window index
- * (VA = V2_U_END + vpn*4096), already range-checked by the caller. */
-static int v2_elf_map_page(v2_caps_t *caps, unsigned long tid,
-                           unsigned long vpn, unsigned long rights,
-                           unsigned long *out_frame)
+/* Allocate a frame, specialize its fresh RW cap to the segment rights
+ * (the kernel is the allocator authority; minting X from RW would fail
+ * closed, so attenuation is not used), and map it at vpn. On success the
+ * page is recorded in *pg for rollback. */
+static int v2_elf_map_page(v2_caps_t *caps, unsigned long tid, unsigned long vpn, unsigned long rights,
+                           v2_elf_page_t *pg)
 {
     int slot;
-    unsigned long frame;
 
-    if (!caps || !out_frame)
+    if (!caps || !pg)
         return V2_ERR_INVALID;
-    if (rights & ~(V2_RIGHT_R | V2_RIGHT_W | V2_RIGHT_X))
+    if (rights == 0 || (rights & ~V2_RIGHT_MEM_MASK) != 0)
         return V2_ERR_INVALID;
     if ((rights & V2_RIGHT_W) && (rights & V2_RIGHT_X))
         return V2_ERR_INVALID; /* W^X */
@@ -94,106 +46,97 @@ static int v2_elf_map_page(v2_caps_t *caps, unsigned long tid,
     if (slot < 0)
         return slot;
     if (slot >= V2_CAP_SLOTS)
-        return V2_ERR_OVERFLOW;
-    caps->caps[tid][slot].rights = rights;
-    frame = caps->caps[tid][slot].obj;
-
-    if (v2_map(caps, tid, (unsigned long)slot, vpn) != V2_OK) {
-        /* Table full after a successful alloc: drop the cap so no
-         * half-mapped state survives. The bitmap frame stays marked used
-         * (one-frame leak on an already-failed load, fail-closed). */
-        caps->caps[tid][slot].valid = 0;
+    {
+        /* Allocator contract broken: no slot to drop, nothing to name the
+         * frame by. Fail closed (the frame stays with its owner and is
+         * reclaimed when that thread's qube is destroyed). */
         return V2_ERR_OVERFLOW;
     }
+    caps->caps[tid][slot].rights = rights;
+    pg->vpn = vpn;
+    pg->slot = (unsigned long)slot;
+    pg->frame = caps->caps[tid][slot].obj;
 
-    *out_frame = frame;
+    if (v2_map(caps, tid, (unsigned long)slot, vpn) != V2_OK)
+    {
+        /* Mapping table full: drop the cap and give the frame back so no
+         * half-mapped state and no leaked frame survive. */
+        caps->caps[tid][slot].valid = 0;
+        frame_release(pg->frame);
+        return V2_ERR_OVERFLOW;
+    }
     return V2_OK;
 }
 
-/* Load ELF from frame pool (initrd) into current VSpace */
-int v2_elf_load(const uint8_t *elf_data, size_t elf_size,
-                v2_caps_t *caps, unsigned long cur_tid,
-                uint64_t *out_entry, uint64_t *out_brk)
+/* Undo the first n recorded pages: unmap, drop the cap, free the frame. */
+static void v2_elf_rollback(v2_caps_t *caps, unsigned long tid, const v2_elf_page_t *pages, unsigned long n)
 {
-    const elf_ehdr_t *ehdr = (const elf_ehdr_t *)elf_data;
-    const elf_phdr_t *phdrs;
-    uint64_t brk = 0;
+    unsigned long i;
+    for (i = 0; i < n; i++)
+    { /* bound: V2_VPN_SLOTS */
+        (void)v2_unmap(caps, tid, pages[i].vpn);
+        caps->caps[tid][pages[i].slot].valid = 0;
+        frame_release(pages[i].frame);
+    }
+}
+
+int v2_elf_load(const uint8_t *elf_data, size_t elf_size, v2_caps_t *caps, unsigned long cur_tid, uint64_t *out_entry,
+                uint64_t *out_brk)
+{
+    v2_elf_plan_t plan;
+    /* Non-reentrant by design: function-static scratch (32x24 B = 768 B
+     * would fit the trap stack, but reentrancy is excluded by a stronger
+     * invariant — single hart + handlers run with SIE=0 + halt never
+     * returns into the epilogue (see halt-context guard), so no nested
+     * trap can re-enter the loader. If the burst-race work ever opens an
+     * in-handler SIE window, convert this to caller-provided storage
+     * first (burst spec H1/H2). Host tests are single-threaded. */
+    static v2_elf_page_t pages[V2_VPN_SLOTS];
+    unsigned long npages_done = 0;
     unsigned long i, k;
-    unsigned long frame;
+    int rc;
 
-    if (!v2_elf_validate(ehdr, elf_size))
+    if (!caps || !out_entry || !out_brk || !v2_cap_holder_ok(caps, cur_tid))
         return V2_ERR_INVALID;
+    rc = v2_elf_plan(elf_data, elf_size, &plan);
+    if (rc != V2_OK)
+        return rc;
 
-    phdrs = (const elf_phdr_t *)(elf_data + ehdr->e_phoff);
+    for (i = 0; i < plan.nseg; i++)
+    { /* bound: V2_ELF_MAX_PHNUM */
+        const v2_elf_seg_t *s = &plan.seg[i];
+        unsigned long rights = v2_elf_rights(s->flags);
 
-    /* Validate all PT_LOAD segments first */
-    for (i = 0; i < ehdr->e_phnum; i++) {
-        if (!v2_elf_validate_phdr(&phdrs[i], elf_size))
-            return V2_ERR_INVALID;
-    }
+        for (k = 0; k < s->npages; k++)
+        { /* bound: V2_VPN_SLOTS */
+            volatile uint8_t *dst;
+            uint64_t page_off = k * PAGE_SIZE;
+            uint64_t avail = s->filesz > page_off ? s->filesz - page_off : 0;
+            unsigned long n = avail < PAGE_SIZE ? (unsigned long)avail : (unsigned long)PAGE_SIZE;
+            unsigned long b;
 
-    /* Load each PT_LOAD segment */
-    for (i = 0; i < ehdr->e_phnum; i++) {
-        const elf_phdr_t *ph = &phdrs[i];
-        if (ph->p_type != ELF_PT_LOAD)
-            continue;
-
-        unsigned long rights = v2_elf_rights_from_flags(ph->p_flags);
-        unsigned long vpn_start, npages;
-        /* PT_LOAD VAs live in the frame window (v2_user.ld BASE =
-         * V2_U_END): the vpn is the window index, not the raw page number. */
-        if (ph->p_vaddr < V2_U_END)
-            return V2_ERR_INVALID;
-        if (ph->p_vaddr & 0xFFFUL)
-            return V2_ERR_INVALID; /* segments are page-aligned by link */
-        if (ph->p_memsz > (unsigned long)V2_VPN_SLOTS * 4096UL)
-            return V2_ERR_OVERFLOW;
-        vpn_start = (unsigned long)((ph->p_vaddr - V2_U_END) >> 12);
-        npages = (unsigned long)((ph->p_memsz + 4095) >> 12);
-
-        if (vpn_start >= (unsigned long)V2_VPN_SLOTS ||
-            npages > (unsigned long)V2_VPN_SLOTS - vpn_start)
-            return V2_ERR_OVERFLOW;
-
-        for (k = 0; k < npages; k++) {
-            unsigned long vpn = vpn_start + k;
-            int rc = v2_elf_map_page(caps, cur_tid, vpn, rights, &frame);
+            /* npages_done < V2_VPN_SLOTS: plan guarantees disjoint pages
+             * inside the V2_VPN_SLOTS window. */
+            rc = v2_elf_map_page(caps, cur_tid, s->vpn + k, rights, &pages[npages_done]);
             if (rc != V2_OK)
+            {
+                v2_elf_rollback(caps, cur_tid, pages, npages_done);
                 return rc;
-
-            /* Copy this page's file bytes into the frame, zero the rest
-             * (BSS). The file range [p_offset, p_offset+p_filesz) is
-             * clamped against the page window [page_off, page_off+4096)
-             * so BSS tail pages copy nothing instead of bytes past the
-             * segment's file range. bound: npages, 4096-byte page loop. */
-            uint64_t page_off = ph->p_offset + k * 4096;
-            uint64_t file_end = ph->p_offset + ph->p_filesz;
-            uint64_t copy_start = page_off < ph->p_offset ? ph->p_offset : page_off;
-            uint64_t copy_end = page_off + 4096 < file_end ? page_off + 4096 : file_end;
-            volatile uint8_t *dst =
-                (volatile uint8_t *)(V2_FRAME_PHYS_BASE + frame * 4096);
-
-            for (unsigned long b = 0; b < 4096; b++)
-                dst[b] = 0;
-
-            if (copy_end > copy_start && copy_end <= elf_size) {
-                unsigned long dst_off =
-                    (unsigned long)(copy_start - page_off);
-                unsigned long copy_len =
-                    (unsigned long)(copy_end - copy_start);
-                for (unsigned long b = 0; b < copy_len; b++)
-                    dst[dst_off + b] = elf_data[copy_start + b];
             }
-        }
+            dst = V2_FRAME_PTR(pages[npages_done].frame);
+            npages_done++;
 
-        /* Track brk (end of writable segments) */
-        if (ph->p_flags & ELF_PF_W) {
-            uint64_t seg_end = ph->p_vaddr + ph->p_memsz;
-            if (seg_end > brk) brk = seg_end;
+            /* Zero the page (BSS tail, padding), then copy this page's
+             * slice of the file range. The slice is bounded by filesz,
+             * which the plan checked against the image size. */
+            for (b = 0; b < PAGE_SIZE; b++)
+                dst[b] = 0;
+            for (b = 0; b < n; b++)
+                dst[b] = elf_data[s->offset + page_off + b];
         }
     }
 
-    *out_entry = ehdr->e_entry;
-    *out_brk = (brk + 4095) & ~4095UL; /* page-align brk */
+    *out_entry = plan.entry;
+    *out_brk = plan.brk;
     return V2_OK;
 }

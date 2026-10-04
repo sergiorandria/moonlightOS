@@ -38,7 +38,7 @@
 #define BLK_SECTOR 512u
 #define BLK_QSIZE 64u
 #define BLK_MAX_BYTES (128u * BLK_SECTOR) /* 64K per request */
-#define BLK_MAX_DRAIN 32u
+#define BLK_MAX_DRAIN BLK_QSIZE
 /* 256M virtual disk image (tools/run_qemu.sh): 256*1024*1024/512 sectors. */
 #define BLK_DISK_MB 256u
 #define BLK_DISK_SECTORS 524288u
@@ -474,7 +474,7 @@ bool block_driver_init(blk_caps_t c, void *dma_mem, size_t dma_len)
         return false;
     blk_regs = (__capability volatile uint32_t *)cap;
 #else
-    if (c.mmio_base < 0x10000000 || c.mmio_base + c.mmio_len > 0x20000000)
+    if (!vmm_range_within(0x10000000u, 0x10000000u, c.mmio_base, c.mmio_len))
         return false;
 #if defined(__riscv)
     blk_regs = (volatile uint32_t *)c.mmio_base;
@@ -508,7 +508,8 @@ bool block_set_iommu(cap_t iommu_cap, iommu_state_t *iommu, uintptr_t dev_id, ui
         return false;
     if (!iommu_cap.is_valid || !cheri_tag_get(iommu_cap.hw_cap))
         return false;
-    if (dma_size % PAGE_SIZE || dma_paddr % PAGE_SIZE)
+    if (dma_size == 0 || dma_size % PAGE_SIZE || dma_paddr % PAGE_SIZE ||
+        dma_paddr > UINTPTR_MAX - dma_size)
         return false;
     g_iommu = iommu;
     g_iommu_cap = iommu_cap;
@@ -527,11 +528,8 @@ bool block_dma_map(uintptr_t paddr, size_t size, uint32_t perms)
 {
     if (!g_iommu || !g_iommu_bound)
         return false;
-    if (size % PAGE_SIZE || paddr % PAGE_SIZE)
-        return false;
-    if (paddr < g_dma_base || size > g_dma_len || paddr + size > g_dma_base + g_dma_len)
-        return false;
-    if (paddr + size < paddr)
+    if (size == 0 || size % PAGE_SIZE || paddr % PAGE_SIZE ||
+        !vmm_range_within(g_dma_base, g_dma_len, paddr, size))
         return false;
     return iommu_map(g_iommu, &g_iommu_cap, g_dev_id, paddr, size, perms) == ERR_OK;
 }
@@ -545,7 +543,8 @@ bool block_dma_unmap(uintptr_t paddr)
 
 bool block_dma_check(uintptr_t paddr, size_t len, bool is_write)
 {
-    if (!g_iommu)
+    if (!g_iommu || !g_iommu_bound ||
+        !vmm_range_within(g_dma_base, g_dma_len, paddr, len))
         return false;
     return iommu_check(g_iommu, g_dev_id, paddr, len, is_write);
 }
@@ -574,11 +573,7 @@ bool block_map_dma(uintptr_t paddr, size_t len)
 {
     if (!dma_pool)
         return false;
-    if (paddr < (uintptr_t)dma_pool || len > dma_pool_size || paddr + len > (uintptr_t)dma_pool + dma_pool_size)
-        return false;
-    if (paddr + len < paddr)
-        return false;
-    return true;
+    return vmm_range_within((uintptr_t)dma_pool, dma_pool_size, paddr, len);
 }
 
 static int blk_enqueue(uint32_t sector, uintptr_t paddr, size_t len, uint8_t is_write)

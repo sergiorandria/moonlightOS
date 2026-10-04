@@ -64,7 +64,8 @@ static inline void r_wr(uint32_t off, uint32_t v) {
 }
 
 bool rtc_driver_init(rtc_caps_t c) {
-    r_caps = c;
+    r_regs = NULL;
+    memset(&r_caps, 0, sizeof(r_caps));
     if (c.mmio_base == 0 || c.mmio_len < RTC_MIN_LEN) return false;
 #ifdef __CHERI_PURE_CAPABILITY__
     __capability void *cap = (void *)c.mmio_base;
@@ -84,11 +85,15 @@ bool rtc_driver_init(rtc_caps_t c) {
     host_rtc[RTC_TIME_HIGH / 4u] = (uint32_t)(host_ns >> 32);
 #endif
 #endif
+    r_caps = c;
     memset(&r_st, 0, sizeof(r_st));
     r_alarm_armed = false;
     r_alarm_ns = 0;
     r_wr(RTC_IRQ_EN, 0u);
     r_wr(RTC_CLEAR_ALARM, 1u);
+#if !defined(__riscv)
+    host_rtc[RTC_ALARM_STAT / 4u] = 0u;
+#endif
     return true;
 }
 
@@ -122,7 +127,7 @@ void rtc_sim_advance(uint64_t dns) {
     host_rtc[RTC_TIME_HIGH / 4u] = (uint32_t)(host_ns >> 32);
     /* Model alarm firing: device sets status when now >= alarm. */
     if (r_alarm_armed && host_ns >= r_alarm_ns)
-        host_rtc[RTC_ALARM_STAT / 4u] = 1u;
+        host_rtc[RTC_ALARM_STAT / 4u] = 0u; /* QEMU clears alarm_running on fire */
 #else
     (void)dns;
 #endif
@@ -137,13 +142,19 @@ bool rtc_set_alarm_ns(uint64_t dns) {
         r_alarm_armed = false;
         return true;
     }
-    uint64_t at = rtc_now_ns() + dns;
-    if (at < rtc_now_ns()) return false; /* wrap: unreachable deadline */
-    r_wr(RTC_ALARM_LOW, (uint32_t)(at & 0xffffffffu));
+    uint64_t now = rtc_now_ns();
+    if (dns > UINT64_MAX - now) return false;
+    uint64_t at = now + dns;
+    /* Goldfish RTC re-evaluates the alarm when ALARM_LOW is written, so
+     * program the high half first and make the low-half write commit it. */
     r_wr(RTC_ALARM_HIGH, (uint32_t)(at >> 32));
+    r_wr(RTC_ALARM_LOW, (uint32_t)(at & 0xffffffffu));
     r_wr(RTC_IRQ_EN, 1u);
     r_alarm_armed = true;
     r_alarm_ns = at;
+#if !defined(__riscv)
+    host_rtc[RTC_ALARM_STAT / 4u] = 1u; /* alarm_running */
+#endif
     r_st.alarms_set++;
     r_st.last_alarm_ns = at;
     return true;
@@ -151,7 +162,9 @@ bool rtc_set_alarm_ns(uint64_t dns) {
 
 bool rtc_alarm_pending(void) {
     if (!r_regs) return false;
-    return r_rd(RTC_ALARM_STAT) != 0;
+    /* QEMU's ALARM_STATUS exposes alarm_running, not irq_pending. Once an
+     * armed alarm stops running, Goldfish has fired its interrupt. */
+    return r_alarm_armed && r_rd(RTC_ALARM_STAT) == 0u;
 }
 
 /* Handle the alarm IRQ: clear device state, count, disarm (one-shot). */
@@ -193,8 +206,8 @@ void rtc_driver_reboot(void) {
         uint64_t now = rtc_now_ns();
         bool overdue = saved <= now;
         uint64_t at = overdue ? now : saved;
-        r_wr(RTC_ALARM_LOW, (uint32_t)(at & 0xffffffffu));
         r_wr(RTC_ALARM_HIGH, (uint32_t)(at >> 32));
+        r_wr(RTC_ALARM_LOW, (uint32_t)(at & 0xffffffffu));
         r_wr(RTC_IRQ_EN, 1u);
         r_alarm_armed = true;
         r_alarm_ns = at;
@@ -202,7 +215,7 @@ void rtc_driver_reboot(void) {
         r_st.last_alarm_ns = at;
 #if !defined(__riscv)
         /* Overdue deadline: the device would already be asserting. */
-        if (overdue) host_rtc[RTC_ALARM_STAT / 4u] = 1u;
+        host_rtc[RTC_ALARM_STAT / 4u] = overdue ? 0u : 1u;
 #endif
     }
 }

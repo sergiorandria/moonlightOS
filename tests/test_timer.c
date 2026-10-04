@@ -69,6 +69,14 @@ int main(void) {
     assert(st.rearms >= 1);
     printf("PASS: reboot preserves tick count, re-arms\n");
 
+    /* Deadline arithmetic saturates instead of wrapping into the past. */
+    assert(timer_driver_init(good) == true);
+    timer_sim_advance(UINT64_MAX - 5u);
+    timer_arm(10u);
+    assert(t_rd64(CLINT_MTIMECMP0) == UINT64_MAX);
+    assert(timer_pending() == false);
+    printf("PASS: deadline overflow saturates\n");
+
     printf("ALL TIMER TESTS PASS\n");
     return 0;
 }

@@ -43,6 +43,7 @@
 #define VIRTIO_STATUS_FEATURES_OK 8
 #define VIRTIO_STATUS_DRIVER_OK 4
 #define VIRTIO_STATUS_DEVICE_NEEDS_RESET 64
+#define VIRTIO_F_VERSION_1 32u
 
 /* VirtIO input event structure (Linux input_event, 8 bytes).
  * VirtIO-input spec (v1.1 section 5.8) uses the Linux input subsystem
@@ -181,5 +182,71 @@ typedef struct {
  * device attachment order (last-first for virtio-mmio backends). */
 #define KBD_MMIO_UVA 0x81200000UL   /* l1_t[10][9] = VPN[1] index 9 */
 #define MOUSE_MMIO_UVA 0x81400000UL /* l1_t[10][10] = VPN[1] index 10 */
+
+/* VirtIO eventq ring state (kbd and mouse each have independent rings).
+ * S4c uses statically allocated flat rings with 16 slots each. */
+typedef struct {
+    virtq_desc_t desc[16];  /* Descriptor ring (16 slots) */
+    virtq_avail_t avail;    /* Available ring (driver→device) */
+    volatile virtq_used_t used; /* Device-written ring */
+    volatile struct virtio_input_event events[16]; /* Device-written buffers */
+    uint16_t last_used_idx; /* Last processed used.idx (for polling) */
+} virtio_input_ring_t;
+
+/* VirtIO input device initialization and polling functions.
+ * These must be provided by the GUI implementation (virtio_input.c or inline).
+ * Forward declarations for input state types (defined in input.h). */
+struct kbd_modifiers;
+struct mouse_state;
+
+int virtio_input_init(volatile uint32_t *mmio, virtio_input_ring_t *ring, int queue_size);
+void virtio_input_ack(volatile uint32_t *mmio);
+void virtio_input_notify(volatile uint32_t *mmio);
+/* Return 1 with a validated completion, 0 if empty, or -1 on corrupt state. */
+static inline int virtio_input_next(virtio_input_ring_t *ring, uint16_t queue_size,
+                                    uint16_t *desc_id)
+{
+    uint16_t pending;
+    uint16_t used_slot;
+    uint32_t id;
+    if (!ring || !desc_id || queue_size == 0 || queue_size > 16 ||
+        (queue_size & (queue_size - 1u)) != 0)
+        return -1;
+    pending = (uint16_t)(ring->used.idx - ring->last_used_idx);
+    if (pending == 0)
+        return 0;
+    if (pending > queue_size)
+        return -1;
+    used_slot = (uint16_t)(ring->last_used_idx % queue_size);
+    id = ring->used.ring[used_slot].id;
+    if (id >= queue_size ||
+        ring->used.ring[used_slot].len < sizeof(struct virtio_input_event) ||
+        ring->desc[id].len < sizeof(struct virtio_input_event) ||
+        !(ring->desc[id].flags & VIRTQ_DESC_F_WRITE))
+        return -1;
+    *desc_id = (uint16_t)id;
+    return 1;
+}
+
+/* Recycle exactly the current completion after the event has been consumed. */
+static inline int virtio_input_recycle(virtio_input_ring_t *ring, uint16_t queue_size,
+                                       uint16_t desc_id)
+{
+    uint16_t pending;
+    uint16_t used_slot;
+    if (!ring || queue_size == 0 || queue_size > 16 ||
+        (queue_size & (queue_size - 1u)) != 0 || desc_id >= queue_size)
+        return 0;
+    pending = (uint16_t)(ring->used.idx - ring->last_used_idx);
+    if (pending == 0 || pending > queue_size)
+        return 0;
+    used_slot = (uint16_t)(ring->last_used_idx % queue_size);
+    if (ring->used.ring[used_slot].id != desc_id)
+        return 0;
+    ring->avail.ring[ring->avail.idx % queue_size] = desc_id;
+    ring->avail.idx++;
+    ring->last_used_idx++;
+    return 1;
+}
 
 #endif /* VIRTIO_INPUT_H */

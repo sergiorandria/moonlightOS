@@ -24,7 +24,7 @@ tools/run_qemu.sh --gdb  # GDB on :1234
 ## Structure (single codebase)
 
 - `kernel/` - v2 S-mode kernel: `kboot.c` (Sv39 U-bit tables, stvec traps,
-  SBI console + timer, lowest-Runnable scheduler, blocking rendezvous IPC
+  SBI console + timer, round-robin scheduler, blocking rendezvous IPC
   `SEND/RECV` + `NOTIFY/WAIT`, fault containment), `user.c` (U-mode ping-pong
   demo), `ipc.h`/`caps.h` (Stage-2/3 host-tested protocols), `start.S`,
   `trap.S`, `linker.ld`. Build via `make -C kernel` (stock clang, rv64imac).

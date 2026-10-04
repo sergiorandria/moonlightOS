@@ -1,0 +1,5338 @@
+{
+  "version": "1.0.0",
+  "project": {
+    "name": "moonlightOS",
+    "languages": [
+      "c",
+      "ld",
+      "makefile",
+      "markdown",
+      "python",
+      "s",
+      "shell",
+      "thy",
+      "unknown",
+      "yaml"
+    ],
+    "frameworks": [
+      "GitHub Actions",
+      "Isabelle/HOL"
+    ],
+    "description": "S-mode RISC-V microkernel with U-mode userspace, spec-first and partially verified in Isabelle/HOL. Note: this project has over 100 source files; consider scoping analysis to a subdirectory for faster results.",
+    "analyzedAt": "2026-10-02T10:14:54.744232Z",
+    "gitCommitHash": "8ffa478ed78ac1415580819ca72c3cbd2bd1f05f"
+  },
+  "nodes": [
+    {
+      "id": "file:.clang-format",
+      "type": "file",
+      "name": ".clang-format",
+      "filePath": ".clang-format",
+      "summary": "code/unknown file, 294 lines",
+      "tags": [
+        "code",
+        "unknown"
+      ]
+    },
+    {
+      "id": "file:.clangd",
+      "type": "file",
+      "name": ".clangd",
+      "filePath": ".clangd",
+      "summary": "code/unknown file, 20 lines",
+      "tags": [
+        "code",
+        "unknown"
+      ]
+    },
+    {
+      "id": "config:.github/workflows/cheri.yml",
+      "type": "config",
+      "name": "cheri.yml",
+      "filePath": ".github/workflows/cheri.yml",
+      "summary": "infra/yaml file, 42 lines",
+      "tags": [
+        "infra",
+        "yaml"
+      ]
+    },
+    {
+      "id": "config:.github/workflows/verify.yml",
+      "type": "config",
+      "name": "verify.yml",
+      "filePath": ".github/workflows/verify.yml",
+      "summary": "infra/yaml file, 24 lines",
+      "tags": [
+        "infra",
+        "yaml"
+      ]
+    },
+    {
+      "id": "document:CODE_REVIEW_ANALYSIS.md",
+      "type": "document",
+      "name": "CODE_REVIEW_ANALYSIS.md",
+      "filePath": "CODE_REVIEW_ANALYSIS.md",
+      "summary": "docs/markdown file, 472 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:CRYPTO_HARDENING.md",
+      "type": "document",
+      "name": "CRYPTO_HARDENING.md",
+      "filePath": "CRYPTO_HARDENING.md",
+      "summary": "docs/markdown file, 439 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:PLAN.md",
+      "type": "document",
+      "name": "PLAN.md",
+      "filePath": "PLAN.md",
+      "summary": "docs/markdown file, 187 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:README.md",
+      "type": "document",
+      "name": "README.md",
+      "filePath": "README.md",
+      "summary": "docs/markdown file, 72 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:REFACTORING_APPLIED.md",
+      "type": "document",
+      "name": "REFACTORING_APPLIED.md",
+      "filePath": "REFACTORING_APPLIED.md",
+      "summary": "docs/markdown file, 313 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:TROUBLESHOOTING.md",
+      "type": "document",
+      "name": "TROUBLESHOOTING.md",
+      "filePath": "TROUBLESHOOTING.md",
+      "summary": "docs/markdown file, 551 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/ARCHITECTURE.md",
+      "type": "document",
+      "name": "ARCHITECTURE.md",
+      "filePath": "docs/ARCHITECTURE.md",
+      "summary": "docs/markdown file, 443 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/BUILD.md",
+      "type": "document",
+      "name": "BUILD.md",
+      "filePath": "docs/BUILD.md",
+      "summary": "docs/markdown file, 203 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/CAPABILITIES.md",
+      "type": "document",
+      "name": "CAPABILITIES.md",
+      "filePath": "docs/CAPABILITIES.md",
+      "summary": "docs/markdown file, 81 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/LINUX.md",
+      "type": "document",
+      "name": "LINUX.md",
+      "filePath": "docs/LINUX.md",
+      "summary": "docs/markdown file, 151 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/PRODUCTION.md",
+      "type": "document",
+      "name": "PRODUCTION.md",
+      "filePath": "docs/PRODUCTION.md",
+      "summary": "docs/markdown file, 81 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/QUBES_ISOLATION_PLAN.md",
+      "type": "document",
+      "name": "QUBES_ISOLATION_PLAN.md",
+      "filePath": "docs/QUBES_ISOLATION_PLAN.md",
+      "summary": "docs/markdown file, 379 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/REPRODUCIBLE.md",
+      "type": "document",
+      "name": "REPRODUCIBLE.md",
+      "filePath": "docs/REPRODUCIBLE.md",
+      "summary": "docs/markdown file, 55 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/SECURITY.md",
+      "type": "document",
+      "name": "SECURITY.md",
+      "filePath": "docs/SECURITY.md",
+      "summary": "docs/markdown file, 32 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/SYSCALLS.md",
+      "type": "document",
+      "name": "SYSCALLS.md",
+      "filePath": "docs/SYSCALLS.md",
+      "summary": "docs/markdown file, 48 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/THREAT_MODEL.md",
+      "type": "document",
+      "name": "THREAT_MODEL.md",
+      "filePath": "docs/THREAT_MODEL.md",
+      "summary": "docs/markdown file, 28 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/USAGE.md",
+      "type": "document",
+      "name": "USAGE.md",
+      "filePath": "docs/USAGE.md",
+      "summary": "docs/markdown file, 194 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/V2_DESIGN.md",
+      "type": "document",
+      "name": "V2_DESIGN.md",
+      "filePath": "docs/V2_DESIGN.md",
+      "summary": "docs/markdown file, 711 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-14-v2-stage3-capabilities-memory.md",
+      "type": "document",
+      "name": "2026-09-14-v2-stage3-capabilities-memory.md",
+      "filePath": "docs/superpowers/plans/2026-09-14-v2-stage3-capabilities-memory.md",
+      "summary": "docs/markdown file, 773 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-15-v2-stage4-hardening-realimpl.md",
+      "type": "document",
+      "name": "2026-09-15-v2-stage4-hardening-realimpl.md",
+      "filePath": "docs/superpowers/plans/2026-09-15-v2-stage4-hardening-realimpl.md",
+      "summary": "docs/markdown file, 172 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-15-v2-stage5-elf-process.md",
+      "type": "document",
+      "name": "2026-09-15-v2-stage5-elf-process.md",
+      "filePath": "docs/superpowers/plans/2026-09-15-v2-stage5-elf-process.md",
+      "summary": "docs/markdown file, 96 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-19-qubes-s1-s2.md",
+      "type": "document",
+      "name": "2026-09-19-qubes-s1-s2.md",
+      "filePath": "docs/superpowers/plans/2026-09-19-qubes-s1-s2.md",
+      "summary": "docs/markdown file, 472 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-19-qubes-s3-net-firewall.md",
+      "type": "document",
+      "name": "2026-09-19-qubes-s3-net-firewall.md",
+      "filePath": "docs/superpowers/plans/2026-09-19-qubes-s3-net-firewall.md",
+      "summary": "docs/markdown file, 408 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-21-fde-encrypted-files.md",
+      "type": "document",
+      "name": "2026-09-21-fde-encrypted-files.md",
+      "filePath": "docs/superpowers/plans/2026-09-21-fde-encrypted-files.md",
+      "summary": "docs/markdown file, 303 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-24-live-qrexec-traffic.md",
+      "type": "document",
+      "name": "2026-09-24-live-qrexec-traffic.md",
+      "filePath": "docs/superpowers/plans/2026-09-24-live-qrexec-traffic.md",
+      "summary": "docs/markdown file, 492 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-25-audit-lifecycle-gaps.md",
+      "type": "document",
+      "name": "2026-09-25-audit-lifecycle-gaps.md",
+      "filePath": "docs/superpowers/plans/2026-09-25-audit-lifecycle-gaps.md",
+      "summary": "docs/markdown file, 354 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-25-s4a-gui-bringup.md",
+      "type": "document",
+      "name": "2026-09-25-s4a-gui-bringup.md",
+      "filePath": "docs/superpowers/plans/2026-09-25-s4a-gui-bringup.md",
+      "summary": "docs/markdown file, 327 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-09-28-rng-harden-demos.md",
+      "type": "document",
+      "name": "2026-09-28-rng-harden-demos.md",
+      "filePath": "docs/superpowers/plans/2026-09-28-rng-harden-demos.md",
+      "summary": "docs/markdown file, 413 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/plans/2026-10-01-shell-harness.md",
+      "type": "document",
+      "name": "2026-10-01-shell-harness.md",
+      "filePath": "docs/superpowers/plans/2026-10-01-shell-harness.md",
+      "summary": "docs/markdown file, 192 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/specs/2026-09-14-v2-stage3-capabilities-memory-design.md",
+      "type": "document",
+      "name": "2026-09-14-v2-stage3-capabilities-memory-design.md",
+      "filePath": "docs/superpowers/specs/2026-09-14-v2-stage3-capabilities-memory-design.md",
+      "summary": "docs/markdown file, 125 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/specs/2026-09-19-qubes-s1-s2-design.md",
+      "type": "document",
+      "name": "2026-09-19-qubes-s1-s2-design.md",
+      "filePath": "docs/superpowers/specs/2026-09-19-qubes-s1-s2-design.md",
+      "summary": "docs/markdown file, 134 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/specs/2026-09-19-qubes-s3-net-firewall-design.md",
+      "type": "document",
+      "name": "2026-09-19-qubes-s3-net-firewall-design.md",
+      "filePath": "docs/superpowers/specs/2026-09-19-qubes-s3-net-firewall-design.md",
+      "summary": "docs/markdown file, 148 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/specs/2026-09-21-fde-encrypted-files-design.md",
+      "type": "document",
+      "name": "2026-09-21-fde-encrypted-files-design.md",
+      "filePath": "docs/superpowers/specs/2026-09-21-fde-encrypted-files-design.md",
+      "summary": "docs/markdown file, 141 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/specs/2026-09-24-live-qrexec-traffic-design.md",
+      "type": "document",
+      "name": "2026-09-24-live-qrexec-traffic-design.md",
+      "filePath": "docs/superpowers/specs/2026-09-24-live-qrexec-traffic-design.md",
+      "summary": "docs/markdown file, 253 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/specs/2026-09-25-audit-lifecycle-gaps-design.md",
+      "type": "document",
+      "name": "2026-09-25-audit-lifecycle-gaps-design.md",
+      "filePath": "docs/superpowers/specs/2026-09-25-audit-lifecycle-gaps-design.md",
+      "summary": "docs/markdown file, 161 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/specs/2026-09-25-s4a-gui-bringup-design.md",
+      "type": "document",
+      "name": "2026-09-25-s4a-gui-bringup-design.md",
+      "filePath": "docs/superpowers/specs/2026-09-25-s4a-gui-bringup-design.md",
+      "summary": "docs/markdown file, 216 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/specs/2026-09-28-rng-harden-demos-design.md",
+      "type": "document",
+      "name": "2026-09-28-rng-harden-demos-design.md",
+      "filePath": "docs/superpowers/specs/2026-09-28-rng-harden-demos-design.md",
+      "summary": "docs/markdown file, 196 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "document:docs/superpowers/specs/2026-10-01-shell-harness-design.md",
+      "type": "document",
+      "name": "2026-10-01-shell-harness-design.md",
+      "filePath": "docs/superpowers/specs/2026-10-01-shell-harness-design.md",
+      "summary": "docs/markdown file, 179 lines",
+      "tags": [
+        "docs",
+        "markdown"
+      ]
+    },
+    {
+      "id": "config:kernel/Makefile",
+      "type": "config",
+      "name": "Makefile",
+      "filePath": "kernel/Makefile",
+      "summary": "infra/makefile file, 35 lines",
+      "tags": [
+        "infra",
+        "makefile"
+      ]
+    },
+    {
+      "id": "file:kernel/caps.h",
+      "type": "file",
+      "name": "caps.h",
+      "filePath": "kernel/caps.h",
+      "summary": "code/c file, 471 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:kernel/elf.c",
+      "type": "file",
+      "name": "elf.c",
+      "filePath": "kernel/elf.c",
+      "summary": "code/c file, 198 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:kernel/elf.h",
+      "type": "file",
+      "name": "elf.h",
+      "filePath": "kernel/elf.h",
+      "summary": "code/c file, 57 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:kernel/initrd.c",
+      "type": "file",
+      "name": "initrd.c",
+      "filePath": "kernel/initrd.c",
+      "summary": "code/c file, 45 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:kernel/initrd.h",
+      "type": "file",
+      "name": "initrd.h",
+      "filePath": "kernel/initrd.h",
+      "summary": "code/c file, 12 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:kernel/initrd_data.c",
+      "type": "file",
+      "name": "initrd_data.c",
+      "filePath": "kernel/initrd_data.c",
+      "summary": "code/c file, 12312 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:kernel/ipc.h",
+      "type": "file",
+      "name": "ipc.h",
+      "filePath": "kernel/ipc.h",
+      "summary": "code/c file, 185 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:kernel/isabelle/Qubes_A.thy",
+      "type": "file",
+      "name": "Qubes_A.thy",
+      "filePath": "kernel/isabelle/Qubes_A.thy",
+      "summary": "code/thy file, 511 lines",
+      "tags": [
+        "code",
+        "thy"
+      ]
+    },
+    {
+      "id": "file:kernel/isabelle/Qubes_B.thy",
+      "type": "file",
+      "name": "Qubes_B.thy",
+      "filePath": "kernel/isabelle/Qubes_B.thy",
+      "summary": "code/thy file, 380 lines",
+      "tags": [
+        "code",
+        "thy"
+      ]
+    },
+    {
+      "id": "file:kernel/isabelle/Qubes_C.thy",
+      "type": "file",
+      "name": "Qubes_C.thy",
+      "filePath": "kernel/isabelle/Qubes_C.thy",
+      "summary": "code/thy file, 590 lines",
+      "tags": [
+        "code",
+        "thy"
+      ]
+    },
+    {
+      "id": "file:kernel/isabelle/Qubes_D.thy",
+      "type": "file",
+      "name": "Qubes_D.thy",
+      "filePath": "kernel/isabelle/Qubes_D.thy",
+      "summary": "code/thy file, 514 lines",
+      "tags": [
+        "code",
+        "thy"
+      ]
+    },
+    {
+      "id": "file:kernel/isabelle/ROOT",
+      "type": "file",
+      "name": "ROOT",
+      "filePath": "kernel/isabelle/ROOT",
+      "summary": "code/unknown file, 10 lines",
+      "tags": [
+        "code",
+        "unknown"
+      ]
+    },
+    {
+      "id": "file:kernel/isabelle/V2_A.thy",
+      "type": "file",
+      "name": "V2_A.thy",
+      "filePath": "kernel/isabelle/V2_A.thy",
+      "summary": "code/thy file, 204 lines",
+      "tags": [
+        "code",
+        "thy"
+      ]
+    },
+    {
+      "id": "file:kernel/isabelle/V2_B.thy",
+      "type": "file",
+      "name": "V2_B.thy",
+      "filePath": "kernel/isabelle/V2_B.thy",
+      "summary": "code/thy file, 131 lines",
+      "tags": [
+        "code",
+        "thy"
+      ]
+    },
+    {
+      "id": "file:kernel/isabelle/V2_C.thy",
+      "type": "file",
+      "name": "V2_C.thy",
+      "filePath": "kernel/isabelle/V2_C.thy",
+      "summary": "code/thy file, 1023 lines",
+      "tags": [
+        "code",
+        "thy"
+      ]
+    },
+    {
+      "id": "file:kernel/isabelle/V2_D.thy",
+      "type": "file",
+      "name": "V2_D.thy",
+      "filePath": "kernel/isabelle/V2_D.thy",
+      "summary": "code/thy file, 697 lines",
+      "tags": [
+        "code",
+        "thy"
+      ]
+    },
+    {
+      "id": "file:kernel/kboot.c",
+      "type": "file",
+      "name": "kboot.c",
+      "filePath": "kernel/kboot.c",
+      "summary": "code/c file, 2403 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:kernel/linker.ld",
+      "type": "file",
+      "name": "linker.ld",
+      "filePath": "kernel/linker.ld",
+      "summary": "code/ld file, 24 lines",
+      "tags": [
+        "code",
+        "ld"
+      ]
+    },
+    {
+      "id": "file:kernel/qube.h",
+      "type": "file",
+      "name": "qube.h",
+      "filePath": "kernel/qube.h",
+      "summary": "code/c file, 218 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:kernel/start.S",
+      "type": "file",
+      "name": "start.S",
+      "filePath": "kernel/start.S",
+      "summary": "code/s file, 29 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:kernel/trap.S",
+      "type": "file",
+      "name": "trap.S",
+      "filePath": "kernel/trap.S",
+      "summary": "code/s file, 141 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:kernel/user.c",
+      "type": "file",
+      "name": "user.c",
+      "filePath": "kernel/user.c",
+      "summary": "code/c file, 501 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/bench_ipc.c",
+      "type": "file",
+      "name": "bench_ipc.c",
+      "filePath": "tests/bench_ipc.c",
+      "summary": "code/c file, 13 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/fuzz_syscall.c",
+      "type": "file",
+      "name": "fuzz_syscall.c",
+      "filePath": "tests/fuzz_syscall.c",
+      "summary": "code/c file, 38 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/host_console_shim.c",
+      "type": "file",
+      "name": "host_console_shim.c",
+      "filePath": "tests/host_console_shim.c",
+      "summary": "code/c file, 57 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/host_emul.c",
+      "type": "file",
+      "name": "host_emul.c",
+      "filePath": "tests/host_emul.c",
+      "summary": "code/c file, 47 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/stub_globals.c",
+      "type": "file",
+      "name": "stub_globals.c",
+      "filePath": "tests/stub_globals.c",
+      "summary": "code/c file, 21 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_abi.c",
+      "type": "file",
+      "name": "test_abi.c",
+      "filePath": "tests/test_abi.c",
+      "summary": "code/c file, 24 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_aead.c",
+      "type": "file",
+      "name": "test_aead.c",
+      "filePath": "tests/test_aead.c",
+      "summary": "code/c file, 230 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_batch4.c",
+      "type": "file",
+      "name": "test_batch4.c",
+      "filePath": "tests/test_batch4.c",
+      "summary": "code/c file, 383 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_batch5.c",
+      "type": "file",
+      "name": "test_batch5.c",
+      "filePath": "tests/test_batch5.c",
+      "summary": "code/c file, 689 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_batch6.c",
+      "type": "file",
+      "name": "test_batch6.c",
+      "filePath": "tests/test_batch6.c",
+      "summary": "code/c file, 376 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_crypt.c",
+      "type": "file",
+      "name": "test_crypt.c",
+      "filePath": "tests/test_crypt.c",
+      "summary": "code/c file, 342 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_gui.c",
+      "type": "file",
+      "name": "test_gui.c",
+      "filePath": "tests/test_gui.c",
+      "summary": "code/c file, 32 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_libc.c",
+      "type": "file",
+      "name": "test_libc.c",
+      "filePath": "tests/test_libc.c",
+      "summary": "code/c file, 1050 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_netfw.c",
+      "type": "file",
+      "name": "test_netfw.c",
+      "filePath": "tests/test_netfw.c",
+      "summary": "code/c file, 171 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_newlibc.c",
+      "type": "file",
+      "name": "test_newlibc.c",
+      "filePath": "tests/test_newlibc.c",
+      "summary": "code/c file, 336 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_plic.c",
+      "type": "file",
+      "name": "test_plic.c",
+      "filePath": "tests/test_plic.c",
+      "summary": "code/c file, 89 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_power.c",
+      "type": "file",
+      "name": "test_power.c",
+      "filePath": "tests/test_power.c",
+      "summary": "code/c file, 78 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_qargs.c",
+      "type": "file",
+      "name": "test_qargs.c",
+      "filePath": "tests/test_qargs.c",
+      "summary": "code/c file, 22 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_qlabels.c",
+      "type": "file",
+      "name": "test_qlabels.c",
+      "filePath": "tests/test_qlabels.c",
+      "summary": "code/c file, 25 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_qube_policy.c",
+      "type": "file",
+      "name": "test_qube_policy.c",
+      "filePath": "tests/test_qube_policy.c",
+      "summary": "code/c file, 59 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_rng.c",
+      "type": "file",
+      "name": "test_rng.c",
+      "filePath": "tests/test_rng.c",
+      "summary": "code/c file, 27 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_rtc.c",
+      "type": "file",
+      "name": "test_rtc.c",
+      "filePath": "tests/test_rtc.c",
+      "summary": "code/c file, 80 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_sched_server.c",
+      "type": "file",
+      "name": "test_sched_server.c",
+      "filePath": "tests/test_sched_server.c",
+      "summary": "code/c file, 39 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_shell.c",
+      "type": "file",
+      "name": "test_shell.c",
+      "filePath": "tests/test_shell.c",
+      "summary": "code/c file, 130 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_shell_vfs.c",
+      "type": "file",
+      "name": "test_shell_vfs.c",
+      "filePath": "tests/test_shell_vfs.c",
+      "summary": "code/c file, 52 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_timer.c",
+      "type": "file",
+      "name": "test_timer.c",
+      "filePath": "tests/test_timer.c",
+      "summary": "code/c file, 74 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_uart.c",
+      "type": "file",
+      "name": "test_uart.c",
+      "filePath": "tests/test_uart.c",
+      "summary": "code/c file, 91 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_v2caps.c",
+      "type": "file",
+      "name": "test_v2caps.c",
+      "filePath": "tests/test_v2caps.c",
+      "summary": "code/c file, 288 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_v2ipc.c",
+      "type": "file",
+      "name": "test_v2ipc.c",
+      "filePath": "tests/test_v2ipc.c",
+      "summary": "code/c file, 128 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tests/test_vfs.c",
+      "type": "file",
+      "name": "test_vfs.c",
+      "filePath": "tests/test_vfs.c",
+      "summary": "code/c file, 191 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:tools/attest.py",
+      "type": "file",
+      "name": "attest.py",
+      "filePath": "tools/attest.py",
+      "summary": "code/python file, 18 lines",
+      "tags": [
+        "code",
+        "python"
+      ]
+    },
+    {
+      "id": "resource:tools/build_qemu.sh",
+      "type": "resource",
+      "name": "build_qemu.sh",
+      "filePath": "tools/build_qemu.sh",
+      "summary": "script/shell file, 11 lines",
+      "tags": [
+        "script",
+        "shell"
+      ]
+    },
+    {
+      "id": "resource:tools/mkinitrd.sh",
+      "type": "resource",
+      "name": "mkinitrd.sh",
+      "filePath": "tools/mkinitrd.sh",
+      "summary": "script/shell file, 118 lines",
+      "tags": [
+        "script",
+        "shell"
+      ]
+    },
+    {
+      "id": "resource:tools/run_qemu.sh",
+      "type": "resource",
+      "name": "run_qemu.sh",
+      "filePath": "tools/run_qemu.sh",
+      "summary": "script/shell file, 173 lines",
+      "tags": [
+        "script",
+        "shell"
+      ]
+    },
+    {
+      "id": "resource:tools/verify.sh",
+      "type": "resource",
+      "name": "verify.sh",
+      "filePath": "tools/verify.sh",
+      "summary": "script/shell file, 247 lines",
+      "tags": [
+        "script",
+        "shell"
+      ]
+    },
+    {
+      "id": "config:userspace/Makefile",
+      "type": "config",
+      "name": "Makefile",
+      "filePath": "userspace/Makefile",
+      "summary": "infra/makefile file, 145 lines",
+      "tags": [
+        "infra",
+        "makefile"
+      ]
+    },
+    {
+      "id": "file:userspace/abi/cap.h",
+      "type": "file",
+      "name": "cap.h",
+      "filePath": "userspace/abi/cap.h",
+      "summary": "code/c file, 69 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/abi/cheri.h",
+      "type": "file",
+      "name": "cheri.h",
+      "filePath": "userspace/abi/cheri.h",
+      "summary": "code/c file, 89 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/abi/iommu.h",
+      "type": "file",
+      "name": "iommu.h",
+      "filePath": "userspace/abi/iommu.h",
+      "summary": "code/c file, 26 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/abi/linux_abi.h",
+      "type": "file",
+      "name": "linux_abi.h",
+      "filePath": "userspace/abi/linux_abi.h",
+      "summary": "code/c file, 415 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/abi/types.h",
+      "type": "file",
+      "name": "types.h",
+      "filePath": "userspace/abi/types.h",
+      "summary": "code/c file, 80 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/abi/vspace.h",
+      "type": "file",
+      "name": "vspace.h",
+      "filePath": "userspace/abi/vspace.h",
+      "summary": "code/c file, 39 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/adminvm/adminvm_start.S",
+      "type": "file",
+      "name": "adminvm_start.S",
+      "filePath": "userspace/adminvm/adminvm_start.S",
+      "summary": "code/s file, 18 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/adminvm/v2_main.c",
+      "type": "file",
+      "name": "v2_main.c",
+      "filePath": "userspace/adminvm/v2_main.c",
+      "summary": "code/c file, 191 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/crypt/aead.h",
+      "type": "file",
+      "name": "aead.h",
+      "filePath": "userspace/crypt/aead.h",
+      "summary": "code/c file, 357 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/crypt/crypt_util.h",
+      "type": "file",
+      "name": "crypt_util.h",
+      "filePath": "userspace/crypt/crypt_util.h",
+      "summary": "code/c file, 21 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/crypt/kdf.h",
+      "type": "file",
+      "name": "kdf.h",
+      "filePath": "userspace/crypt/kdf.h",
+      "summary": "code/c file, 182 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/crypt/kdf_production.h",
+      "type": "file",
+      "name": "kdf_production.h",
+      "filePath": "userspace/crypt/kdf_production.h",
+      "summary": "code/c file, 409 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/crypt/sha256.h",
+      "type": "file",
+      "name": "sha256.h",
+      "filePath": "userspace/crypt/sha256.h",
+      "summary": "code/c file, 150 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/cryptblk/cryptblk_start.S",
+      "type": "file",
+      "name": "cryptblk_start.S",
+      "filePath": "userspace/cryptblk/cryptblk_start.S",
+      "summary": "code/s file, 18 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/cryptblk/layout.h",
+      "type": "file",
+      "name": "layout.h",
+      "filePath": "userspace/cryptblk/layout.h",
+      "summary": "code/c file, 441 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/cryptblk/slot.h",
+      "type": "file",
+      "name": "slot.h",
+      "filePath": "userspace/cryptblk/slot.h",
+      "summary": "code/c file, 107 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/cryptblk/v2_main.c",
+      "type": "file",
+      "name": "v2_main.c",
+      "filePath": "userspace/cryptblk/v2_main.c",
+      "summary": "code/c file, 1730 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/drivers/block.c",
+      "type": "file",
+      "name": "block.c",
+      "filePath": "userspace/drivers/block.c",
+      "summary": "code/c file, 820 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/drivers/plic.c",
+      "type": "file",
+      "name": "plic.c",
+      "filePath": "userspace/drivers/plic.c",
+      "summary": "code/c file, 230 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/drivers/power.c",
+      "type": "file",
+      "name": "power.c",
+      "filePath": "userspace/drivers/power.c",
+      "summary": "code/c file, 120 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/drivers/rtc.c",
+      "type": "file",
+      "name": "rtc.c",
+      "filePath": "userspace/drivers/rtc.c",
+      "summary": "code/c file, 208 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/drivers/timer.c",
+      "type": "file",
+      "name": "timer.c",
+      "filePath": "userspace/drivers/timer.c",
+      "summary": "code/c file, 171 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/drivers/uart.c",
+      "type": "file",
+      "name": "uart.c",
+      "filePath": "userspace/drivers/uart.c",
+      "summary": "code/c file, 229 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/drivers/vga.c",
+      "type": "file",
+      "name": "vga.c",
+      "filePath": "userspace/drivers/vga.c",
+      "summary": "code/c file, 164 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/drivers/virtio_mmio.h",
+      "type": "file",
+      "name": "virtio_mmio.h",
+      "filePath": "userspace/drivers/virtio_mmio.h",
+      "summary": "code/c file, 308 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/drivers/virtio_net.c",
+      "type": "file",
+      "name": "virtio_net.c",
+      "filePath": "userspace/drivers/virtio_net.c",
+      "summary": "code/c file, 492 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/example/cat.c",
+      "type": "file",
+      "name": "cat.c",
+      "filePath": "userspace/example/cat.c",
+      "summary": "code/c file, 46 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/example/hello.c",
+      "type": "file",
+      "name": "hello.c",
+      "filePath": "userspace/example/hello.c",
+      "summary": "code/c file, 13 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/example/linux_demo.c",
+      "type": "file",
+      "name": "linux_demo.c",
+      "filePath": "userspace/example/linux_demo.c",
+      "summary": "code/c file, 177 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/example/ls.c",
+      "type": "file",
+      "name": "ls.c",
+      "filePath": "userspace/example/ls.c",
+      "summary": "code/c file, 47 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/firewall/firewall_start.S",
+      "type": "file",
+      "name": "firewall_start.S",
+      "filePath": "userspace/firewall/firewall_start.S",
+      "summary": "code/s file, 18 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/firewall/fw.h",
+      "type": "file",
+      "name": "fw.h",
+      "filePath": "userspace/firewall/fw.h",
+      "summary": "code/c file, 100 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/firewall/v2_main.c",
+      "type": "file",
+      "name": "v2_main.c",
+      "filePath": "userspace/firewall/v2_main.c",
+      "summary": "code/c file, 327 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/gui/gui_start.S",
+      "type": "file",
+      "name": "gui_start.S",
+      "filePath": "userspace/gui/gui_start.S",
+      "summary": "code/s file, 18 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/gui/pci.h",
+      "type": "file",
+      "name": "pci.h",
+      "filePath": "userspace/gui/pci.h",
+      "summary": "code/c file, 59 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/gui/rect.h",
+      "type": "file",
+      "name": "rect.h",
+      "filePath": "userspace/gui/rect.h",
+      "summary": "code/c file, 59 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/gui/v2_main.c",
+      "type": "file",
+      "name": "v2_main.c",
+      "filePath": "userspace/gui/v2_main.c",
+      "summary": "code/c file, 251 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/lib/moonlight.c",
+      "type": "file",
+      "name": "moonlight.c",
+      "filePath": "userspace/lib/moonlight.c",
+      "summary": "code/c file, 98 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/lib/moonlight.h",
+      "type": "file",
+      "name": "moonlight.h",
+      "filePath": "userspace/lib/moonlight.h",
+      "summary": "code/c file, 50 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/lib/start.S",
+      "type": "file",
+      "name": "start.S",
+      "filePath": "userspace/lib/start.S",
+      "summary": "code/s file, 18 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/lib/v2_start.S",
+      "type": "file",
+      "name": "v2_start.S",
+      "filePath": "userspace/lib/v2_start.S",
+      "summary": "code/s file, 18 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/SRCS",
+      "type": "file",
+      "name": "SRCS",
+      "filePath": "userspace/libc/SRCS",
+      "summary": "code/unknown file, 1 lines",
+      "tags": [
+        "code",
+        "unknown"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/aio.h",
+      "type": "file",
+      "name": "aio.h",
+      "filePath": "userspace/libc/include/aio.h",
+      "summary": "code/c file, 41 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/ar.h",
+      "type": "file",
+      "name": "ar.h",
+      "filePath": "userspace/libc/include/ar.h",
+      "summary": "code/c file, 17 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/arpa/inet.h",
+      "type": "file",
+      "name": "inet.h",
+      "filePath": "userspace/libc/include/arpa/inet.h",
+      "summary": "code/c file, 10 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/assert.h",
+      "type": "file",
+      "name": "assert.h",
+      "filePath": "userspace/libc/include/assert.h",
+      "summary": "code/c file, 11 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/bits/ml_fd.h",
+      "type": "file",
+      "name": "ml_fd.h",
+      "filePath": "userspace/libc/include/bits/ml_fd.h",
+      "summary": "code/c file, 21 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/bits/ml_sys.h",
+      "type": "file",
+      "name": "ml_sys.h",
+      "filePath": "userspace/libc/include/bits/ml_sys.h",
+      "summary": "code/c file, 80 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/byteswap.h",
+      "type": "file",
+      "name": "byteswap.h",
+      "filePath": "userspace/libc/include/byteswap.h",
+      "summary": "code/c file, 9 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/complex.h",
+      "type": "file",
+      "name": "complex.h",
+      "filePath": "userspace/libc/include/complex.h",
+      "summary": "code/c file, 99 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/cpio.h",
+      "type": "file",
+      "name": "cpio.h",
+      "filePath": "userspace/libc/include/cpio.h",
+      "summary": "code/c file, 26 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/crypt.h",
+      "type": "file",
+      "name": "crypt.h",
+      "filePath": "userspace/libc/include/crypt.h",
+      "summary": "code/c file, 18 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/ctype.h",
+      "type": "file",
+      "name": "ctype.h",
+      "filePath": "userspace/libc/include/ctype.h",
+      "summary": "code/c file, 19 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/dirent.h",
+      "type": "file",
+      "name": "dirent.h",
+      "filePath": "userspace/libc/include/dirent.h",
+      "summary": "code/c file, 44 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/dlfcn.h",
+      "type": "file",
+      "name": "dlfcn.h",
+      "filePath": "userspace/libc/include/dlfcn.h",
+      "summary": "code/c file, 25 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/elf.h",
+      "type": "file",
+      "name": "elf.h",
+      "filePath": "userspace/libc/include/elf.h",
+      "summary": "code/c file, 184 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/endian.h",
+      "type": "file",
+      "name": "endian.h",
+      "filePath": "userspace/libc/include/endian.h",
+      "summary": "code/c file, 63 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/err.h",
+      "type": "file",
+      "name": "err.h",
+      "filePath": "userspace/libc/include/err.h",
+      "summary": "code/c file, 16 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/errno.h",
+      "type": "file",
+      "name": "errno.h",
+      "filePath": "userspace/libc/include/errno.h",
+      "summary": "code/c file, 144 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/execinfo.h",
+      "type": "file",
+      "name": "execinfo.h",
+      "filePath": "userspace/libc/include/execinfo.h",
+      "summary": "code/c file, 9 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/fcntl.h",
+      "type": "file",
+      "name": "fcntl.h",
+      "filePath": "userspace/libc/include/fcntl.h",
+      "summary": "code/c file, 66 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/fenv.h",
+      "type": "file",
+      "name": "fenv.h",
+      "filePath": "userspace/libc/include/fenv.h",
+      "summary": "code/c file, 41 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/float.h",
+      "type": "file",
+      "name": "float.h",
+      "filePath": "userspace/libc/include/float.h",
+      "summary": "code/c file, 18 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/fmtmsg.h",
+      "type": "file",
+      "name": "fmtmsg.h",
+      "filePath": "userspace/libc/include/fmtmsg.h",
+      "summary": "code/c file, 32 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/fnmatch.h",
+      "type": "file",
+      "name": "fnmatch.h",
+      "filePath": "userspace/libc/include/fnmatch.h",
+      "summary": "code/c file, 14 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/fts.h",
+      "type": "file",
+      "name": "fts.h",
+      "filePath": "userspace/libc/include/fts.h",
+      "summary": "code/c file, 62 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/ftw.h",
+      "type": "file",
+      "name": "ftw.h",
+      "filePath": "userspace/libc/include/ftw.h",
+      "summary": "code/c file, 28 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/getopt.h",
+      "type": "file",
+      "name": "getopt.h",
+      "filePath": "userspace/libc/include/getopt.h",
+      "summary": "code/c file, 23 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/glob.h",
+      "type": "file",
+      "name": "glob.h",
+      "filePath": "userspace/libc/include/glob.h",
+      "summary": "code/c file, 39 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/grp.h",
+      "type": "file",
+      "name": "grp.h",
+      "filePath": "userspace/libc/include/grp.h",
+      "summary": "code/c file, 10 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/iconv.h",
+      "type": "file",
+      "name": "iconv.h",
+      "filePath": "userspace/libc/include/iconv.h",
+      "summary": "code/c file, 15 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/ifaddrs.h",
+      "type": "file",
+      "name": "ifaddrs.h",
+      "filePath": "userspace/libc/include/ifaddrs.h",
+      "summary": "code/c file, 18 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/inttypes.h",
+      "type": "file",
+      "name": "inttypes.h",
+      "filePath": "userspace/libc/include/inttypes.h",
+      "summary": "code/c file, 88 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/iso646.h",
+      "type": "file",
+      "name": "iso646.h",
+      "filePath": "userspace/libc/include/iso646.h",
+      "summary": "code/c file, 14 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/langinfo.h",
+      "type": "file",
+      "name": "langinfo.h",
+      "filePath": "userspace/libc/include/langinfo.h",
+      "summary": "code/c file, 66 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/libgen.h",
+      "type": "file",
+      "name": "libgen.h",
+      "filePath": "userspace/libc/include/libgen.h",
+      "summary": "code/c file, 5 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/limits.h",
+      "type": "file",
+      "name": "limits.h",
+      "filePath": "userspace/libc/include/limits.h",
+      "summary": "code/c file, 35 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/locale.h",
+      "type": "file",
+      "name": "locale.h",
+      "filePath": "userspace/libc/include/locale.h",
+      "summary": "code/c file, 60 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/malloc.h",
+      "type": "file",
+      "name": "malloc.h",
+      "filePath": "userspace/libc/include/malloc.h",
+      "summary": "code/c file, 34 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/math.h",
+      "type": "file",
+      "name": "math.h",
+      "filePath": "userspace/libc/include/math.h",
+      "summary": "code/c file, 215 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/monetary.h",
+      "type": "file",
+      "name": "monetary.h",
+      "filePath": "userspace/libc/include/monetary.h",
+      "summary": "code/c file, 10 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/mqueue.h",
+      "type": "file",
+      "name": "mqueue.h",
+      "filePath": "userspace/libc/include/mqueue.h",
+      "summary": "code/c file, 30 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/ndbm.h",
+      "type": "file",
+      "name": "ndbm.h",
+      "filePath": "userspace/libc/include/ndbm.h",
+      "summary": "code/c file, 31 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/net/ethernet.h",
+      "type": "file",
+      "name": "ethernet.h",
+      "filePath": "userspace/libc/include/net/ethernet.h",
+      "summary": "code/c file, 39 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/net/if.h",
+      "type": "file",
+      "name": "if.h",
+      "filePath": "userspace/libc/include/net/if.h",
+      "summary": "code/c file, 81 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/net/if_arp.h",
+      "type": "file",
+      "name": "if_arp.h",
+      "filePath": "userspace/libc/include/net/if_arp.h",
+      "summary": "code/c file, 48 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/net/route.h",
+      "type": "file",
+      "name": "route.h",
+      "filePath": "userspace/libc/include/net/route.h",
+      "summary": "code/c file, 49 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/netdb.h",
+      "type": "file",
+      "name": "netdb.h",
+      "filePath": "userspace/libc/include/netdb.h",
+      "summary": "code/c file, 90 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/netinet/ether.h",
+      "type": "file",
+      "name": "ether.h",
+      "filePath": "userspace/libc/include/netinet/ether.h",
+      "summary": "code/c file, 18 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/netinet/if_ether.h",
+      "type": "file",
+      "name": "if_ether.h",
+      "filePath": "userspace/libc/include/netinet/if_ether.h",
+      "summary": "code/c file, 31 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/netinet/in.h",
+      "type": "file",
+      "name": "in.h",
+      "filePath": "userspace/libc/include/netinet/in.h",
+      "summary": "code/c file, 21 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/netinet/ip.h",
+      "type": "file",
+      "name": "ip.h",
+      "filePath": "userspace/libc/include/netinet/ip.h",
+      "summary": "code/c file, 76 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/netinet/ip_icmp.h",
+      "type": "file",
+      "name": "ip_icmp.h",
+      "filePath": "userspace/libc/include/netinet/ip_icmp.h",
+      "summary": "code/c file, 42 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/netinet/tcp.h",
+      "type": "file",
+      "name": "tcp.h",
+      "filePath": "userspace/libc/include/netinet/tcp.h",
+      "summary": "code/c file, 78 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/netinet/udp.h",
+      "type": "file",
+      "name": "udp.h",
+      "filePath": "userspace/libc/include/netinet/udp.h",
+      "summary": "code/c file, 19 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/nl_types.h",
+      "type": "file",
+      "name": "nl_types.h",
+      "filePath": "userspace/libc/include/nl_types.h",
+      "summary": "code/c file, 14 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/paths.h",
+      "type": "file",
+      "name": "paths.h",
+      "filePath": "userspace/libc/include/paths.h",
+      "summary": "code/c file, 27 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/poll.h",
+      "type": "file",
+      "name": "poll.h",
+      "filePath": "userspace/libc/include/poll.h",
+      "summary": "code/c file, 76 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/pthread.h",
+      "type": "file",
+      "name": "pthread.h",
+      "filePath": "userspace/libc/include/pthread.h",
+      "summary": "code/c file, 214 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/pwd.h",
+      "type": "file",
+      "name": "pwd.h",
+      "filePath": "userspace/libc/include/pwd.h",
+      "summary": "code/c file, 38 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/regex.h",
+      "type": "file",
+      "name": "regex.h",
+      "filePath": "userspace/libc/include/regex.h",
+      "summary": "code/c file, 42 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sched.h",
+      "type": "file",
+      "name": "sched.h",
+      "filePath": "userspace/libc/include/sched.h",
+      "summary": "code/c file, 32 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/search.h",
+      "type": "file",
+      "name": "search.h",
+      "filePath": "userspace/libc/include/search.h",
+      "summary": "code/c file, 44 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/semaphore.h",
+      "type": "file",
+      "name": "semaphore.h",
+      "filePath": "userspace/libc/include/semaphore.h",
+      "summary": "code/c file, 22 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/setjmp.h",
+      "type": "file",
+      "name": "setjmp.h",
+      "filePath": "userspace/libc/include/setjmp.h",
+      "summary": "code/c file, 34 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/shadow.h",
+      "type": "file",
+      "name": "shadow.h",
+      "filePath": "userspace/libc/include/shadow.h",
+      "summary": "code/c file, 28 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/signal.h",
+      "type": "file",
+      "name": "signal.h",
+      "filePath": "userspace/libc/include/signal.h",
+      "summary": "code/c file, 132 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/spawn.h",
+      "type": "file",
+      "name": "spawn.h",
+      "filePath": "userspace/libc/include/spawn.h",
+      "summary": "code/c file, 54 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdalign.h",
+      "type": "file",
+      "name": "stdalign.h",
+      "filePath": "userspace/libc/include/stdalign.h",
+      "summary": "code/c file, 7 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdarg.h",
+      "type": "file",
+      "name": "stdarg.h",
+      "filePath": "userspace/libc/include/stdarg.h",
+      "summary": "code/c file, 10 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdatomic.h",
+      "type": "file",
+      "name": "stdatomic.h",
+      "filePath": "userspace/libc/include/stdatomic.h",
+      "summary": "code/c file, 89 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdbit.h",
+      "type": "file",
+      "name": "stdbit.h",
+      "filePath": "userspace/libc/include/stdbit.h",
+      "summary": "code/c file, 217 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdbool.h",
+      "type": "file",
+      "name": "stdbool.h",
+      "filePath": "userspace/libc/include/stdbool.h",
+      "summary": "code/c file, 9 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdckdint.h",
+      "type": "file",
+      "name": "stdckdint.h",
+      "filePath": "userspace/libc/include/stdckdint.h",
+      "summary": "code/c file, 6 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stddef.h",
+      "type": "file",
+      "name": "stddef.h",
+      "filePath": "userspace/libc/include/stddef.h",
+      "summary": "code/c file, 25 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdint.h",
+      "type": "file",
+      "name": "stdint.h",
+      "filePath": "userspace/libc/include/stdint.h",
+      "summary": "code/c file, 104 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdio.h",
+      "type": "file",
+      "name": "stdio.h",
+      "filePath": "userspace/libc/include/stdio.h",
+      "summary": "code/c file, 122 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdlib.h",
+      "type": "file",
+      "name": "stdlib.h",
+      "filePath": "userspace/libc/include/stdlib.h",
+      "summary": "code/c file, 104 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stdnoreturn.h",
+      "type": "file",
+      "name": "stdnoreturn.h",
+      "filePath": "userspace/libc/include/stdnoreturn.h",
+      "summary": "code/c file, 4 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/string.h",
+      "type": "file",
+      "name": "string.h",
+      "filePath": "userspace/libc/include/string.h",
+      "summary": "code/c file, 47 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/strings.h",
+      "type": "file",
+      "name": "strings.h",
+      "filePath": "userspace/libc/include/strings.h",
+      "summary": "code/c file, 15 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/stropts.h",
+      "type": "file",
+      "name": "stropts.h",
+      "filePath": "userspace/libc/include/stropts.h",
+      "summary": "code/c file, 102 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/auxv.h",
+      "type": "file",
+      "name": "auxv.h",
+      "filePath": "userspace/libc/include/sys/auxv.h",
+      "summary": "code/c file, 26 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/dir.h",
+      "type": "file",
+      "name": "dir.h",
+      "filePath": "userspace/libc/include/sys/dir.h",
+      "summary": "code/c file, 4 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/epoll.h",
+      "type": "file",
+      "name": "epoll.h",
+      "filePath": "userspace/libc/include/sys/epoll.h",
+      "summary": "code/c file, 4 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/eventfd.h",
+      "type": "file",
+      "name": "eventfd.h",
+      "filePath": "userspace/libc/include/sys/eventfd.h",
+      "summary": "code/c file, 15 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/file.h",
+      "type": "file",
+      "name": "file.h",
+      "filePath": "userspace/libc/include/sys/file.h",
+      "summary": "code/c file, 10 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/inotify.h",
+      "type": "file",
+      "name": "inotify.h",
+      "filePath": "userspace/libc/include/sys/inotify.h",
+      "summary": "code/c file, 51 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/ioctl.h",
+      "type": "file",
+      "name": "ioctl.h",
+      "filePath": "userspace/libc/include/sys/ioctl.h",
+      "summary": "code/c file, 17 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/ipc.h",
+      "type": "file",
+      "name": "ipc.h",
+      "filePath": "userspace/libc/include/sys/ipc.h",
+      "summary": "code/c file, 28 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/mman.h",
+      "type": "file",
+      "name": "mman.h",
+      "filePath": "userspace/libc/include/sys/mman.h",
+      "summary": "code/c file, 39 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/msg.h",
+      "type": "file",
+      "name": "msg.h",
+      "filePath": "userspace/libc/include/sys/msg.h",
+      "summary": "code/c file, 31 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/param.h",
+      "type": "file",
+      "name": "param.h",
+      "filePath": "userspace/libc/include/sys/param.h",
+      "summary": "code/c file, 27 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/personality.h",
+      "type": "file",
+      "name": "personality.h",
+      "filePath": "userspace/libc/include/sys/personality.h",
+      "summary": "code/c file, 13 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/prctl.h",
+      "type": "file",
+      "name": "prctl.h",
+      "filePath": "userspace/libc/include/sys/prctl.h",
+      "summary": "code/c file, 27 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/queue.h",
+      "type": "file",
+      "name": "queue.h",
+      "filePath": "userspace/libc/include/sys/queue.h",
+      "summary": "code/c file, 74 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/random.h",
+      "type": "file",
+      "name": "random.h",
+      "filePath": "userspace/libc/include/sys/random.h",
+      "summary": "code/c file, 13 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/resource.h",
+      "type": "file",
+      "name": "resource.h",
+      "filePath": "userspace/libc/include/sys/resource.h",
+      "summary": "code/c file, 55 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/select.h",
+      "type": "file",
+      "name": "select.h",
+      "filePath": "userspace/libc/include/sys/select.h",
+      "summary": "code/c file, 9 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/sem.h",
+      "type": "file",
+      "name": "sem.h",
+      "filePath": "userspace/libc/include/sys/sem.h",
+      "summary": "code/c file, 42 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/sendfile.h",
+      "type": "file",
+      "name": "sendfile.h",
+      "filePath": "userspace/libc/include/sys/sendfile.h",
+      "summary": "code/c file, 7 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/shm.h",
+      "type": "file",
+      "name": "shm.h",
+      "filePath": "userspace/libc/include/sys/shm.h",
+      "summary": "code/c file, 32 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/signalfd.h",
+      "type": "file",
+      "name": "signalfd.h",
+      "filePath": "userspace/libc/include/sys/signalfd.h",
+      "summary": "code/c file, 37 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/socket.h",
+      "type": "file",
+      "name": "socket.h",
+      "filePath": "userspace/libc/include/sys/socket.h",
+      "summary": "code/c file, 115 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/stat.h",
+      "type": "file",
+      "name": "stat.h",
+      "filePath": "userspace/libc/include/sys/stat.h",
+      "summary": "code/c file, 140 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/statfs.h",
+      "type": "file",
+      "name": "statfs.h",
+      "filePath": "userspace/libc/include/sys/statfs.h",
+      "summary": "code/c file, 4 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/statvfs.h",
+      "type": "file",
+      "name": "statvfs.h",
+      "filePath": "userspace/libc/include/sys/statvfs.h",
+      "summary": "code/c file, 22 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/syscall.h",
+      "type": "file",
+      "name": "syscall.h",
+      "filePath": "userspace/libc/include/sys/syscall.h",
+      "summary": "code/c file, 4 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/sysinfo.h",
+      "type": "file",
+      "name": "sysinfo.h",
+      "filePath": "userspace/libc/include/sys/sysinfo.h",
+      "summary": "code/c file, 21 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/time.h",
+      "type": "file",
+      "name": "time.h",
+      "filePath": "userspace/libc/include/sys/time.h",
+      "summary": "code/c file, 26 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/timeb.h",
+      "type": "file",
+      "name": "timeb.h",
+      "filePath": "userspace/libc/include/sys/timeb.h",
+      "summary": "code/c file, 13 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/timerfd.h",
+      "type": "file",
+      "name": "timerfd.h",
+      "filePath": "userspace/libc/include/sys/timerfd.h",
+      "summary": "code/c file, 15 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/times.h",
+      "type": "file",
+      "name": "times.h",
+      "filePath": "userspace/libc/include/sys/times.h",
+      "summary": "code/c file, 13 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/types.h",
+      "type": "file",
+      "name": "types.h",
+      "filePath": "userspace/libc/include/sys/types.h",
+      "summary": "code/c file, 23 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/uio.h",
+      "type": "file",
+      "name": "uio.h",
+      "filePath": "userspace/libc/include/sys/uio.h",
+      "summary": "code/c file, 8 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/un.h",
+      "type": "file",
+      "name": "un.h",
+      "filePath": "userspace/libc/include/sys/un.h",
+      "summary": "code/c file, 4 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/utsname.h",
+      "type": "file",
+      "name": "utsname.h",
+      "filePath": "userspace/libc/include/sys/utsname.h",
+      "summary": "code/c file, 13 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/vfs.h",
+      "type": "file",
+      "name": "vfs.h",
+      "filePath": "userspace/libc/include/sys/vfs.h",
+      "summary": "code/c file, 32 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sys/wait.h",
+      "type": "file",
+      "name": "wait.h",
+      "filePath": "userspace/libc/include/sys/wait.h",
+      "summary": "code/c file, 34 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/sysexits.h",
+      "type": "file",
+      "name": "sysexits.h",
+      "filePath": "userspace/libc/include/sysexits.h",
+      "summary": "code/c file, 21 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/syslog.h",
+      "type": "file",
+      "name": "syslog.h",
+      "filePath": "userspace/libc/include/syslog.h",
+      "summary": "code/c file, 55 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/tar.h",
+      "type": "file",
+      "name": "tar.h",
+      "filePath": "userspace/libc/include/tar.h",
+      "summary": "code/c file, 51 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/termios.h",
+      "type": "file",
+      "name": "termios.h",
+      "filePath": "userspace/libc/include/termios.h",
+      "summary": "code/c file, 106 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/tgmath.h",
+      "type": "file",
+      "name": "tgmath.h",
+      "filePath": "userspace/libc/include/tgmath.h",
+      "summary": "code/c file, 60 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/threads.h",
+      "type": "file",
+      "name": "threads.h",
+      "filePath": "userspace/libc/include/threads.h",
+      "summary": "code/c file, 78 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/time.h",
+      "type": "file",
+      "name": "time.h",
+      "filePath": "userspace/libc/include/time.h",
+      "summary": "code/c file, 67 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/uchar.h",
+      "type": "file",
+      "name": "uchar.h",
+      "filePath": "userspace/libc/include/uchar.h",
+      "summary": "code/c file, 15 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/ucontext.h",
+      "type": "file",
+      "name": "ucontext.h",
+      "filePath": "userspace/libc/include/ucontext.h",
+      "summary": "code/c file, 25 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/ulimit.h",
+      "type": "file",
+      "name": "ulimit.h",
+      "filePath": "userspace/libc/include/ulimit.h",
+      "summary": "code/c file, 9 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/unistd.h",
+      "type": "file",
+      "name": "unistd.h",
+      "filePath": "userspace/libc/include/unistd.h",
+      "summary": "code/c file, 143 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/utime.h",
+      "type": "file",
+      "name": "utime.h",
+      "filePath": "userspace/libc/include/utime.h",
+      "summary": "code/c file, 22 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/utmpx.h",
+      "type": "file",
+      "name": "utmpx.h",
+      "filePath": "userspace/libc/include/utmpx.h",
+      "summary": "code/c file, 47 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/wchar.h",
+      "type": "file",
+      "name": "wchar.h",
+      "filePath": "userspace/libc/include/wchar.h",
+      "summary": "code/c file, 108 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/wctype.h",
+      "type": "file",
+      "name": "wctype.h",
+      "filePath": "userspace/libc/include/wctype.h",
+      "summary": "code/c file, 35 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/include/wordexp.h",
+      "type": "file",
+      "name": "wordexp.h",
+      "filePath": "userspace/libc/include/wordexp.h",
+      "summary": "code/c file, 26 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/aio.c",
+      "type": "file",
+      "name": "aio.c",
+      "filePath": "userspace/libc/src/aio.c",
+      "summary": "code/c file, 254 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/complex.c",
+      "type": "file",
+      "name": "complex.c",
+      "filePath": "userspace/libc/src/complex.c",
+      "summary": "code/c file, 383 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/crypt.c",
+      "type": "file",
+      "name": "crypt.c",
+      "filePath": "userspace/libc/src/crypt.c",
+      "summary": "code/c file, 761 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/ctype.c",
+      "type": "file",
+      "name": "ctype.c",
+      "filePath": "userspace/libc/src/ctype.c",
+      "summary": "code/c file, 39 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/dir.c",
+      "type": "file",
+      "name": "dir.c",
+      "filePath": "userspace/libc/src/dir.c",
+      "summary": "code/c file, 260 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/dlfcn.c",
+      "type": "file",
+      "name": "dlfcn.c",
+      "filePath": "userspace/libc/src/dlfcn.c",
+      "summary": "code/c file, 219 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/env.c",
+      "type": "file",
+      "name": "env.c",
+      "filePath": "userspace/libc/src/env.c",
+      "summary": "code/c file, 118 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/err.c",
+      "type": "file",
+      "name": "err.c",
+      "filePath": "userspace/libc/src/err.c",
+      "summary": "code/c file, 74 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/errno.c",
+      "type": "file",
+      "name": "errno.c",
+      "filePath": "userspace/libc/src/errno.c",
+      "summary": "code/c file, 28 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/ether.c",
+      "type": "file",
+      "name": "ether.c",
+      "filePath": "userspace/libc/src/ether.c",
+      "summary": "code/c file, 134 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/execinfo.c",
+      "type": "file",
+      "name": "execinfo.c",
+      "filePath": "userspace/libc/src/execinfo.c",
+      "summary": "code/c file, 66 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/fcntl.c",
+      "type": "file",
+      "name": "fcntl.c",
+      "filePath": "userspace/libc/src/fcntl.c",
+      "summary": "code/c file, 79 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/fenv.c",
+      "type": "file",
+      "name": "fenv.c",
+      "filePath": "userspace/libc/src/fenv.c",
+      "summary": "code/c file, 149 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/file.c",
+      "type": "file",
+      "name": "file.c",
+      "filePath": "userspace/libc/src/file.c",
+      "summary": "code/c file, 465 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/fmtmsg.c",
+      "type": "file",
+      "name": "fmtmsg.c",
+      "filePath": "userspace/libc/src/fmtmsg.c",
+      "summary": "code/c file, 38 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/fts.c",
+      "type": "file",
+      "name": "fts.c",
+      "filePath": "userspace/libc/src/fts.c",
+      "summary": "code/c file, 444 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/getopt.c",
+      "type": "file",
+      "name": "getopt.c",
+      "filePath": "userspace/libc/src/getopt.c",
+      "summary": "code/c file, 313 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/glob.c",
+      "type": "file",
+      "name": "glob.c",
+      "filePath": "userspace/libc/src/glob.c",
+      "summary": "code/c file, 1122 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/iconv.c",
+      "type": "file",
+      "name": "iconv.c",
+      "filePath": "userspace/libc/src/iconv.c",
+      "summary": "code/c file, 347 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/inet.c",
+      "type": "file",
+      "name": "inet.c",
+      "filePath": "userspace/libc/src/inet.c",
+      "summary": "code/c file, 517 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/langinfo.c",
+      "type": "file",
+      "name": "langinfo.c",
+      "filePath": "userspace/libc/src/langinfo.c",
+      "summary": "code/c file, 72 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/libgen.c",
+      "type": "file",
+      "name": "libgen.c",
+      "filePath": "userspace/libc/src/libgen.c",
+      "summary": "code/c file, 65 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/locale.c",
+      "type": "file",
+      "name": "locale.c",
+      "filePath": "userspace/libc/src/locale.c",
+      "summary": "code/c file, 99 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/math.c",
+      "type": "file",
+      "name": "math.c",
+      "filePath": "userspace/libc/src/math.c",
+      "summary": "code/c file, 1610 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/monetary.c",
+      "type": "file",
+      "name": "monetary.c",
+      "filePath": "userspace/libc/src/monetary.c",
+      "summary": "code/c file, 253 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/mqueue.c",
+      "type": "file",
+      "name": "mqueue.c",
+      "filePath": "userspace/libc/src/mqueue.c",
+      "summary": "code/c file, 394 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/ndbm.c",
+      "type": "file",
+      "name": "ndbm.c",
+      "filePath": "userspace/libc/src/ndbm.c",
+      "summary": "code/c file, 453 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/netif.c",
+      "type": "file",
+      "name": "netif.c",
+      "filePath": "userspace/libc/src/netif.c",
+      "summary": "code/c file, 130 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/nltypes.c",
+      "type": "file",
+      "name": "nltypes.c",
+      "filePath": "userspace/libc/src/nltypes.c",
+      "summary": "code/c file, 134 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/poll.c",
+      "type": "file",
+      "name": "poll.c",
+      "filePath": "userspace/libc/src/poll.c",
+      "summary": "code/c file, 496 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/popen.c",
+      "type": "file",
+      "name": "popen.c",
+      "filePath": "userspace/libc/src/popen.c",
+      "summary": "code/c file, 103 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/proc.c",
+      "type": "file",
+      "name": "proc.c",
+      "filePath": "userspace/libc/src/proc.c",
+      "summary": "code/c file, 524 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/pthread.c",
+      "type": "file",
+      "name": "pthread.c",
+      "filePath": "userspace/libc/src/pthread.c",
+      "summary": "code/c file, 1608 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/ptimer.c",
+      "type": "file",
+      "name": "ptimer.c",
+      "filePath": "userspace/libc/src/ptimer.c",
+      "summary": "code/c file, 287 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/pwdgrp.c",
+      "type": "file",
+      "name": "pwdgrp.c",
+      "filePath": "userspace/libc/src/pwdgrp.c",
+      "summary": "code/c file, 378 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/random.c",
+      "type": "file",
+      "name": "random.c",
+      "filePath": "userspace/libc/src/random.c",
+      "summary": "code/c file, 93 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/regex.c",
+      "type": "file",
+      "name": "regex.c",
+      "filePath": "userspace/libc/src/regex.c",
+      "summary": "code/c file, 827 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/resource.c",
+      "type": "file",
+      "name": "resource.c",
+      "filePath": "userspace/libc/src/resource.c",
+      "summary": "code/c file, 135 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/scanf.c",
+      "type": "file",
+      "name": "scanf.c",
+      "filePath": "userspace/libc/src/scanf.c",
+      "summary": "code/c file, 773 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/sched.c",
+      "type": "file",
+      "name": "sched.c",
+      "filePath": "userspace/libc/src/sched.c",
+      "summary": "code/c file, 55 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/search.c",
+      "type": "file",
+      "name": "search.c",
+      "filePath": "userspace/libc/src/search.c",
+      "summary": "code/c file, 192 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/sem.c",
+      "type": "file",
+      "name": "sem.c",
+      "filePath": "userspace/libc/src/sem.c",
+      "summary": "code/c file, 236 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/sendfile.c",
+      "type": "file",
+      "name": "sendfile.c",
+      "filePath": "userspace/libc/src/sendfile.c",
+      "summary": "code/c file, 35 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/setjmp.S",
+      "type": "file",
+      "name": "setjmp.S",
+      "filePath": "userspace/libc/src/setjmp.S",
+      "summary": "code/s file, 155 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/shadow.c",
+      "type": "file",
+      "name": "shadow.c",
+      "filePath": "userspace/libc/src/shadow.c",
+      "summary": "code/c file, 196 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/signal.c",
+      "type": "file",
+      "name": "signal.c",
+      "filePath": "userspace/libc/src/signal.c",
+      "summary": "code/c file, 363 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/sock.c",
+      "type": "file",
+      "name": "sock.c",
+      "filePath": "userspace/libc/src/sock.c",
+      "summary": "code/c file, 205 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/softfloat.c",
+      "type": "file",
+      "name": "softfloat.c",
+      "filePath": "userspace/libc/src/softfloat.c",
+      "summary": "code/c file, 802 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/spawn.c",
+      "type": "file",
+      "name": "spawn.c",
+      "filePath": "userspace/libc/src/spawn.c",
+      "summary": "code/c file, 292 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/statvfs.c",
+      "type": "file",
+      "name": "statvfs.c",
+      "filePath": "userspace/libc/src/statvfs.c",
+      "summary": "code/c file, 54 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/stdio.c",
+      "type": "file",
+      "name": "stdio.c",
+      "filePath": "userspace/libc/src/stdio.c",
+      "summary": "code/c file, 1943 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/stdlib.c",
+      "type": "file",
+      "name": "stdlib.c",
+      "filePath": "userspace/libc/src/stdlib.c",
+      "summary": "code/c file, 1148 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/string.c",
+      "type": "file",
+      "name": "string.c",
+      "filePath": "userspace/libc/src/string.c",
+      "summary": "code/c file, 410 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/strings.c",
+      "type": "file",
+      "name": "strings.c",
+      "filePath": "userspace/libc/src/strings.c",
+      "summary": "code/c file, 72 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/stropts.c",
+      "type": "file",
+      "name": "stropts.c",
+      "filePath": "userspace/libc/src/stropts.c",
+      "summary": "code/c file, 143 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/syscall.c",
+      "type": "file",
+      "name": "syscall.c",
+      "filePath": "userspace/libc/src/syscall.c",
+      "summary": "code/c file, 19 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/sysevent.c",
+      "type": "file",
+      "name": "sysevent.c",
+      "filePath": "userspace/libc/src/sysevent.c",
+      "summary": "code/c file, 1018 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/syslog.c",
+      "type": "file",
+      "name": "syslog.c",
+      "filePath": "userspace/libc/src/syslog.c",
+      "summary": "code/c file, 93 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/sysstat.c",
+      "type": "file",
+      "name": "sysstat.c",
+      "filePath": "userspace/libc/src/sysstat.c",
+      "summary": "code/c file, 326 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/sysvipc.c",
+      "type": "file",
+      "name": "sysvipc.c",
+      "filePath": "userspace/libc/src/sysvipc.c",
+      "summary": "code/c file, 869 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/termios.c",
+      "type": "file",
+      "name": "termios.c",
+      "filePath": "userspace/libc/src/termios.c",
+      "summary": "code/c file, 104 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/threads.c",
+      "type": "file",
+      "name": "threads.c",
+      "filePath": "userspace/libc/src/threads.c",
+      "summary": "code/c file, 205 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/time.c",
+      "type": "file",
+      "name": "time.c",
+      "filePath": "userspace/libc/src/time.c",
+      "summary": "code/c file, 1017 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/ucontext.c",
+      "type": "file",
+      "name": "ucontext.c",
+      "filePath": "userspace/libc/src/ucontext.c",
+      "summary": "code/c file, 101 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/unistd.c",
+      "type": "file",
+      "name": "unistd.c",
+      "filePath": "userspace/libc/src/unistd.c",
+      "summary": "code/c file, 564 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/utime.c",
+      "type": "file",
+      "name": "utime.c",
+      "filePath": "userspace/libc/src/utime.c",
+      "summary": "code/c file, 116 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/utmpx.c",
+      "type": "file",
+      "name": "utmpx.c",
+      "filePath": "userspace/libc/src/utmpx.c",
+      "summary": "code/c file, 142 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/wchar.c",
+      "type": "file",
+      "name": "wchar.c",
+      "filePath": "userspace/libc/src/wchar.c",
+      "summary": "code/c file, 1206 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/src/wctype.c",
+      "type": "file",
+      "name": "wctype.c",
+      "filePath": "userspace/libc/src/wctype.c",
+      "summary": "code/c file, 176 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/libc/start.S",
+      "type": "file",
+      "name": "start.S",
+      "filePath": "userspace/libc/start.S",
+      "summary": "code/s file, 31 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/mem_server/server.c",
+      "type": "file",
+      "name": "server.c",
+      "filePath": "userspace/mem_server/server.c",
+      "summary": "code/c file, 223 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/mem_server/v2_main.c",
+      "type": "file",
+      "name": "v2_main.c",
+      "filePath": "userspace/mem_server/v2_main.c",
+      "summary": "code/c file, 143 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/net/net_start.S",
+      "type": "file",
+      "name": "net_start.S",
+      "filePath": "userspace/net/net_start.S",
+      "summary": "code/s file, 18 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/net/v2_main.c",
+      "type": "file",
+      "name": "v2_main.c",
+      "filePath": "userspace/net/v2_main.c",
+      "summary": "code/c file, 507 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/qrexec_server/qrexec_start.S",
+      "type": "file",
+      "name": "qrexec_start.S",
+      "filePath": "userspace/qrexec_server/qrexec_start.S",
+      "summary": "code/s file, 18 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/qrexec_server/v2_main.c",
+      "type": "file",
+      "name": "v2_main.c",
+      "filePath": "userspace/qrexec_server/v2_main.c",
+      "summary": "code/c file, 402 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/sched_server/server.c",
+      "type": "file",
+      "name": "server.c",
+      "filePath": "userspace/sched_server/server.c",
+      "summary": "code/c file, 70 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/sh/shell.c",
+      "type": "file",
+      "name": "shell.c",
+      "filePath": "userspace/sh/shell.c",
+      "summary": "code/c file, 1017 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/user.ld",
+      "type": "file",
+      "name": "user.ld",
+      "filePath": "userspace/user.ld",
+      "summary": "code/ld file, 16 lines",
+      "tags": [
+        "code",
+        "ld"
+      ]
+    },
+    {
+      "id": "file:userspace/v2_user.ld",
+      "type": "file",
+      "name": "v2_user.ld",
+      "filePath": "userspace/v2_user.ld",
+      "summary": "code/ld file, 22 lines",
+      "tags": [
+        "code",
+        "ld"
+      ]
+    },
+    {
+      "id": "file:userspace/vault/rng_mix.h",
+      "type": "file",
+      "name": "rng_mix.h",
+      "filePath": "userspace/vault/rng_mix.h",
+      "summary": "code/c file, 17 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/vault/rng_scan.h",
+      "type": "file",
+      "name": "rng_scan.h",
+      "filePath": "userspace/vault/rng_scan.h",
+      "summary": "code/c file, 17 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/vault/v2_main.c",
+      "type": "file",
+      "name": "v2_main.c",
+      "filePath": "userspace/vault/v2_main.c",
+      "summary": "code/c file, 851 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    },
+    {
+      "id": "file:userspace/vault/vault_start.S",
+      "type": "file",
+      "name": "vault_start.S",
+      "filePath": "userspace/vault/vault_start.S",
+      "summary": "code/s file, 18 lines",
+      "tags": [
+        "code",
+        "s"
+      ]
+    },
+    {
+      "id": "file:userspace/vfs_server/server.c",
+      "type": "file",
+      "name": "server.c",
+      "filePath": "userspace/vfs_server/server.c",
+      "summary": "code/c file, 733 lines",
+      "tags": [
+        "code",
+        "c"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:kernel/elf.c",
+      "target": "file:kernel/caps.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/elf.c",
+      "target": "file:kernel/elf.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/elf.c",
+      "target": "file:kernel/ipc.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/initrd.c",
+      "target": "file:kernel/initrd.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/initrd_data.c",
+      "target": "file:kernel/initrd.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/kboot.c",
+      "target": "file:kernel/caps.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/kboot.c",
+      "target": "file:kernel/elf.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/kboot.c",
+      "target": "file:kernel/initrd.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/kboot.c",
+      "target": "file:kernel/ipc.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/kboot.c",
+      "target": "file:kernel/qube.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:kernel/kboot.c",
+      "target": "file:userspace/firewall/fw.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_aead.c",
+      "target": "file:userspace/crypt/aead.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_aead.c",
+      "target": "file:userspace/crypt/kdf.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_aead.c",
+      "target": "file:userspace/crypt/sha256.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_crypt.c",
+      "target": "file:userspace/crypt/aead.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_crypt.c",
+      "target": "file:userspace/crypt/kdf.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_crypt.c",
+      "target": "file:userspace/crypt/sha256.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_crypt.c",
+      "target": "file:userspace/cryptblk/layout.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_crypt.c",
+      "target": "file:userspace/cryptblk/slot.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_gui.c",
+      "target": "file:userspace/gui/pci.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_gui.c",
+      "target": "file:userspace/gui/rect.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_netfw.c",
+      "target": "file:userspace/firewall/fw.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_plic.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_plic.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_plic.c",
+      "target": "file:userspace/drivers/plic.c",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_power.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_power.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_power.c",
+      "target": "file:userspace/drivers/power.c",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_qargs.c",
+      "target": "file:kernel/qube.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_qlabels.c",
+      "target": "file:kernel/qube.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_qube_policy.c",
+      "target": "file:kernel/qube.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_rng.c",
+      "target": "file:userspace/vault/rng_mix.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_rng.c",
+      "target": "file:userspace/vault/rng_scan.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_rtc.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_rtc.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_rtc.c",
+      "target": "file:userspace/drivers/rtc.c",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_shell_vfs.c",
+      "target": "file:userspace/lib/moonlight.c",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_shell_vfs.c",
+      "target": "file:userspace/sh/shell.c",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_timer.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_timer.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_timer.c",
+      "target": "file:userspace/drivers/timer.c",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_uart.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_uart.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_uart.c",
+      "target": "file:userspace/drivers/uart.c",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_v2caps.c",
+      "target": "file:kernel/caps.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:tests/test_v2ipc.c",
+      "target": "file:kernel/ipc.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/abi/cap.h",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/abi/iommu.h",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/abi/iommu.h",
+      "target": "file:userspace/abi/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/abi/vspace.h",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/abi/vspace.h",
+      "target": "file:userspace/abi/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/cryptblk/v2_main.c",
+      "target": "file:kernel/qube.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/cryptblk/v2_main.c",
+      "target": "file:userspace/crypt/aead.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/cryptblk/v2_main.c",
+      "target": "file:userspace/crypt/kdf.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/cryptblk/v2_main.c",
+      "target": "file:userspace/cryptblk/layout.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/cryptblk/v2_main.c",
+      "target": "file:userspace/cryptblk/slot.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/block.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/block.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/block.c",
+      "target": "file:userspace/abi/iommu.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/block.c",
+      "target": "file:userspace/drivers/virtio_mmio.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/plic.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/plic.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/power.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/power.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/rtc.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/rtc.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/timer.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/timer.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/uart.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/uart.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/vga.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/vga.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/vga.c",
+      "target": "file:userspace/abi/vspace.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/virtio_mmio.h",
+      "target": "file:userspace/abi/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/virtio_net.c",
+      "target": "file:userspace/abi/cap.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/virtio_net.c",
+      "target": "file:userspace/abi/cheri.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/virtio_net.c",
+      "target": "file:userspace/abi/iommu.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/drivers/virtio_net.c",
+      "target": "file:userspace/drivers/virtio_mmio.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/example/cat.c",
+      "target": "file:userspace/lib/moonlight.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/example/ls.c",
+      "target": "file:userspace/lib/moonlight.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/firewall/v2_main.c",
+      "target": "file:kernel/qube.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/firewall/v2_main.c",
+      "target": "file:userspace/firewall/fw.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/gui/v2_main.c",
+      "target": "file:userspace/gui/pci.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/gui/v2_main.c",
+      "target": "file:userspace/gui/rect.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/lib/moonlight.c",
+      "target": "file:userspace/lib/moonlight.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/aio.h",
+      "target": "file:userspace/libc/include/signal.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/aio.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/assert.h",
+      "target": "file:userspace/libc/include/stdlib.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/byteswap.h",
+      "target": "file:userspace/libc/include/endian.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/byteswap.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/crypt.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/dirent.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/elf.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/endian.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/err.h",
+      "target": "file:userspace/libc/include/stdarg.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/execinfo.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/fcntl.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/fts.h",
+      "target": "file:userspace/libc/include/sys/stat.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/ftw.h",
+      "target": "file:userspace/libc/include/sys/stat.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/glob.h",
+      "target": "file:userspace/libc/include/dirent.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/glob.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/glob.h",
+      "target": "file:userspace/libc/include/sys/stat.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/grp.h",
+      "target": "file:userspace/libc/include/pwd.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/iconv.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/ifaddrs.h",
+      "target": "file:userspace/libc/include/sys/socket.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/inttypes.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/inttypes.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/malloc.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/monetary.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/monetary.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/mqueue.h",
+      "target": "file:userspace/libc/include/fcntl.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/mqueue.h",
+      "target": "file:userspace/libc/include/signal.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/mqueue.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/mqueue.h",
+      "target": "file:userspace/libc/include/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/ndbm.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/netdb.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/netdb.h",
+      "target": "file:userspace/libc/include/sys/socket.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/poll.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/poll.h",
+      "target": "file:userspace/libc/include/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/pthread.h",
+      "target": "file:userspace/libc/include/sched.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/pthread.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/pthread.h",
+      "target": "file:userspace/libc/include/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/pwd.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/regex.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/search.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/semaphore.h",
+      "target": "file:userspace/libc/include/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/setjmp.h",
+      "target": "file:userspace/libc/include/signal.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/shadow.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/shadow.h",
+      "target": "file:userspace/libc/include/stdio.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/signal.h",
+      "target": "file:userspace/libc/include/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/spawn.h",
+      "target": "file:userspace/libc/include/signal.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/spawn.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/stdatomic.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/stdbit.h",
+      "target": "file:userspace/libc/include/limits.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/stdbit.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/stdint.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/stdio.h",
+      "target": "file:userspace/libc/include/stdarg.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/stdio.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/stdio.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/stdlib.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/string.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/strings.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/stropts.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/sys/sem.h",
+      "target": "file:userspace/libc/include/sys/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/sys/shm.h",
+      "target": "file:userspace/libc/include/sys/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/sys/timeb.h",
+      "target": "file:userspace/libc/include/sys/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/sys/timerfd.h",
+      "target": "file:userspace/libc/include/sys/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/termios.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/tgmath.h",
+      "target": "file:userspace/libc/include/complex.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/tgmath.h",
+      "target": "file:userspace/libc/include/math.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/threads.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/threads.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/threads.h",
+      "target": "file:userspace/libc/include/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/time.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/uchar.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/uchar.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/uchar.h",
+      "target": "file:userspace/libc/include/wchar.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/ucontext.h",
+      "target": "file:userspace/libc/include/signal.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/unistd.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/unistd.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/unistd.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/utime.h",
+      "target": "file:userspace/libc/include/sys/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/utime.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/utime.h",
+      "target": "file:userspace/libc/include/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/utmpx.h",
+      "target": "file:userspace/libc/include/sys/types.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/utmpx.h",
+      "target": "file:userspace/libc/include/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/wchar.h",
+      "target": "file:userspace/libc/include/stdarg.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/wchar.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/wchar.h",
+      "target": "file:userspace/libc/include/stdint.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/wchar.h",
+      "target": "file:userspace/libc/include/stdio.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/wchar.h",
+      "target": "file:userspace/libc/include/time.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/wctype.h",
+      "target": "file:userspace/libc/include/wchar.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/libc/include/wordexp.h",
+      "target": "file:userspace/libc/include/stddef.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/net/v2_main.c",
+      "target": "file:kernel/qube.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/qrexec_server/v2_main.c",
+      "target": "file:kernel/qube.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/sh/shell.c",
+      "target": "file:userspace/lib/moonlight.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/vault/v2_main.c",
+      "target": "file:kernel/qube.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/vault/v2_main.c",
+      "target": "file:userspace/crypt/kdf.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/vault/v2_main.c",
+      "target": "file:userspace/cryptblk/slot.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/vault/v2_main.c",
+      "target": "file:userspace/vault/rng_mix.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/vault/v2_main.c",
+      "target": "file:userspace/vault/rng_scan.h",
+      "type": "imports"
+    },
+    {
+      "source": "file:userspace/vfs_server/server.c",
+      "target": "file:userspace/abi/types.h",
+      "type": "imports"
+    }
+  ],
+  "layers": [
+    {
+      "id": "layer:kernel",
+      "name": "S-mode microkernel",
+      "description": "kboot.c Sv39/stvec/SBI/scheduler/IPC/caps, trap.S/start.S, elf.c, ipc.h/caps.h/qube.h",
+      "nodeIds": [
+        "config:kernel/Makefile",
+        "file:kernel/caps.h",
+        "file:kernel/elf.c",
+        "file:kernel/elf.h",
+        "file:kernel/initrd.c",
+        "file:kernel/initrd.h",
+        "file:kernel/initrd_data.c",
+        "file:kernel/ipc.h",
+        "file:kernel/kboot.c",
+        "file:kernel/linker.ld",
+        "file:kernel/qube.h",
+        "file:kernel/start.S",
+        "file:kernel/trap.S",
+        "file:kernel/user.c"
+      ]
+    },
+    {
+      "id": "layer:userspace-servers",
+      "name": "Userspace servers + ABI",
+      "description": "Frozen v1 ABI headers, moonlight lib, mem/sched/vfs servers, shell, adminvm/qrexec/firewall/net/vault/cryptblk/gui",
+      "nodeIds": [
+        "file:userspace/abi/cap.h",
+        "file:userspace/abi/cheri.h",
+        "file:userspace/abi/iommu.h",
+        "file:userspace/abi/linux_abi.h",
+        "file:userspace/abi/types.h",
+        "file:userspace/abi/vspace.h",
+        "file:userspace/adminvm/v2_main.c",
+        "file:userspace/cryptblk/v2_main.c",
+        "file:userspace/firewall/v2_main.c",
+        "file:userspace/gui/v2_main.c",
+        "file:userspace/lib/moonlight.c",
+        "file:userspace/lib/moonlight.h",
+        "file:userspace/lib/start.S",
+        "file:userspace/lib/v2_start.S",
+        "file:userspace/mem_server/server.c",
+        "file:userspace/mem_server/v2_main.c",
+        "file:userspace/net/v2_main.c",
+        "file:userspace/qrexec_server/qrexec_start.S",
+        "file:userspace/qrexec_server/v2_main.c",
+        "file:userspace/sched_server/server.c",
+        "file:userspace/sh/shell.c",
+        "file:userspace/vault/v2_main.c",
+        "file:userspace/vfs_server/server.c"
+      ]
+    },
+    {
+      "id": "layer:drivers-libc",
+      "name": "Drivers + libc",
+      "description": "Driver compartments (uart/plic/timer/rtc/power/block/vga/virtio_net) and freestanding rv64 libc (~62 src files) + examples",
+      "nodeIds": [
+        "file:userspace/drivers/block.c",
+        "file:userspace/drivers/plic.c",
+        "file:userspace/drivers/power.c",
+        "file:userspace/drivers/rtc.c",
+        "file:userspace/drivers/timer.c",
+        "file:userspace/drivers/uart.c",
+        "file:userspace/drivers/vga.c",
+        "file:userspace/drivers/virtio_mmio.h",
+        "file:userspace/drivers/virtio_net.c",
+        "file:userspace/example/cat.c",
+        "file:userspace/example/hello.c",
+        "file:userspace/example/linux_demo.c",
+        "file:userspace/example/ls.c",
+        "file:userspace/libc/SRCS",
+        "file:userspace/libc/include/aio.h",
+        "file:userspace/libc/include/ar.h",
+        "file:userspace/libc/include/arpa/inet.h",
+        "file:userspace/libc/include/assert.h",
+        "file:userspace/libc/include/bits/ml_fd.h",
+        "file:userspace/libc/include/bits/ml_sys.h",
+        "file:userspace/libc/include/byteswap.h",
+        "file:userspace/libc/include/complex.h",
+        "file:userspace/libc/include/cpio.h",
+        "file:userspace/libc/include/crypt.h",
+        "file:userspace/libc/include/ctype.h",
+        "file:userspace/libc/include/dirent.h",
+        "file:userspace/libc/include/dlfcn.h",
+        "file:userspace/libc/include/elf.h",
+        "file:userspace/libc/include/endian.h",
+        "file:userspace/libc/include/err.h",
+        "file:userspace/libc/include/errno.h",
+        "file:userspace/libc/include/execinfo.h",
+        "file:userspace/libc/include/fcntl.h",
+        "file:userspace/libc/include/fenv.h",
+        "file:userspace/libc/include/float.h",
+        "file:userspace/libc/include/fmtmsg.h",
+        "file:userspace/libc/include/fnmatch.h",
+        "file:userspace/libc/include/fts.h",
+        "file:userspace/libc/include/ftw.h",
+        "file:userspace/libc/include/getopt.h",
+        "file:userspace/libc/include/glob.h",
+        "file:userspace/libc/include/grp.h",
+        "file:userspace/libc/include/iconv.h",
+        "file:userspace/libc/include/ifaddrs.h",
+        "file:userspace/libc/include/inttypes.h",
+        "file:userspace/libc/include/iso646.h",
+        "file:userspace/libc/include/langinfo.h",
+        "file:userspace/libc/include/libgen.h",
+        "file:userspace/libc/include/limits.h",
+        "file:userspace/libc/include/locale.h",
+        "file:userspace/libc/include/malloc.h",
+        "file:userspace/libc/include/math.h",
+        "file:userspace/libc/include/monetary.h",
+        "file:userspace/libc/include/mqueue.h",
+        "file:userspace/libc/include/ndbm.h",
+        "file:userspace/libc/include/net/ethernet.h",
+        "file:userspace/libc/include/net/if.h",
+        "file:userspace/libc/include/net/if_arp.h",
+        "file:userspace/libc/include/net/route.h",
+        "file:userspace/libc/include/netdb.h",
+        "file:userspace/libc/include/netinet/ether.h",
+        "file:userspace/libc/include/netinet/if_ether.h",
+        "file:userspace/libc/include/netinet/in.h",
+        "file:userspace/libc/include/netinet/ip.h",
+        "file:userspace/libc/include/netinet/ip_icmp.h",
+        "file:userspace/libc/include/netinet/tcp.h",
+        "file:userspace/libc/include/netinet/udp.h",
+        "file:userspace/libc/include/nl_types.h",
+        "file:userspace/libc/include/paths.h",
+        "file:userspace/libc/include/poll.h",
+        "file:userspace/libc/include/pthread.h",
+        "file:userspace/libc/include/pwd.h",
+        "file:userspace/libc/include/regex.h",
+        "file:userspace/libc/include/sched.h",
+        "file:userspace/libc/include/search.h",
+        "file:userspace/libc/include/semaphore.h",
+        "file:userspace/libc/include/setjmp.h",
+        "file:userspace/libc/include/shadow.h",
+        "file:userspace/libc/include/signal.h",
+        "file:userspace/libc/include/spawn.h",
+        "file:userspace/libc/include/stdalign.h",
+        "file:userspace/libc/include/stdarg.h",
+        "file:userspace/libc/include/stdatomic.h",
+        "file:userspace/libc/include/stdbit.h",
+        "file:userspace/libc/include/stdbool.h",
+        "file:userspace/libc/include/stdckdint.h",
+        "file:userspace/libc/include/stddef.h",
+        "file:userspace/libc/include/stdint.h",
+        "file:userspace/libc/include/stdio.h",
+        "file:userspace/libc/include/stdlib.h",
+        "file:userspace/libc/include/stdnoreturn.h",
+        "file:userspace/libc/include/string.h",
+        "file:userspace/libc/include/strings.h",
+        "file:userspace/libc/include/stropts.h",
+        "file:userspace/libc/include/sys/auxv.h",
+        "file:userspace/libc/include/sys/dir.h",
+        "file:userspace/libc/include/sys/epoll.h",
+        "file:userspace/libc/include/sys/eventfd.h",
+        "file:userspace/libc/include/sys/file.h",
+        "file:userspace/libc/include/sys/inotify.h",
+        "file:userspace/libc/include/sys/ioctl.h",
+        "file:userspace/libc/include/sys/ipc.h",
+        "file:userspace/libc/include/sys/mman.h",
+        "file:userspace/libc/include/sys/msg.h",
+        "file:userspace/libc/include/sys/param.h",
+        "file:userspace/libc/include/sys/personality.h",
+        "file:userspace/libc/include/sys/prctl.h",
+        "file:userspace/libc/include/sys/queue.h",
+        "file:userspace/libc/include/sys/random.h",
+        "file:userspace/libc/include/sys/resource.h",
+        "file:userspace/libc/include/sys/select.h",
+        "file:userspace/libc/include/sys/sem.h",
+        "file:userspace/libc/include/sys/sendfile.h",
+        "file:userspace/libc/include/sys/shm.h",
+        "file:userspace/libc/include/sys/signalfd.h",
+        "file:userspace/libc/include/sys/socket.h",
+        "file:userspace/libc/include/sys/stat.h",
+        "file:userspace/libc/include/sys/statfs.h",
+        "file:userspace/libc/include/sys/statvfs.h",
+        "file:userspace/libc/include/sys/syscall.h",
+        "file:userspace/libc/include/sys/sysinfo.h",
+        "file:userspace/libc/include/sys/time.h",
+        "file:userspace/libc/include/sys/timeb.h",
+        "file:userspace/libc/include/sys/timerfd.h",
+        "file:userspace/libc/include/sys/times.h",
+        "file:userspace/libc/include/sys/types.h",
+        "file:userspace/libc/include/sys/uio.h",
+        "file:userspace/libc/include/sys/un.h",
+        "file:userspace/libc/include/sys/utsname.h",
+        "file:userspace/libc/include/sys/vfs.h",
+        "file:userspace/libc/include/sys/wait.h",
+        "file:userspace/libc/include/sysexits.h",
+        "file:userspace/libc/include/syslog.h",
+        "file:userspace/libc/include/tar.h",
+        "file:userspace/libc/include/termios.h",
+        "file:userspace/libc/include/tgmath.h",
+        "file:userspace/libc/include/threads.h",
+        "file:userspace/libc/include/time.h",
+        "file:userspace/libc/include/uchar.h",
+        "file:userspace/libc/include/ucontext.h",
+        "file:userspace/libc/include/ulimit.h",
+        "file:userspace/libc/include/unistd.h",
+        "file:userspace/libc/include/utime.h",
+        "file:userspace/libc/include/utmpx.h",
+        "file:userspace/libc/include/wchar.h",
+        "file:userspace/libc/include/wctype.h",
+        "file:userspace/libc/include/wordexp.h",
+        "file:userspace/libc/src/aio.c",
+        "file:userspace/libc/src/complex.c",
+        "file:userspace/libc/src/crypt.c",
+        "file:userspace/libc/src/ctype.c",
+        "file:userspace/libc/src/dir.c",
+        "file:userspace/libc/src/dlfcn.c",
+        "file:userspace/libc/src/env.c",
+        "file:userspace/libc/src/err.c",
+        "file:userspace/libc/src/errno.c",
+        "file:userspace/libc/src/ether.c",
+        "file:userspace/libc/src/execinfo.c",
+        "file:userspace/libc/src/fcntl.c",
+        "file:userspace/libc/src/fenv.c",
+        "file:userspace/libc/src/file.c",
+        "file:userspace/libc/src/fmtmsg.c",
+        "file:userspace/libc/src/fts.c",
+        "file:userspace/libc/src/getopt.c",
+        "file:userspace/libc/src/glob.c",
+        "file:userspace/libc/src/iconv.c",
+        "file:userspace/libc/src/inet.c",
+        "file:userspace/libc/src/langinfo.c",
+        "file:userspace/libc/src/libgen.c",
+        "file:userspace/libc/src/locale.c",
+        "file:userspace/libc/src/math.c",
+        "file:userspace/libc/src/monetary.c",
+        "file:userspace/libc/src/mqueue.c",
+        "file:userspace/libc/src/ndbm.c",
+        "file:userspace/libc/src/netif.c",
+        "file:userspace/libc/src/nltypes.c",
+        "file:userspace/libc/src/poll.c",
+        "file:userspace/libc/src/popen.c",
+        "file:userspace/libc/src/proc.c",
+        "file:userspace/libc/src/pthread.c",
+        "file:userspace/libc/src/ptimer.c",
+        "file:userspace/libc/src/pwdgrp.c",
+        "file:userspace/libc/src/random.c",
+        "file:userspace/libc/src/regex.c",
+        "file:userspace/libc/src/resource.c",
+        "file:userspace/libc/src/scanf.c",
+        "file:userspace/libc/src/sched.c",
+        "file:userspace/libc/src/search.c",
+        "file:userspace/libc/src/sem.c",
+        "file:userspace/libc/src/sendfile.c",
+        "file:userspace/libc/src/setjmp.S",
+        "file:userspace/libc/src/shadow.c",
+        "file:userspace/libc/src/signal.c",
+        "file:userspace/libc/src/sock.c",
+        "file:userspace/libc/src/softfloat.c",
+        "file:userspace/libc/src/spawn.c",
+        "file:userspace/libc/src/statvfs.c",
+        "file:userspace/libc/src/stdio.c",
+        "file:userspace/libc/src/stdlib.c",
+        "file:userspace/libc/src/string.c",
+        "file:userspace/libc/src/strings.c",
+        "file:userspace/libc/src/stropts.c",
+        "file:userspace/libc/src/syscall.c",
+        "file:userspace/libc/src/sysevent.c",
+        "file:userspace/libc/src/syslog.c",
+        "file:userspace/libc/src/sysstat.c",
+        "file:userspace/libc/src/sysvipc.c",
+        "file:userspace/libc/src/termios.c",
+        "file:userspace/libc/src/threads.c",
+        "file:userspace/libc/src/time.c",
+        "file:userspace/libc/src/ucontext.c",
+        "file:userspace/libc/src/unistd.c",
+        "file:userspace/libc/src/utime.c",
+        "file:userspace/libc/src/utmpx.c",
+        "file:userspace/libc/src/wchar.c",
+        "file:userspace/libc/src/wctype.c",
+        "file:userspace/libc/start.S"
+      ]
+    },
+    {
+      "id": "layer:verification",
+      "name": "Tests + verification",
+      "description": "30 host-sim tests, tools/verify.sh 4 stages, run_qemu.sh smoke, Makefiles, CI workflows",
+      "nodeIds": [
+        "config:.github/workflows/cheri.yml",
+        "config:.github/workflows/verify.yml",
+        "config:kernel/Makefile",
+        "file:tests/bench_ipc.c",
+        "file:tests/fuzz_syscall.c",
+        "file:tests/host_console_shim.c",
+        "file:tests/host_emul.c",
+        "file:tests/stub_globals.c",
+        "file:tests/test_abi.c",
+        "file:tests/test_aead.c",
+        "file:tests/test_batch4.c",
+        "file:tests/test_batch5.c",
+        "file:tests/test_batch6.c",
+        "file:tests/test_crypt.c",
+        "file:tests/test_gui.c",
+        "file:tests/test_libc.c",
+        "file:tests/test_netfw.c",
+        "file:tests/test_newlibc.c",
+        "file:tests/test_plic.c",
+        "file:tests/test_power.c",
+        "file:tests/test_qargs.c",
+        "file:tests/test_qlabels.c",
+        "file:tests/test_qube_policy.c",
+        "file:tests/test_rng.c",
+        "file:tests/test_rtc.c",
+        "file:tests/test_sched_server.c",
+        "file:tests/test_shell.c",
+        "file:tests/test_shell_vfs.c",
+        "file:tests/test_timer.c",
+        "file:tests/test_uart.c",
+        "file:tests/test_v2caps.c",
+        "file:tests/test_v2ipc.c",
+        "file:tests/test_vfs.c",
+        "file:tools/attest.py",
+        "resource:tools/build_qemu.sh",
+        "resource:tools/mkinitrd.sh",
+        "resource:tools/run_qemu.sh",
+        "resource:tools/verify.sh",
+        "config:userspace/Makefile"
+      ]
+    },
+    {
+      "id": "layer:spec-proof",
+      "name": "Spec + proofs + docs",
+      "description": "V2_DESIGN live spec, ARCHITECTURE/BUILD, Isabelle V2_A-D + Qubes_A-D (390 lemmas, 0 axioms), historical v1 docs quarantined",
+      "nodeIds": [
+        "document:CODE_REVIEW_ANALYSIS.md",
+        "document:CRYPTO_HARDENING.md",
+        "document:PLAN.md",
+        "document:README.md",
+        "document:REFACTORING_APPLIED.md",
+        "document:TROUBLESHOOTING.md",
+        "document:docs/ARCHITECTURE.md",
+        "document:docs/BUILD.md",
+        "document:docs/CAPABILITIES.md",
+        "document:docs/LINUX.md",
+        "document:docs/PRODUCTION.md",
+        "document:docs/QUBES_ISOLATION_PLAN.md",
+        "document:docs/REPRODUCIBLE.md",
+        "document:docs/SECURITY.md",
+        "document:docs/SYSCALLS.md",
+        "document:docs/THREAT_MODEL.md",
+        "document:docs/USAGE.md",
+        "document:docs/V2_DESIGN.md",
+        "document:docs/superpowers/plans/2026-09-14-v2-stage3-capabilities-memory.md",
+        "document:docs/superpowers/plans/2026-09-15-v2-stage4-hardening-realimpl.md",
+        "document:docs/superpowers/plans/2026-09-15-v2-stage5-elf-process.md",
+        "document:docs/superpowers/plans/2026-09-19-qubes-s1-s2.md",
+        "document:docs/superpowers/plans/2026-09-19-qubes-s3-net-firewall.md",
+        "document:docs/superpowers/plans/2026-09-21-fde-encrypted-files.md",
+        "document:docs/superpowers/plans/2026-09-24-live-qrexec-traffic.md",
+        "document:docs/superpowers/plans/2026-09-25-audit-lifecycle-gaps.md",
+        "document:docs/superpowers/plans/2026-09-25-s4a-gui-bringup.md",
+        "document:docs/superpowers/plans/2026-09-28-rng-harden-demos.md",
+        "document:docs/superpowers/plans/2026-10-01-shell-harness.md",
+        "document:docs/superpowers/specs/2026-09-14-v2-stage3-capabilities-memory-design.md",
+        "document:docs/superpowers/specs/2026-09-19-qubes-s1-s2-design.md",
+        "document:docs/superpowers/specs/2026-09-19-qubes-s3-net-firewall-design.md",
+        "document:docs/superpowers/specs/2026-09-21-fde-encrypted-files-design.md",
+        "document:docs/superpowers/specs/2026-09-24-live-qrexec-traffic-design.md",
+        "document:docs/superpowers/specs/2026-09-25-audit-lifecycle-gaps-design.md",
+        "document:docs/superpowers/specs/2026-09-25-s4a-gui-bringup-design.md",
+        "document:docs/superpowers/specs/2026-09-28-rng-harden-demos-design.md",
+        "document:docs/superpowers/specs/2026-10-01-shell-harness-design.md",
+        "file:kernel/isabelle/Qubes_A.thy",
+        "file:kernel/isabelle/Qubes_B.thy",
+        "file:kernel/isabelle/Qubes_C.thy",
+        "file:kernel/isabelle/Qubes_D.thy",
+        "file:kernel/isabelle/ROOT",
+        "file:kernel/isabelle/V2_A.thy",
+        "file:kernel/isabelle/V2_B.thy",
+        "file:kernel/isabelle/V2_C.thy",
+        "file:kernel/isabelle/V2_D.thy"
+      ]
+    }
+  ],
+  "tour": [
+    {
+      "order": 1,
+      "title": "Start: README + V2_DESIGN",
+      "description": "Boot model (OpenSBI->S-mode kernel->U-mode ping-pong), BUILT markers in V2_DESIGN section 9",
+      "nodeIds": [
+        "document:README.md",
+        "document:docs/V2_DESIGN.md"
+      ]
+    },
+    {
+      "order": 2,
+      "title": "Kernel entry + memory",
+      "description": "start.S hart0-only, kboot.c Sv39 U-bit tables, satp, SBI console/timer, linker.ld layout gate",
+      "nodeIds": [
+        "file:kernel/start.S",
+        "file:kernel/kboot.c",
+        "file:kernel/linker.ld"
+      ]
+    },
+    {
+      "order": 3,
+      "title": "Traps + scheduler + IPC",
+      "description": "trap.S u_enter/sret, pick_next lowest-Runnable, SEND/RECV/NOTIFY/WAIT rendezvous, fault containment",
+      "nodeIds": [
+        "file:kernel/trap.S",
+        "file:kernel/ipc.h",
+        "file:kernel/user.c"
+      ]
+    },
+    {
+      "order": 4,
+      "title": "Caps + ELF + Qubes policy",
+      "description": "caps.h 40 frames/32 slots, elf.c W^X checks, qube.h labels, qrexec/AdminVM/firewall/net/vault/cryptblk/gui chain",
+      "nodeIds": [
+        "file:kernel/caps.h",
+        "file:kernel/elf.c",
+        "file:kernel/qube.h"
+      ]
+    },
+    {
+      "order": 5,
+      "title": "Userspace + verification",
+      "description": "ABI headers, servers, drivers, libc, tests host-sim, verify.sh 4 stages, QEMU smoke markers",
+      "nodeIds": [
+        "file:userspace/abi/types.h",
+        "file:userspace/sched_server/server.c",
+        "file:userspace/vfs_server/server.c"
+      ]
+    }
+  ]
+}

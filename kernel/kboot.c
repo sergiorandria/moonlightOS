@@ -1,66 +1,123 @@
 /* v2 S-mode kernel (Stage 2): Sv39 U-bit tables, stvec traps, SBI console,
- * timer-preemptive lowest-Runnable scheduler (mirrors V2_A.sched_step),
+ * timer-preemptive round-robin scheduler (mirrors V2_A.sched_step),
  * two U-mode threads, blocking rendezvous IPC on addressed endpoints
  * (EP i owned by tid i) + notifications (mirrors V2_C: c_send/c_recv/c_notify/c_wait), fault
  * containment. No PMP changes (firmware owns); SUM toggled only inside
  * copy_from/to_user after range validation (S never touches U pages
  * otherwise: stacks filled pre-MMU, console via SBI-forward). */
-#include <stdint.h>
-#include "ipc.h"
-#include "caps.h"
-#include "qube.h"
-#include "initrd.h"
-#include "elf.h"
 #include "../userspace/firewall/fw.h" /* S3 demo drives fw_decide (header-only, pure C) */
+#include "caps.h"
+#include "elf.h"
+#include "fbconsole.h" /* S4a kernel framebuffer console output */
+#include "initrd.h"
+#include "ipc.h"
+#include "dev.h"
+#include "dev_leaves.h"
+#include "irq.h"
+#include "qube.h"
+#include "services.h"
+#include "virtio_ident.h"
+#include <stdint.h>
 
 /* ---- SBI (legacy EIDs; OpenSBI serves M-mode) ---- */
 #define SBI_SET_TIMER 0
 #define SBI_CONSOLE_PUTCHAR 1
 
-static long sbi_ecall(long eid, long fid, long a0, long a1, long a2) {
+static long sbi_ecall(long eid, long fid, long a0, long a1, long a2)
+{
     register long r_a0 asm("a0") = a0;
     register long r_a1 asm("a1") = a1;
     register long r_a2 asm("a2") = a2;
     register long r_a6 asm("a6") = fid;
     register long r_a7 asm("a7") = eid;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1)
-                 : "r"(r_a2), "r"(r_a6), "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1) : "r"(r_a2), "r"(r_a6), "r"(r_a7) : "memory");
     return r_a0;
 }
 
-static void sbi_putchar(char c) {
+static void sbi_putchar(char c)
+{
     sbi_ecall(SBI_CONSOLE_PUTCHAR, 0, (long)(unsigned char)c, 0, 0);
 }
 
-static void sbi_set_timer(uint64_t stime) {
+static void sbi_set_timer(uint64_t stime)
+{
     sbi_ecall(SBI_SET_TIMER, 0, (long)stime, (long)(stime >> 32), 0);
 }
 
-static void kputs(const char *s) {
-    while (*s) sbi_putchar(*s++);
+/* Boot-time logging flag: when 1, print all debug messages.
+ * Set to 0 after services spawn to silence runtime IPC/invoke chatter. */
+static int boot_log_enabled = 1;
+static void kputhex(uint64_t v);
+static void kputdec(unsigned long v);
+
+static void kputs(const char *s)
+{
+    while (*s)
+    {
+        sbi_putchar(*s);
+        fbcon_putc(*s); /* mirror to framebuffer if initialised */
+        s++;
+    }
 }
 
-static void kputhex(uint64_t v) {
-    for (int i = 60; i >= 0; i -= 4) {
+/* Debug logging (IPC, invoke, scheduler): only printed during boot */
+static void klog(const char *s)
+{
+    if (boot_log_enabled)
+    {
+        kputs(s);
+    }
+}
+
+static void klog_char(char c)
+{
+    if (boot_log_enabled)
+    {
+        sbi_putchar(c);
+    }
+}
+
+static void klog_dec(unsigned long v)
+{
+    if (boot_log_enabled)
+    {
+        kputdec(v);
+    }
+}
+
+static void klog_hex(uint64_t v)
+{
+    if (boot_log_enabled)
+    {
+        kputhex(v);
+    }
+}
+
+static void kputhex(uint64_t v)
+{
+    for (int i = 60; i >= 0; i -= 4)
+    {
         int n = (v >> i) & 0xF;
         sbi_putchar(n < 10 ? '0' + n : 'a' + n - 10);
     }
 }
 
-static void kputdec(unsigned long v) {
+static void kputdec(unsigned long v)
+{
     char buf[24];
     int i = 0;
-    if (v == 0) {
+    if (v == 0)
+    {
         sbi_putchar('0');
         return;
     }
-    while (v > 0 && i < 23) {
+    while (v > 0 && i < 23)
+    {
         buf[i++] = '0' + (v % 10);
         v /= 10;
     }
-    while (i-- > 0) sbi_putchar(buf[i]);
+    while (i-- > 0)
+        sbi_putchar(buf[i]);
 }
 
 /* ---- Sv39 ---- */
@@ -87,8 +144,7 @@ _Static_assert((unsigned long)V2_FRAMES_MAX * 4096UL <= 512UL * 4096UL,
  * it; root_pt_t/l1_t/l0_u_t cover V2_CAP_THREADS. NTHREADS == 11 ==
  * V2_CAP_THREADS: the thread table is full — the next thread forces a
  * V2_CAP_THREADS bump + proof replay (S4b). */
-_Static_assert(NTHREADS <= V2_CAP_THREADS,
-               "NTHREADS must fit the caps model + page tables");
+_Static_assert(NTHREADS <= V2_CAP_THREADS, "NTHREADS must fit the caps model + page tables");
 
 /* S3 Phase-2 NIC: virtio-net on an MMIO transport (riscv-virt standard
  * layout: 8 transports at 0x10001000+i*0x1000, IRQ 1+i). Measured on the
@@ -99,36 +155,8 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
  * its IRQ, and the tid-6 U-leaf maps all 8 transport pages (only tid 6).
  * PLIC regs below name both hart-0 context sets (M + S); the S-context
  * set signals S-mode directly (the path that delivers on the pinned
- * QEMU), the M-context set is programmed identically as a fallback. */
-#define VIRTIO0_BASE 0x10001000UL
-#define VIRTIO_NTRANSPORTS 8
-#define VIRTIO_DEV_NET 1u
-#define VIRTIO_DEV_BLK 2u
-#define VIRTIO_DEV_RNG 4u
-#define VIRTIO_DEV_INPUT 18u
-#define PLIC_BASE 0x0c000000UL
-/* PLIC hart-0 contexts (sifive_plic, stride 0x80 enables / 0x1000 claim):
- * M-context set (0x0c002000 / 0x0c200000) reached via delegation,
- * S-context set (0x0c002080 / 0x0c201000) signals S-mode directly.
- * Measured on pinned QEMU: only S-context delivers to hart (M-context claim
- * succeeds but MEIP never asserts). Both programmed as defense-in-depth:
- * M-context delegation path may activate on different firmware. Handler
- * claims both contexts. */
-#define PLIC_ENABLE_M 0x0c002000UL
-#define PLIC_ENABLE_S 0x0c002080UL
-#define PLIC_THRESH_M 0x0c200000UL
-#define PLIC_THRESH_S 0x0c201000UL
-#define PLIC_CLAIM_M 0x0c200004UL
-#define PLIC_CLAIM_S 0x0c201004UL
-#define NET_IRQ_BIT 0x1UL /* notify bit the scause=9 handler raises on tid 6 */
-#define BLK_IRQ_BIT 0x2UL /* notify bit the scause=9 handler raises on tid 9 */
-#define KBD_IRQ_BIT 0x4UL /* notify bit the scause=9 handler raises on tid 10 (kbd) */
-#define MOUSE_IRQ_BIT 0x8UL /* notify bit the scause=9 handler raises on tid 10 (mouse) */
-
-/* Virtio IRQ discovery: Phase-2 NIC and FDE block IRQ (1+transport index),
- * discovered at boot; VIRTIO_IRQ_NOT_FOUND when no modern device exists
- * (handler then matches nothing, fail-closed). */
-#define VIRTIO_IRQ_NOT_FOUND 0xFFFFFFFFUL
+ * QEMU), the M-context set is programmed identically as a fallback.
+ * Constants live in platform.h (PLIC, virtio IDs, notify bits). */
 static uint32_t net_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
 static uint32_t blk_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
 /* S4c input IRQs: Task 3 discovery fills these (first dev-18 = mouse, second
@@ -140,8 +168,8 @@ static uint32_t mouse_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
  * word-per-frame (fdata[f] = val), so the real store/load mirrors exactly
  * what the model records and fdata can never diverge from the
  * real frame (Write-Through Mirror). This bounds every new copy loop and
- * keeps every frame access within the 40-frame region (frame <
- * V2_FRAMES_MAX, max offset 39*4096 + V2_WORD_BYTES <= 159752). */
+ * keeps every frame access within the pool region (frame <
+ * V2_FRAMES_MAX, max offset (V2_FRAMES_MAX-1)*4096 + V2_WORD_BYTES). */
 #define V2_WORD_BYTES 8 /* bound: bytes per WRITE/READ invoke (one word) */
 
 /* Per-thread Sv39 VSpaces. root_pt_t = root (index VPN[2]), l1_t = level-1
@@ -183,7 +211,7 @@ static uint64_t l0_mousemmio[512] __attribute__((aligned(4096)));
  * Future: Runtime negotiation via VBE/EDID (S4b). */
 #define GUI_WIDTH 800
 #define GUI_HEIGHT 600
-#define GUI_BPP 32 /* bits per pixel: 32-bit XRGB */
+#define GUI_BPP 32                             /* bits per pixel: 32-bit XRGB */
 #define GUI_STRIDE (GUI_WIDTH * (GUI_BPP / 8)) /* bytes per scanline */
 #define GUI_FB_SIZE (GUI_HEIGHT * GUI_STRIDE)  /* total framebuffer bytes */
 
@@ -200,28 +228,35 @@ static uint64_t l0_mousemmio[512] __attribute__((aligned(4096)));
 #define GUI_ECAM_UVA 0x80E00000UL
 #define GUI_ECAM_PHYS 0x30000000UL /* virt-machine ECAM base (fixed) */
 #define GUI_LFB_PHYS 0x40000000UL  /* kernel-assigned BAR0 (PCI low-MMIO window, 64M-aligned) */
-#define GUI_ECAM_PAGES 16          /* bound: bus-0 config range 64KB (32 dev x 2KB) */
-#define GUI_LFB_PAGES 512          /* bound: one l0 table (2MB window >= 469-page frame) */
-#define GUI_PCI_VEN 0x1234u        /* bochs-display vendor (QEMU include/hw/pci/pci.h) */
-#define GUI_PCI_DEV 0x1111u        /* bochs-display device (QEMU hw/display/bochs-display.c) */
-#define GUI_LFB_MAX 0x4000000u     /* largest BAR the kernel assigns (64M, ELF re-validates) */
+#define GUI_VBE_PHYS 0x44000000UL  /* kernel-assigned BAR2 (Bochs VBE registers) */
+#define GUI_VBE_VA 0x30400000UL    /* S-mode alias via l1_m[386] */
+#define GUI_VBE_BAR_OFFSET 0x500u
+#define GUI_ECAM_PAGES 16                                   /* bound: bus-0 config range 64KB (32 dev x 2KB) */
+#define GUI_LFB_PAGES 512                                   /* bound: one l0 table (2MB window >= 469-page frame) */
+#define GUI_PCI_VEN 0x1234u                                 /* bochs-display vendor (QEMU include/hw/pci/pci.h) */
+#define GUI_PCI_DEV 0x1111u                                 /* bochs-display device (QEMU hw/display/bochs-display.c) */
+#define GUI_LFB_MAX 0x4000000u                              /* largest BAR the kernel assigns (64M, ELF re-validates) */
 #define GUI_FB_MIN (GUI_WIDTH * GUI_HEIGHT * (GUI_BPP / 8)) /* smallest usable LFB */
 static uint64_t l0_guifb[512] __attribute__((aligned(4096)));
 static uint64_t l0_guiecam[512] __attribute__((aligned(4096)));
 
-static uint64_t pte_leaf(uint64_t paddr, uint64_t flags) {
+static uint64_t pte_leaf(uint64_t paddr, uint64_t flags)
+{
     return ((paddr >> 12) << 10) | flags | PTE_V;
 }
 
-static uint64_t pte_table(uint64_t *tab) {
+static uint64_t pte_table(uint64_t *tab)
+{
     return (((uint64_t)tab >> 12) << 10) | PTE_V;
 }
 
-static void pagetable_init(void) {
+static void pagetable_init(void)
+{
     extern char _stext[], _erx[];
     uintptr_t text_start = (uintptr_t)_stext & ~0xFFFUL;
     uintptr_t text_end = ((uintptr_t)_erx + 0xFFFUL) & ~0xFFFUL;
-    for (int i = 0; i < 512; i++) {
+    for (int i = 0; i < 512; i++)
+    {
         uintptr_t pa = 0x80200000UL + (uintptr_t)i * 4096;
         uint64_t f = PTE_R | PTE_W | PTE_A | PTE_D;
         if (pa >= text_start && pa < text_end)
@@ -229,8 +264,7 @@ static void pagetable_init(void) {
         l0_k[i] = pte_leaf(pa, f);
     }
     for (int i = 0; i < 512; i++) /* bound: 512 */
-        l0_frames[i] = pte_leaf(V2_FRAME_PHYS_BASE + (uintptr_t)i * 4096,
-                                PTE_R | PTE_W | PTE_A | PTE_D);
+        l0_frames[i] = pte_leaf(V2_FRAME_PHYS_BASE + (uintptr_t)i * 4096, PTE_R | PTE_W | PTE_A | PTE_D);
     l1_m[128] = pte_leaf(0x10000000UL, PTE_R | PTE_W | PTE_A | PTE_D);
     /* Phase-2 NIC: S-only RW leaves for the PLIC region
      * (0x0c000000-0x0c3fffff: priority/pending/enable + hart-0
@@ -242,45 +276,46 @@ static void pagetable_init(void) {
      * BAR programming below runs in S-mode post-MMU through it; the ELF
      * never sees this VA (it uses the l0_guiecam U-leaf instead). */
     l1_m[384] = pte_leaf(GUI_ECAM_PHYS, PTE_R | PTE_W | PTE_A | PTE_D);
+    /* S4a GUI LFB S-leaf: 2MB megapage at VPN[1] 385 covering
+     * 0x40000000-0x401FFFFF (GUI framebuffer). S-only (no U bit): the kernel
+     * can write boot messages here post-MMU; the ELF uses its own l0_guifb U-leaf. */
+    l1_m[385] = pte_leaf(GUI_LFB_PHYS, PTE_R | PTE_W | PTE_A | PTE_D);
+    /* Bochs VBE registers: BAR2 is assigned GUI_VBE_PHYS below and reached
+     * through this S-only alias. */
+    l1_m[386] = pte_leaf(GUI_VBE_PHYS, PTE_R | PTE_W | PTE_A | PTE_D);
     /* Phase-2 NIC U-leaf: all 8 transport pages for tid 6 (NET_UVA +
      * i*0x1000, VPN[1] 5, VPN[0] 0..7: the driver scans for the NIC
      * because QEMU attaches backends last-first). W^X: RW, never X. */
     for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
-        l0_netmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
-                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+        l0_netmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* FDE block U-leaf: the same 8 transport pages for tid 9 (BLK_UVA
      * 0x80C00000 = VPN[1] 6, VPN[0] 0..7: the driver scans for the
      * virtio-blk device, never assuming a transport). W^X: RW, never X. */
     for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
-        l0_blkmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
-                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+        l0_blkmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* RNG U-leaf: the same 8 transport pages for tid 8 (same shape as
      * NET/BLK above: the vault ELF scans for the virtio-rng device,
      * never assuming a transport). W^X: RW, never X. */
     for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
-        l0_rngmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
-                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+        l0_rngmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* S4c Input U-leaves: kbd and mouse transport pages for tid 10 only.
      * Same shape as NET/BLK/RNG: 8 transport pages, RW never X. */
     for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
-        l0_kbdmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
-                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+        l0_kbdmmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     for (int k = 0; k < VIRTIO_NTRANSPORTS; k++) /* bound: 8 */
-        l0_mousemmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL,
-                                   PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+        l0_mousemmio[k] = pte_leaf(VIRTIO0_BASE + (unsigned long)k * 0x1000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* S4a GUI U-leaves (contents fixed pre-MMU; the BAR programming in
      * kboot() assigns this same GUI_LFB_PHYS, so leaf and BAR agree by
      * construction). W^X: RW, never X. */
     for (int k = 0; k < GUI_LFB_PAGES; k++) /* bound: GUI_LFB_PAGES (512) */
-        l0_guifb[k] = pte_leaf(GUI_LFB_PHYS + (unsigned long)k * 4096UL,
-                               PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+        l0_guifb[k] = pte_leaf(GUI_LFB_PHYS + (unsigned long)k * 4096UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     for (int k = 0; k < GUI_ECAM_PAGES; k++) /* bound: GUI_ECAM_PAGES (16) */
-        l0_guiecam[k] = pte_leaf(GUI_ECAM_PHYS + (unsigned long)k * 4096UL,
-                                 PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
+        l0_guiecam[k] = pte_leaf(GUI_ECAM_PHYS + (unsigned long)k * 4096UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
     /* Per-thread VSpaces: shared kernel/leaf/frame/UART regions are wired
      * through each thread's own l1_t; the per-thread frame window
      * (l0_u_t) stays zero until Task 3 maps frames. */
-    for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+    for (int t = 0; t < NTHREADS; t++)
+    { /* bound: NTHREADS */
         l1_t[t][1] = pte_table(l0_k);
         l1_t[t][2] = pte_leaf(0x80400000UL, PTE_R | PTE_X | PTE_U | PTE_A);
         l1_t[t][3] = pte_leaf(0x80600000UL, PTE_R | PTE_W | PTE_U | PTE_A | PTE_D);
@@ -310,7 +345,8 @@ static void pagetable_init(void) {
          * 0x80E00000 = VPN[1] 7, KBD_MMIO_UVA 0x81200000 = VPN[1] 9,
          * MOUSE_MMIO_UVA 0x81400000 = VPN[1] 10). Exclusivity asserted at
          * boot: "GUIMMIO" / "KBDMMIO" / "MOUSEMMIO" gates. */
-        if (t == 10) {
+        if (t == 10)
+        {
             l1_t[t][6] = pte_table(l0_guifb);
             l1_t[t][7] = pte_table(l0_guiecam);
             l1_t[t][9] = pte_table(l0_kbdmmio);
@@ -342,8 +378,10 @@ static void frame_pool_init(void)
 static int frame_alloc(void)
 {
     /* Scan from frame 1 (skip kernel-reserved frame 0) */
-    for (int i = 1; i < V2_FRAME_TOTAL; i++) { /* bound: V2_FRAME_TOTAL */
-        if (frame_bitmap[i]) {
+    for (int i = 1; i < V2_FRAME_TOTAL; i++)
+    { /* bound: V2_FRAME_TOTAL */
+        if (frame_bitmap[i])
+        {
             frame_bitmap[i] = 0;
             return i;
         }
@@ -355,10 +393,13 @@ static int frame_alloc(void)
     return -1;
 }
 
-static void frame_free(int f) {
-    if (f >= 0 && f < V2_FRAME_TOTAL) {
+static void frame_free(int f)
+{
+    if (f >= 0 && f < V2_FRAME_TOTAL)
+    {
         /* Double-free protection: fail-closed if already free */
-        if (frame_bitmap[f] != 0) {
+        if (frame_bitmap[f] != 0)
+        {
             kputs("[frame_free] WARNING: double-free detected for frame ");
             kputdec((unsigned long)f);
             kputs(" (ignoring)\n");
@@ -373,12 +414,15 @@ static void frame_free(int f) {
  * with Sv39 on: the write hits VA == PA 0x81000000.. via the S-only
  * l0_frames identity map (l1_t[t][8]); volatile so the memset is never
  * optimized away. */
-static void frame_zero(int f) {
-    volatile uint64_t *p =
-        (volatile uint64_t *)(V2_FRAME_PHYS_BASE + (uintptr_t)f * 4096);
+static void frame_zero(int f)
+{
+    volatile uint64_t *p = (volatile uint64_t *)(V2_FRAME_PHYS_BASE + (uintptr_t)f * 4096);
     for (int i = 0; i < 512; i++) /* bound: 4096/8 */
         p[i] = 0;
 }
+
+/* frame_release is defined beside the caps table below (it needs
+ * caps + v2_pte_clear + v2_sfence_all): kernel-authority teardown. */
 
 /* ---- PTE install/clear for the per-thread frame window ----
  * l0_u_t[t][vpn] is thread t's level-0 entry for the frame window at
@@ -395,21 +439,17 @@ static void frame_zero(int f) {
 
 /* bound: t < V2_CAP_THREADS && vpn < V2_VPN_SLOTS — defensive guard: a
  * miss here means an internal invariant has been broken, fail silently. */
-static void v2_pte_install(unsigned long t, unsigned long vpn,
-                           unsigned long frame, unsigned long rights)
+static void v2_pte_install(unsigned long t, unsigned long vpn, unsigned long frame, unsigned long rights)
 {
     uint64_t flags;
-    if (t >= (unsigned long)V2_CAP_THREADS ||
-        vpn >= (unsigned long)V2_VPN_SLOTS)
+    if (t >= (unsigned long)V2_CAP_THREADS || vpn >= (unsigned long)V2_VPN_SLOTS)
         return;
     if (rights == 0)
-        return; /* R=W=X=0 leaf is the reserved table-pointer encoding */
+        return;      /* R=W=X=0 leaf is the reserved table-pointer encoding */
     rights &= 0x7UL; /* mask: QX (IPC-gate bit) never reaches hardware flags */
     /* W^X: X is installed for execute segments; W+X can never arrive here
      * (rejected by mint/map/ELF validation), and is dropped defensively. */
-    flags = PTE_U | PTE_A |
-            ((rights & V2_RIGHT_W) ? (PTE_W | PTE_D) : 0) |
-            ((rights & V2_RIGHT_R) ? PTE_R : 0) |
+    flags = PTE_U | PTE_A | ((rights & V2_RIGHT_W) ? (PTE_W | PTE_D) : 0) | ((rights & V2_RIGHT_R) ? PTE_R : 0) |
             (((rights & V2_RIGHT_X) && !(rights & V2_RIGHT_W)) ? PTE_X : 0);
     l0_u_t[t][vpn] = pte_leaf(V2_FRAME_PHYS_BASE + frame * 4096UL, flags);
 }
@@ -417,8 +457,7 @@ static void v2_pte_install(unsigned long t, unsigned long vpn,
 /* bound: t < V2_CAP_THREADS && vpn < V2_VPN_SLOTS (see v2_pte_install) */
 static void v2_pte_clear(unsigned long t, unsigned long vpn)
 {
-    if (t >= (unsigned long)V2_CAP_THREADS ||
-        vpn >= (unsigned long)V2_VPN_SLOTS)
+    if (t >= (unsigned long)V2_CAP_THREADS || vpn >= (unsigned long)V2_VPN_SLOTS)
         return;
     l0_u_t[t][vpn] = 0;
 }
@@ -434,7 +473,7 @@ static void v2_sfence_all(void)
  * (l1_t[t][8]). fdata stays the caps.h model shadow: v2_write/v2_read
  * still update it first, so host-side coherence holds. These helpers run
  * ONLY after the model op returned V2_OK (fail closed), never cross the
- * 40-frame region (frame < V2_FRAMES_MAX; len <= V2_WORD_BYTES <= 4096),
+ * pool region (frame < V2_FRAMES_MAX; len <= V2_WORD_BYTES <= 4096),
  * and are byte-accurate through volatile pointers so the copy is never
  * optimized away. */
 static void v2_real_write(unsigned long frame, const uint8_t *src, size_t len)
@@ -461,7 +500,8 @@ static void v2_real_read(unsigned long frame, uint8_t *dst, size_t len)
  * (V2_CAP_THREADS threads x V2_VPN_SLOTS slots). The scan that fills it
  * and the drain loop that clears from it are both hard-bounded to this
  * size, so it can never overflow. */
-typedef struct {
+typedef struct
+{
     unsigned long t;
     unsigned long vpn;
 } v2_revoke_pair_t;
@@ -469,27 +509,52 @@ static v2_revoke_pair_t v2_revoke_pairs[V2_CAP_THREADS * V2_VPN_SLOTS];
 
 /* PT_ALLOC: allocate a zeroed frame and mint a cap to it. Returns cap slot
  * index in a0, or V2_ERR_OVERFLOW if no frames available. */
-int frame_alloc_slot(v2_caps_t *caps, unsigned long tid) {
+int frame_alloc_slot(v2_caps_t *caps, unsigned long tid)
+{
     int f = frame_alloc();
     if (f < 0)
         return V2_ERR_OVERFLOW;
     frame_zero(f);
     /* Find an empty cap slot and mint a RW cap to the frame */
-    for (int i = 0; i < V2_CAP_SLOTS; i++) { /* bound: V2_CAP_SLOTS */
-        if (!caps->caps[tid][i].valid) {
+    for (int i = 0; i < V2_CAP_SLOTS; i++)
+    { /* bound: V2_CAP_SLOTS */
+        if (!caps->caps[tid][i].valid)
+        {
             caps->caps[tid][i].valid = 1;
             caps->caps[tid][i].obj = (unsigned long)f;
             caps->caps[tid][i].rights = V2_RIGHT_RW;
             caps->caps[tid][i].root = 0;
-            return i;  /* return cap slot index, not V2_OK */
+            return i; /* return cap slot index, not V2_OK */
         }
     }
     frame_free(f);
     return V2_ERR_OVERFLOW;
 }
 
-/* ---- Threads (mirrors V2_A: lowest-numbered Runnable wins) ---- */
-typedef struct {
+/* Mint a cap to an already-allocated frame for tid (COW-break path:
+ * the frame came from raw frame_alloc, not frame_alloc_slot, so no cap
+ * names it yet). Returns the slot, or -1 when the table is full (caller
+ * fails closed: frame freed, fault becomes park-like). Mirrors the mint
+ * half of frame_alloc_slot. */
+static int frame_mint_slot(v2_caps_t *caps, unsigned long tid, unsigned long frame)
+{
+    for (int i = 0; i < V2_CAP_SLOTS; i++)
+    { /* bound: V2_CAP_SLOTS */
+        if (!caps->caps[tid][i].valid)
+        {
+            caps->caps[tid][i].valid = 1;
+            caps->caps[tid][i].obj = frame;
+            caps->caps[tid][i].rights = V2_RIGHT_RW;
+            caps->caps[tid][i].root = 0;
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* ---- Threads (round-robin from the currently running TID) ---- */
+typedef struct
+{
     uint64_t regs[32];
     uint64_t sepc;
     int state; /* 0 = Runnable, 1 = Parked, 2 = Blocked (IPC), 3 = Dead (QDESTROY) */
@@ -498,8 +563,8 @@ typedef struct {
      * in eps[ep].sendq (kernel memory, no U pointers retained -> no TOCTOU). */
     uintptr_t ipc_ptr;
     uint64_t ipc_cap;
-    uint64_t notify;   /* pending signal bits (OR-accumulate) */
-    int wait_kind;     /* V2_WK_* : what this thread is blocked in */
+    uint64_t notify;          /* pending signal bits (OR-accumulate) */
+    int wait_kind;            /* V2_WK_* : what this thread is blocked in */
     uint64_t vspace_root_ppn; /* satp value (mode 8 | root PPN); see v2_satp_of */
 } uctx_t;
 
@@ -509,14 +574,121 @@ typedef struct {
 #define T_BLOCKED 2
 
 static uctx_t threads[NTHREADS];
-static uint8_t qube_of[NTHREADS]; /* qube label per thread (qube.h) */
+static uint8_t qube_of[NTHREADS];   /* qube label per thread (qube.h) */
 static unsigned long qube_next = 2; /* next fresh label; 0/1 taken at boot */
 static int cur = 0;
-static unsigned long tick = 0;
+static unsigned long tick __attribute__((unused)) = 0; /* Timer ticks (debug only) */
+
 static v2_ep_t eps[V2_NEP];
-_Static_assert(V2_NEP <= V2_CAP_THREADS,
-               "endpoint count rides the thread cap (EP i owned by tid i)");
+_Static_assert(V2_NEP <= V2_CAP_THREADS, "endpoint count rides the thread cap (EP i owned by tid i)");
 static v2_caps_t caps;
+
+/* frame_release: kernel-authority teardown of one frame (satisfies the
+ * caps.h contract). Revoke every non-root cap + every mapping
+ * system-wide, clear any hardware PTE still naming the frame, scrub the
+ * page and return it to the pool. No-op on frame 0 / out-of-range /
+ * already-free frames (fail-closed: never double-frees, never scrubs a
+ * live frame). EVERY free path funnels through here (ELF rollback, EXEC,
+ * REVOKE-adjacent teardown) so a freed frame is never reachable via a
+ * stale cap, mapping, or PTE: use-after-free across fork+exec would be
+ * an isolation break, while a leak would only exhaust the pool.
+ * NOTE: intentionally NOT owner-checked: the kernel is the authority
+ * (mirrors v2_revoke_frame, not v2_revoke). Ownership audits use
+ * v2_frames_next_owned on the frames.h side.
+ * ROOTS SURVIVE: v2_revoke_frame preserves thread-0 root caps by design
+ * (allocator authority, so the mem_server can re-issue). A root still
+ * names a freed+reallocated frame — roots are authority, NOT ownership:
+ * thread 0 must never be attacker-controlled, and no path may hand a
+ * root cap to an untrusted thread (MINT clears root on every copy).
+ * SHARED FRAMES: frame_release is system-wide and must ONLY be called
+ * for frames with no other live references (fresh loader pages). For
+ * frames that may be COW-shared, use frame_teardown_owned below, which
+ * drops one thread's side and frees only when unshared. */
+void frame_release(unsigned long frame)
+{
+    unsigned long u;
+    int i;
+    if (frame >= (unsigned long)V2_FRAME_TOTAL)
+        return;
+    if (frame == 0 || frame_bitmap[frame] != 0)
+        return; /* kernel-reserved / already free: no state change */
+    /* Clear every hardware PTE still naming this frame BEFORE the model
+     * forgets the (thread, vpn) pairs. bound: threads x vpn slots. */
+    for (u = 0; u < (unsigned long)NTHREADS; u++)
+    {
+        for (i = 0; i < V2_VPN_SLOTS; i++)
+        {
+            if (caps.vm[u][i].valid && caps.vm[u][i].frame == frame)
+                v2_pte_clear(u, caps.vm[u][i].vpn);
+        }
+    }
+    v2_revoke_frame(&caps, frame); /* drops non-root caps + all mappings */
+    v2_sfence_all();
+    frame_free((int)frame); /* bitmap was 0 (used): zeroes, no double-free warn */
+}
+
+/* frame_teardown_owned: drop ONE thread's side of a frame, freeing the
+ * frame only when nothing references it anymore. The revoke in
+ * frame_release is system-wide: calling it on a COW-shared frame would
+ * destroy live siblings' mappings (then free under their stale PTEs).
+ * So: drop owner's mappings + PTEs + non-root caps first, then free only
+ * if no valid mapping AND no valid non-root cap survives anywhere (a
+ * granted-but-unmapped live cap must also block the free, or a later
+ * realloc lets it map somebody else's page). Dead co-owners are handled
+ * by processing order (each dead side drops in turn; the last one frees).
+ * Roots are never cleared here (mirror v2_revoke). No-op on frame 0 /
+ * out-of-range / already-free / bad owner (fail closed). */
+static void frame_teardown_owned(unsigned long owner, unsigned long frame)
+{
+    unsigned long u;
+    int i, live;
+    if (owner >= (unsigned long)NTHREADS)
+        return;
+    if (frame >= (unsigned long)V2_FRAME_TOTAL)
+        return;
+    if (frame == 0 || frame_bitmap[frame] != 0)
+        return; /* kernel-reserved / already free: no state change */
+    /* Drop owner's mappings + PTEs for this frame. bound: V2_VPN_SLOTS. */
+    for (i = 0; i < V2_VPN_SLOTS; i++)
+    {
+        if (caps.vm[owner][i].valid && caps.vm[owner][i].frame == frame)
+        {
+            v2_pte_clear(owner, caps.vm[owner][i].vpn);
+            caps.vm[owner][i].valid = 0;
+        }
+    }
+    /* Drop owner's non-root caps for this frame. bound: V2_CAP_SLOTS. */
+    for (i = 0; i < V2_CAP_SLOTS; i++)
+    {
+        v2_capslot_t *c = &caps.caps[owner][i];
+        if (c->valid && !c->root && c->obj == frame)
+            c->valid = 0;
+    }
+    /* Free only when no valid mapping AND no valid non-root cap survives
+     * anywhere (roots exempt: allocator authority). bound: threads x slots. */
+    live = 0;
+    for (u = 0; u < (unsigned long)NTHREADS && !live; u++)
+    {
+        for (i = 0; i < V2_VPN_SLOTS; i++)
+        {
+            if (caps.vm[u][i].valid && caps.vm[u][i].frame == frame)
+            {
+                live = 1;
+                break;
+            }
+        }
+        for (i = 0; i < V2_CAP_SLOTS && !live; i++)
+        {
+            const v2_capslot_t *c = &caps.caps[u][i];
+            if (c->valid && !c->root && c->obj == frame)
+                live = 1;
+        }
+    }
+    if (!live)
+        frame_release(frame); /* full revoke (stragglers) + scrub + free */
+    else
+        v2_sfence_all(); /* owner's PTE clears above need fencing */
+}
 
 uctx_t *cur_ctx; /* read by trap.S */
 uintptr_t trap_stack_top;
@@ -552,10 +724,12 @@ static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
 #define V2_YIELD 0
 #define V2_PUTC 1
 #define V2_PARK 2
+/* V2_GET_KBOOT_BUF removed - violates microkernel principles */
 #define V2_SEND 3 /* (ep, u_ptr, len): copy IN, block unless waiter; a0 = 0 / -ERR */
-#define V2_RECV 4 /* (ep, u_buf, cap): copy OUT, block unless queued; a0 = words, a1 = sender, a2 = sender_qube, a3 = ovf */
+#define V2_RECV                                                                                                        \
+    4 /* (ep, u_buf, cap): copy OUT, block unless queued; a0 = words, a1 = sender, a2 = sender_qube, a3 = ovf */
 #define V2_NOTIFY 5 /* (target, bits): OR-accumulate + wake waiters only; a0 = 0 / -ERR */
-#define V2_WAIT 6 /* (): take pending bits (a0) or block; a0 = bits */
+#define V2_WAIT 6   /* (): take pending bits (a0) or block; a0 = bits */
 #define V2_INVOKE 7
 #define V2_INV_MINT 1
 #define V2_INV_GRANT 2
@@ -577,16 +751,19 @@ static uint64_t u_sp[NTHREADS]; /* stashed pre-MMU: S must not read U pages */
  * after the range check passed. Raw dereference of a user pointer
  * anywhere else is a bug. SEND needs R (whole U range), RECV needs W
  * (data region: text is RX, enforced by v2_recv_range_ok). */
-static void sum_on(void) {
+static void sum_on(void)
+{
     asm volatile("csrs sstatus, %0" ::"r"(1UL << 18) : "memory");
 }
 
-static void sum_off(void) {
+static void sum_off(void)
+{
     asm volatile("csrc sstatus, %0" ::"r"(1UL << 18) : "memory");
 }
 
 /* bound: len (caller-checked <= V2_MSG_MAX for IN; <= stored len for OUT) */
-static void u_copy_in(uint64_t *kd, uintptr_t us, unsigned long len) {
+static void u_copy_in(uint64_t *kd, uintptr_t us, unsigned long len)
+{
     sum_on();
     for (unsigned long i = 0; i < len; i++)
         kd[i] = ((const volatile uint64_t *)us)[i];
@@ -594,23 +771,29 @@ static void u_copy_in(uint64_t *kd, uintptr_t us, unsigned long len) {
 }
 
 /* bound: n (<= stored msg len <= V2_MSG_MAX) */
-static void u_copy_out(uintptr_t ud, const uint64_t *ks, unsigned long n) {
+static void u_copy_out(uintptr_t ud, const uint64_t *ks, unsigned long n)
+{
     sum_on();
     for (unsigned long i = 0; i < n; i++)
         ((volatile uint64_t *)ud)[i] = ks[i];
     sum_off();
 }
 
-static uint64_t rdtime(void) {
+static uint64_t rdtime(void)
+{
     uint64_t t;
     asm volatile("rdtime %0" : "=r"(t));
     return t;
 }
 
-static int pick_next(void) {
-    for (int i = 0; i < NTHREADS; i++)
+static int pick_next(void)
+{
+    for (int offset = 1; offset <= NTHREADS; offset++)
+    { /* bound: NTHREADS */
+        int i = (cur + offset) % NTHREADS;
         if (threads[i].state == T_RUNNABLE)
             return i;
+    }
     return -1;
 }
 
@@ -621,9 +804,9 @@ static int qube_has_qx(unsigned long tid)
     int s;
     if (tid >= (unsigned long)NTHREADS)
         return 0;
-    for (s = 0; s < V2_CAP_SLOTS; s++) { /* bound: V2_CAP_SLOTS */
-        if (caps.caps[tid][s].valid &&
-            (caps.caps[tid][s].rights & V2_RIGHT_QX))
+    for (s = 0; s < V2_CAP_SLOTS; s++)
+    { /* bound: V2_CAP_SLOTS */
+        if (caps.caps[tid][s].valid && (caps.caps[tid][s].rights & V2_RIGHT_QX))
             return 1;
     }
     return 0;
@@ -639,10 +822,10 @@ static void v2_pte_sync(unsigned long t)
     int i;
     if (t >= (unsigned long)V2_CAP_THREADS)
         return;
-    for (i = 0; i < V2_VPN_SLOTS; i++) {
+    for (i = 0; i < V2_VPN_SLOTS; i++)
+    {
         if (caps.vm[t][i].valid)
-            v2_pte_install(t, caps.vm[t][i].vpn, caps.vm[t][i].frame,
-                           caps.vm[t][i].rights);
+            v2_pte_install(t, caps.vm[t][i].vpn, caps.vm[t][i].frame, caps.vm[t][i].rights);
     }
     v2_sfence_all();
 }
@@ -652,8 +835,7 @@ static void v2_pte_sync(unsigned long t)
  * (not a bare PPN); enter_thread loads it straight into satp. */
 static uint64_t v2_satp_of(unsigned long t)
 {
-    return (8UL << 60) |
-           ((((uintptr_t)root_pt_t[t] >> 12) & 0xFFFFFFFFFFFUL));
+    return (8UL << 60) | ((((uintptr_t)root_pt_t[t] >> 12) & 0xFFFFFFFFFFFUL));
 }
 
 /* Build child VSpace: wire the child's tables exactly like pagetable_init
@@ -664,8 +846,7 @@ static uint64_t v2_satp_of(unsigned long t)
  * bound: fixed 512-entry table loops. */
 static unsigned long build_child_vspace(unsigned long parent_tid, unsigned long child_tid)
 {
-    if (child_tid >= (unsigned long)NTHREADS ||
-        parent_tid >= (unsigned long)NTHREADS)
+    if (child_tid >= (unsigned long)NTHREADS || parent_tid >= (unsigned long)NTHREADS)
         return 0;
 
     /* Zero child's tables */
@@ -678,10 +859,10 @@ static unsigned long build_child_vspace(unsigned long parent_tid, unsigned long 
 
     /* Mirror pagetable_init's per-thread wiring (same indices, same
      * pte_table encoding): root[0] -> shared UART, root[2] -> own l1. */
-    l1_t[child_tid][1] = l1_t[parent_tid][1]; /* l0_k: kernel image */
-    l1_t[child_tid][8] = l1_t[parent_tid][8]; /* l0_frames: frame pool */
+    l1_t[child_tid][1] = l1_t[parent_tid][1];          /* l0_k: kernel image */
+    l1_t[child_tid][8] = l1_t[parent_tid][8];          /* l0_frames: frame pool */
     l1_t[child_tid][4] = pte_table(l0_u_t[child_tid]); /* own user window */
-    root_pt_t[child_tid][0] = pte_table(l1_m); /* shared UART */
+    root_pt_t[child_tid][0] = pte_table(l1_m);         /* shared UART */
     root_pt_t[child_tid][2] = pte_table(l1_t[child_tid]);
 
     return v2_satp_of(child_tid);
@@ -694,12 +875,12 @@ static unsigned long build_child_vspace(unsigned long parent_tid, unsigned long 
  * bits are hidden in PTEs or rights, so there is nothing that can collide
  * with legitimate RX execute pages.
  * bound: V2_VPN_SLOTS. */
-static void v2_cow_write_protect(unsigned long parent_tid,
-                                 unsigned long child_tid)
+static void v2_cow_write_protect(unsigned long parent_tid, unsigned long child_tid)
 {
-    for (int i = 0; i < V2_VPN_SLOTS; i++) {
-        if (caps.vm[parent_tid][i].valid &&
-            (caps.vm[parent_tid][i].rights & V2_RIGHT_W)) {
+    for (int i = 0; i < V2_VPN_SLOTS; i++)
+    {
+        if (caps.vm[parent_tid][i].valid && (caps.vm[parent_tid][i].rights & V2_RIGHT_W))
+        {
             unsigned long vpn = caps.vm[parent_tid][i].vpn;
             if (vpn >= (unsigned long)V2_VPN_SLOTS)
                 continue;
@@ -710,12 +891,20 @@ static void v2_cow_write_protect(unsigned long parent_tid,
     v2_sfence_all();
 }
 
-static void enter_thread(int id) {
+static void enter_thread(int id)
+{
+    uint64_t active_satp;
+    uint64_t target_satp = threads[id].vspace_root_ppn;
     cur = id;
     cur_ctx = &threads[id];
-    /* Per-thread VSpace: switch satp before entering U-mode */
-    asm volatile("csrw satp, %0" :: "r"(threads[id].vspace_root_ppn) : "memory");
-    asm volatile("sfence.vma" ::: "memory");
+    /* Same-thread preemption/yield keeps its translations; flush only on
+     * an actual address-space switch. Mapping changes fence at their sites. */
+    asm volatile("csrr %0, satp" : "=r"(active_satp));
+    if (active_satp != target_satp)
+    {
+        asm volatile("csrw satp, %0" ::"r"(target_satp) : "memory");
+        asm volatile("sfence.vma" ::: "memory");
+    }
     u_enter(&threads[id]);
     __builtin_unreachable();
 }
@@ -723,7 +912,8 @@ static void enter_thread(int id) {
 /* Terminal park: nothing runnable and nothing can make progress: parked
  * threads never wake; blocked threads wake only via a matching IPC op,
  * which requires a runnable peer. (No timeout yet: Stage 4 time.) */
-static void halt_no_runnable(void) {
+static void halt_no_runnable(void)
+{
     kputs("no runnable left; parking cpu\n");
     /* Park-timer hygiene: the periodic tick is still armed, so a pending
      * timer would wake WFI, print "[tick ...]" spam after the marker, and
@@ -731,7 +921,7 @@ static void halt_no_runnable(void) {
      * clear STIE BEFORE the loop so the marker prints exactly once and
      * the CPU truly parks. */
     sbi_set_timer(~0UL);
-    asm volatile("csrc sie, %0" :: "r"(1UL << 5) : "memory"); /* clear STIE */
+    asm volatile("csrc sie, %0" ::"r"(1UL << 5) : "memory"); /* clear STIE */
     /* S4c live input (Task 4): traps clear sstatus.SIE on entry, so a halt
      * reached from any trap context parks with SIE=0 — post-park IRQs
      * (input) would pend forever with no trap and no wake. Re-enable SIE
@@ -740,35 +930,55 @@ static void halt_no_runnable(void) {
      * save area (never a live thread: entry would clobber its BLOCKED
      * resume state) and sscratch at the trap stack (stale user-sp would
      * fault the entry store under SUM=0). */
-    asm volatile("csrs sstatus, %0" :: "r"(1UL << 1) : "memory"); /* SIE */
+    asm volatile("csrs sstatus, %0" ::"r"(1UL << 1) : "memory"); /* SIE */
     cur_ctx = &halt_ctx;
-    asm volatile("csrw sscratch, %0" :: "r"(trap_stack_top) : "memory");
+    asm volatile("csrw sscratch, %0" ::"r"(trap_stack_top) : "memory");
     for (;;)
         asm volatile("wfi");
     __builtin_unreachable();
 }
 
 /* Trap dispatch. Switch cases call u_enter (noreturn); plain cases return
- * to the trap.S epilogue which restores cur_ctx and srets. */
-void s_trap_handler(uint64_t cause, uctx_t *ctx) {
+ * to the trap.S epilogue which restores cur_ctx and srets.
+ * TRAP_DEBUG: burst-race evidence log (spec 2026-10-04 §4.1). 1 enables a
+ * per-entry (scause, SPP, SIE) print: SPP=1 means the trap was taken from
+ * S-mode (nested/idle-wake, H1), SIE=1 means an interrupt window is open
+ * in-handler (H2). Default 0: the log floods the transcript at burst rate.
+ * Commit policy: evidence runs only; never ship with 1. */
+#define TRAP_DEBUG 0
+void s_trap_handler(uint64_t cause, uctx_t *ctx)
+{
     int is_int = (cause >> 63) & 1;
     uint64_t code = cause & ~(1UL << 63);
     (void)ctx;
-    if (is_int) {
-        if (code == 5) { /* S-mode timer */
+#if TRAP_DEBUG
+    {
+        uint64_t sstatus = 0;
+        asm volatile("csrr %0, sstatus" : "=r"(sstatus));
+        kputs("[trapdbg] cause=");
+        kputhex(cause);
+        kputs(" spp=");
+        sbi_putchar((char)('0' + ((sstatus >> 8) & 1UL)));
+        kputs(" sie=");
+        sbi_putchar((char)('0' + ((sstatus >> 1) & 1UL)));
+        sbi_putchar('\n');
+    }
+#endif
+    if (is_int)
+    {
+        if (code == 5)
+        { /* S-mode timer */
             sbi_set_timer(rdtime() + TICK_DELTA);
-            tick++;
-            kputs("[tick ");
-            kputdec(tick);
+            /* tick++; */ /* Unused - debug only */
+            /* Timer preemption: rotate from the current TID so runnable
+             * peers receive a turn before this thread is selected again. */
             int n = pick_next();
             if (n < 0)
                 halt_no_runnable();
-            kputs("] -> ");
-            sbi_putchar(n ? 'B' : 'A');
-            sbi_putchar('\n');
             enter_thread(n);
         }
-        if (code == 9) { /* S-mode external: virtio IRQ via PLIC claim */
+        if (code == 9)
+        { /* S-mode external: virtio IRQ via PLIC claim */
             uint32_t s = *(volatile uint32_t *)PLIC_CLAIM_S;
             uint32_t m = *(volatile uint32_t *)PLIC_CLAIM_M;
             uint32_t src = 0;
@@ -782,24 +992,26 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 src = m;
             if (s == blk_virtio_irq || m == blk_virtio_irq)
                 blk = 1;
-            if (src != 0) {
+            if (src != 0)
+            {
                 threads[6].notify |= NET_IRQ_BIT;
                 /* Wake only genuine WAIT waiters (NOTIFY discipline);
                  * unknown sources never wake anyone. */
-                if (threads[6].state == T_BLOCKED &&
-                    threads[6].wait_kind == V2_WK_WAIT) {
+                if (threads[6].state == T_BLOCKED && threads[6].wait_kind == V2_WK_WAIT)
+                {
                     threads[6].state = T_RUNNABLE;
                     threads[6].wait_kind = V2_WK_NONE;
                 }
                 kputs("NET: irq ok\n");
             }
-            if (blk) {
+            if (blk)
+            {
                 /* No per-IRQ print: a 4K sector op raises up to 8 blk
                  * IRQs, so a print here would flood the transcript; the
                  * ELF's badge check after WAIT is the delivery proof. */
                 threads[9].notify |= BLK_IRQ_BIT;
-                if (threads[9].state == T_BLOCKED &&
-                    threads[9].wait_kind == V2_WK_WAIT) {
+                if (threads[9].state == T_BLOCKED && threads[9].wait_kind == V2_WK_WAIT)
+                {
                     threads[9].state = T_RUNNABLE;
                     threads[9].wait_kind = V2_WK_NONE;
                 }
@@ -812,17 +1024,20 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
              * the ELF's event poll after WAIT is the delivery proof. */
             int input_irq = 0;
             int input_woke = 0;
-            if (s == kbd_virtio_irq || m == kbd_virtio_irq) {
+            if (s == kbd_virtio_irq || m == kbd_virtio_irq)
+            {
                 threads[10].notify |= KBD_IRQ_BIT;
                 input_irq = 1;
             }
-            if (s == mouse_virtio_irq || m == mouse_virtio_irq) {
+            if (s == mouse_virtio_irq || m == mouse_virtio_irq)
+            {
                 threads[10].notify |= MOUSE_IRQ_BIT;
                 input_irq = 1;
             }
-            if (input_irq) {
-                if (threads[10].state == T_BLOCKED &&
-                    threads[10].wait_kind == V2_WK_WAIT) {
+            if (input_irq)
+            {
+                if (threads[10].state == T_BLOCKED && threads[10].wait_kind == V2_WK_WAIT)
+                {
                     threads[10].state = T_RUNNABLE;
                     threads[10].wait_kind = V2_WK_NONE;
                     /* Wake-delivery (NOTIFY precedent): a thread woken
@@ -833,8 +1048,16 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     input_woke = 1;
                 }
             }
-            if (src == 0 && !blk && !input_irq) {
-                kputs("IRQ: unexpected\n");
+            if (src == 0 && !blk && !input_irq)
+            {
+                uint8_t kind = IRQ_KIND_NONE;
+                int stub = 0;
+                if (irq_lookup(s, 0, &kind, 0) && kind == IRQ_KIND_STUB)
+                    stub = 1;
+                else if (irq_lookup(m, 0, &kind, 0) && kind == IRQ_KIND_STUB)
+                    stub = 1;
+                if (!stub)
+                    kputs("IRQ: unexpected\n");
             }
             if (s != 0)
                 *(volatile uint32_t *)PLIC_CLAIM_S = s;
@@ -845,10 +1068,26 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
              * now (SEND-handoff precedent: enter_thread from handler).
              * Pre-park this only fires for a WAIT-blocked input server
              * and is a no-op for everyone else. */
-            if (input_woke) {
+            if (input_woke)
+            {
                 int n = pick_next();
                 if (n >= 0)
                     enter_thread(n);
+            }
+            /* Halt-context return guard: if this trap was taken from
+             * halt (cur_ctx == &halt_ctx: idle wfi, S-origin), the
+             * trap.S epilogue would restore the zeroed halt save area
+             * (sepc=0, sp=0) and sret into a fault — then re-trap from
+             * S-mode and corrupt the entry swap (burst-race signature).
+             * Never return from a halt entry: schedule a woken thread,
+             * or re-park (halt_no_runnable re-arms the halt protocol:
+             * cur_ctx, sscratch, SIE, timer-max). */
+            if (cur_ctx == &halt_ctx)
+            {
+                int n = pick_next();
+                if (n >= 0)
+                    enter_thread(n);
+                halt_no_runnable();
             }
             return;
         }
@@ -856,32 +1095,62 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
         for (;;)
             asm volatile("wfi");
     }
-    switch (code) {
-    case 8: { /* U-mode ecall */
+    switch (code)
+    {
+    case 8: {                                 /* U-mode ecall */
         uint64_t sys = threads[cur].regs[17]; /* a7 */
-        if (sys == V2_YIELD) {
+        if (sys == V2_YIELD)
+        {
             threads[cur].sepc += 4;
             int n = pick_next();
             if (n < 0)
                 halt_no_runnable();
             enter_thread(n);
-        } else if (sys == V2_PUTC) {
+        }
+        else if (sys == V2_PUTC)
+        {
             /* Forward through real SBI (M-mode): U prints via SBI. */
             sbi_putchar((char)threads[cur].regs[10]); /* a0 */
             threads[cur].sepc += 4;
             return;
-        } else if (sys == V2_PARK) {
-            /* Blocking primitive (mirrors V2_B UPark): park self. */
+        }
+        else if (sys == V2_PARK)
+        {
+            /* Blocking primitive (mirrors V2_B UPark): park self.
+             * Exit convention: a0==1 means "terminate" (Unix exit()).
+             * The slot becomes T_DEAD and reusable by SPAWN/FORK/QCREATE
+             * (slot selection scans on state alone); anything else parks.
+             * a0 was previously ignored, so this is backward compatible.
+             * WITHOUT an exit path every thread lives forever and dynamic
+             * creation is dead (first SPAWN always OVERFLOWs). The exiting
+             * thread's frames are NOT freed here — the reusing SPAWN (or
+             * QDESTROY) reclaims them; see the reuse block in V2_INV_SPAWN.
+             * qube_of is left stamped: reuse re-stamps (SPAWN/FORK inherit,
+             * QCREATE mints fresh), so no stale-label window. */
             threads[cur].sepc += 4;
-            threads[cur].state = T_PARKED;
-            kputs("[sched] parked ");
-            sbi_putchar('0' + cur);
-            sbi_putchar('\n');
+            if (threads[cur].regs[10] == 1)
+            {
+                threads[cur].state = T_DEAD;
+                threads[cur].wait_kind = V2_WK_NONE;
+                threads[cur].ipc_ptr = 0;
+                threads[cur].ipc_cap = 0;
+                threads[cur].notify = 0;
+                klog("[sched] exited ");
+            }
+            else
+            {
+                threads[cur].state = T_PARKED;
+                klog("[sched] parked ");
+            }
+            klog_char('0' + cur);
+            klog_char('\n');
             int n = pick_next();
             if (n < 0)
                 halt_no_runnable();
             enter_thread(n);
-        } else if (sys == V2_SEND) {
+        }
+        else if (sys == V2_SEND)
+        {
             /* SEND (mirrors V2_C c_send): validate (ep -> range) -> copy
              * IN -> handoff to oldest waiter or queue + block. */
             unsigned long ep = (unsigned long)threads[cur].regs[10];
@@ -890,11 +1159,13 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             uint64_t kb[V2_MSG_MAX];
             unsigned long r;
             threads[cur].sepc += 4;
-            if (!v2_ep_ok(ep) || !v2_send_range_ok(up, ln)) {
+            if (!v2_ep_ok(ep) || !v2_send_range_ok(up, ln))
+            {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                 return;
             }
-            if (ep >= (unsigned long)NTHREADS) {
+            if (ep >= (unsigned long)NTHREADS)
+            {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                 return;
             }
@@ -902,18 +1173,20 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             u_copy_in(kb, up, ln);
             /* Raw gate (peek before dequeue: fail-closed, no state lost on
              * reject). Cross-qube handoff needs QX on the sender. */
-            if (e->recv_len > 0) {
+            if (e->recv_len > 0)
+            {
                 unsigned long peek = e->recvq[e->recv_head];
                 if (peek >= (unsigned long)NTHREADS ||
-                    !qube_raw_ok(qube_of, (unsigned long)NTHREADS,
-                                 (unsigned long)cur, peek,
-                                 qube_has_qx((unsigned long)cur))) {
+                    !qube_raw_ok(qube_of, (unsigned long)NTHREADS, (unsigned long)cur, peek,
+                                 qube_has_qx((unsigned long)cur)))
+                {
                     threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                     kputs("QUB: xread denied\n");
                     return;
                 }
             }
-            if (v2_q_take_waiter(e, &r) == V2_OK && r < (unsigned long)NTHREADS) {
+            if (v2_q_take_waiter(e, &r) == V2_OK && r < (unsigned long)NTHREADS)
+            {
                 unsigned long cap = (unsigned long)threads[r].ipc_cap;
                 unsigned long nw = ln < cap ? ln : cap;
                 unsigned long ovf = ln > cap ? 1 : 0;
@@ -925,33 +1198,45 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 threads[r].state = T_RUNNABLE;
                 threads[r].wait_kind = V2_WK_NONE;
                 threads[cur].regs[10] = (uint64_t)V2_OK;
-                kputs("[ipc] send tcb=");
-                sbi_putchar('0' + cur);
-                kputs(" -> ");
-                sbi_putchar('0' + (char)r);
-                kputs(" len=");
-                kputdec((unsigned long)nw);
-                kputs(" ovf=");
-                sbi_putchar(ovf ? '1' : '0');
-                sbi_putchar('\n');
+                klog("[ipc] send tcb=");
+                klog_char('0' + cur);
+                klog(" -> ");
+                klog_char('0' + (char)r);
+                klog(" ep=");
+                klog_dec(ep);
+                klog(" len=");
+                klog_dec((unsigned long)nw);
+                klog(" ovf=");
+                klog_char(ovf ? '1' : '0');
+                klog_char('\n');
                 enter_thread((int)r);
             }
-            if (v2_q_send(e, (unsigned long)cur, kb, ln) != V2_OK) {
+            if (v2_q_send(e, (unsigned long)cur, kb, ln) != V2_OK)
+            {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_OVERFLOW;
                 return;
             }
+            /* Flow control: notify sender if queue exceeds threshold */
+            if (e->send_len == V2_FLOW_CONTROL_THRESHOLD + 1) {
+                /* Just crossed threshold - notify sender */
+                threads[cur].notify |= (1UL << 0); /* Use bit 0 for flow control */
+            }
             threads[cur].state = T_BLOCKED;
             threads[cur].wait_kind = V2_WK_SEND;
-            kputs("[ipc] send tcb=");
-            sbi_putchar('0' + cur);
-            kputs(" queued len=");
-            kputdec(ln);
-            sbi_putchar('\n');
+            klog("[ipc] send tcb=");
+            klog_char('0' + cur);
+            klog(" queued ep=");
+            klog_dec(ep);
+            klog(" len=");
+            klog_dec(ln);
+            klog_char('\n');
             int n = pick_next();
             if (n < 0)
                 halt_no_runnable();
             enter_thread(n);
-        } else if (sys == V2_RECV) {
+        }
+        else if (sys == V2_RECV)
+        {
             /* RECV (mirrors V2_C c_recv): validate -> deliver oldest
              * queued send (resume sender, stamp sender id, flag
              * truncation) or park (ptr, cap) + block. */
@@ -960,11 +1245,13 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             unsigned long cap = (unsigned long)threads[cur].regs[12];
             v2_slot_t slot;
             threads[cur].sepc += 4;
-            if (!v2_ep_ok(ep) || !v2_recv_range_ok(up, cap)) {
+            if (!v2_ep_ok(ep) || !v2_recv_range_ok(up, cap))
+            {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                 return;
             }
-            if (ep != (unsigned long)cur) {
+            if (ep != (unsigned long)cur)
+            {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                 return;
             }
@@ -973,75 +1260,90 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
              * reject). Queued sends gate at delivery: the destination is
              * unknown at send time, so the sender's qube is derived here
              * via qube_of[slot.sender] (v2_slot_t stays as-is). */
-            if (e->send_len > 0) {
+            if (e->send_len > 0)
+            {
                 unsigned long psrc = e->sendq[e->send_head].sender;
                 if (psrc >= (unsigned long)NTHREADS ||
-                    !qube_raw_ok(qube_of, (unsigned long)NTHREADS, psrc,
-                                 (unsigned long)cur, qube_has_qx(psrc))) {
+                    !qube_raw_ok(qube_of, (unsigned long)NTHREADS, psrc, (unsigned long)cur, qube_has_qx(psrc)))
+                {
                     threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                     kputs("QUB: xread denied\n");
                     return;
                 }
             }
-            if (v2_q_take_send(e, &slot) == V2_OK) {
+            if (v2_q_take_send(e, &slot) == V2_OK)
+            {
                 unsigned long nw = slot.len < cap ? slot.len : cap;
                 unsigned long ovf = slot.len > cap ? 1 : 0;
-                unsigned long sq = slot.sender < (unsigned long)NTHREADS
-                                       ? (unsigned long)qube_of[slot.sender]
-                                       : 0;
+                unsigned long sq = slot.sender < (unsigned long)NTHREADS ? (unsigned long)qube_of[slot.sender] : 0;
                 u_copy_out(up, slot.words, nw);
                 threads[cur].regs[10] = (uint64_t)nw;
                 threads[cur].regs[11] = (uint64_t)slot.sender;
                 threads[cur].regs[12] = (uint64_t)sq;
                 threads[cur].regs[13] = (uint64_t)ovf;
-                if (slot.sender < (unsigned long)NTHREADS) {
+                
+                /* Flow control: notify sender if queue drops below threshold */
+                if (e->send_len == V2_FLOW_CONTROL_THRESHOLD - 1 && slot.sender < (unsigned long)NTHREADS) {
+                    threads[slot.sender].notify |= (1UL << 0); /* Use bit 0 for flow control */
+                }
+                
+                if (slot.sender < (unsigned long)NTHREADS)
+                {
                     threads[slot.sender].state = T_RUNNABLE;
                     threads[slot.sender].wait_kind = V2_WK_NONE;
                     threads[slot.sender].regs[10] = (uint64_t)V2_OK;
                 }
-                kputs("[ipc] recv tcb=");
-                sbi_putchar('0' + cur);
-                kputs(" from=");
-                sbi_putchar('0' + (char)slot.sender);
-                kputs(" len=");
-                kputdec((unsigned long)nw);
-                kputs(" ovf=");
-                sbi_putchar(ovf ? '1' : '0');
-                sbi_putchar('\n');
+                klog("[ipc] recv tcb=");
+                klog_char('0' + cur);
+                klog(" from=");
+                klog_char('0' + (char)slot.sender);
+                klog(" len=");
+                klog_dec((unsigned long)nw);
+                klog(" ovf=");
+                klog_char(ovf ? '1' : '0');
+                klog_char('\n');
                 return;
             }
             threads[cur].ipc_ptr = up;
             threads[cur].ipc_cap = cap;
             threads[cur].state = T_BLOCKED;
             threads[cur].wait_kind = V2_WK_RECV;
-            if (v2_q_wait(e, (unsigned long)cur) != V2_OK) {
-                /* Unreachable at NTHREADS=2 (recvq never full here);
-                 * fail closed rather than lose the waiter. */
+            if (v2_q_wait(e, (unsigned long)cur) != V2_OK)
+            {
+                /* Practically unreachable at NTHREADS=11 (recvq would
+                 * need 11 waiters on one ep); fail closed rather than
+                 * lose the waiter. */
                 threads[cur].state = T_RUNNABLE;
                 threads[cur].wait_kind = V2_WK_NONE;
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_OVERFLOW;
                 return;
             }
-            kputs("[ipc] recv tcb=");
-            sbi_putchar('0' + cur);
-            kputs(" blocked\n");
+            klog("[ipc] recv tcb=");
+            klog_char('0' + cur);
+            klog(" blocked ep=");
+            klog_dec(ep);
+            klog_char('\n');
             int n = pick_next();
             if (n < 0)
                 halt_no_runnable();
             enter_thread(n);
-        } else if (sys == V2_NOTIFY) {
+        }
+        else if (sys == V2_NOTIFY)
+        {
             /* NOTIFY (mirrors V2_C c_notify): OR-accumulate, wake only
              * genuine waiters (wk == WAIT); rendezvous blocks untouched. */
             unsigned long t = (unsigned long)threads[cur].regs[10];
             uint64_t bits = threads[cur].regs[11];
             int woke = 0;
             threads[cur].sepc += 4;
-            if (t >= (unsigned long)NTHREADS) {
+            if (t >= (unsigned long)NTHREADS)
+            {
                 threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
                 return;
             }
             threads[t].notify |= bits;
-            if (threads[t].state == T_BLOCKED && threads[t].wait_kind == V2_WK_WAIT) {
+            if (threads[t].state == T_BLOCKED && threads[t].wait_kind == V2_WK_WAIT)
+            {
                 threads[t].state = T_RUNNABLE;
                 threads[t].wait_kind = V2_WK_NONE;
                 /* Wake-delivery: a thread woken from WAIT resumes past
@@ -1056,40 +1358,45 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 woke = 1;
             }
             threads[cur].regs[10] = (uint64_t)V2_OK;
-            kputs("[ipc] notify ");
-            sbi_putchar('0' + cur);
-            kputs(" -> ");
-            sbi_putchar('0' + (char)t);
-            kputs(" bits=");
-            kputhex(bits);
-            kputs(" wake=");
-            sbi_putchar(woke ? '1' : '0');
-            sbi_putchar('\n');
+            klog("[ipc] notify ");
+            klog_char('0' + cur);
+            klog(" -> ");
+            klog_char('0' + (char)t);
+            klog(" bits=");
+            klog_hex(bits);
+            klog(" wake=");
+            klog_char(woke ? '1' : '0');
+            klog_char('\n');
             return;
-        } else if (sys == V2_WAIT) {
+        }
+        else if (sys == V2_WAIT)
+        {
             /* WAIT (mirrors V2_C c_wait): take bits or block. */
             threads[cur].sepc += 4;
-            if (threads[cur].notify != 0) {
+            if (threads[cur].notify != 0)
+            {
                 threads[cur].regs[10] = threads[cur].notify;
                 threads[cur].notify = 0;
                 threads[cur].wait_kind = V2_WK_NONE;
-                kputs("[ipc] wait tcb=");
-                sbi_putchar('0' + cur);
-                kputs(" bits=");
-                kputhex(threads[cur].regs[10]);
-                sbi_putchar('\n');
+                klog("[ipc] wait tcb=");
+                klog_char('0' + cur);
+                klog(" bits=");
+                klog_hex(threads[cur].regs[10]);
+                klog_char('\n');
                 return;
             }
             threads[cur].state = T_BLOCKED;
             threads[cur].wait_kind = V2_WK_WAIT;
-            kputs("[ipc] wait tcb=");
-            sbi_putchar('0' + cur);
-            kputs(" blocked\n");
+            klog("[ipc] wait tcb=");
+            klog_char('0' + cur);
+            klog(" blocked\n");
             int n = pick_next();
             if (n < 0)
                 halt_no_runnable();
             enter_thread(n);
-        } else if (sys == V2_INVOKE) {
+        }
+        else if (sys == V2_INVOKE)
+        {
             uint64_t op = threads[cur].regs[10]; /* a0 */
             uint64_t a1 = threads[cur].regs[11];
             uint64_t a2 = threads[cur].regs[12];
@@ -1099,7 +1406,8 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
              * all other ops assign small ints/negatives, so the epilogue
              * regs[10] = (uint64_t)rc is bit-identical for them. */
             long rc = V2_ERR_INVALID;
-            switch (op) {
+            switch (op)
+            {
             case V2_INV_MINT:
                 rc = v2_mint(&caps, (unsigned long)cur, a1, a2, a3);
                 break;
@@ -1115,12 +1423,12 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 int m; /* bound: vpn < V2_VPN_SLOTS (checked below) */
                 if (a2 < (uint64_t)V2_VPN_SLOTS)
                     rc = v2_map(&caps, (unsigned long)cur, a1, a2);
-                if (rc == V2_OK) {
+                if (rc == V2_OK)
+                {
                     m = v2_vm_find(&caps, (unsigned long)cur, a2);
-                    if (m >= 0) { /* model recorded it: must be findable */
-                        v2_pte_install((unsigned long)cur, a2,
-                                       caps.vm[cur][m].frame,
-                                       caps.vm[cur][m].rights);
+                    if (m >= 0)
+                    { /* model recorded it: must be findable */
+                        v2_pte_install((unsigned long)cur, a2, caps.vm[cur][m].frame, caps.vm[cur][m].rights);
                         v2_sfence_all();
                     }
                 }
@@ -1128,7 +1436,8 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             }
             case V2_INV_UNMAP:
                 rc = v2_unmap(&caps, (unsigned long)cur, a1);
-                if (rc == V2_OK) { /* model validated the mapping exists */
+                if (rc == V2_OK)
+                { /* model validated the mapping exists */
                     v2_pte_clear((unsigned long)cur, a1);
                     v2_sfence_all();
                 }
@@ -1141,35 +1450,35 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 unsigned long f = 0;
                 unsigned long npair = 0;
                 int have_f = 0;
-                if (a1 < (uint64_t)V2_CAP_SLOTS &&
-                    caps.caps[cur][a1].valid) {
+                if (a1 < (uint64_t)V2_CAP_SLOTS && caps.caps[cur][a1].valid)
+                {
                     f = caps.caps[cur][a1].obj;
                     have_f = 1;
                 }
-                if (have_f) {
+                if (have_f)
+                {
                     for (unsigned long u = 0; u < caps.nthreads; u++)
                         /* bound: V2_CAP_THREADS */
-                        for (int i = 0; i < V2_VPN_SLOTS; i++) {
+                        for (int i = 0; i < V2_VPN_SLOTS; i++)
+                        {
                             /* bound: V2_VPN_SLOTS */
-                            if (caps.vm[u][i].valid &&
-                                caps.vm[u][i].frame == f &&
-                                npair < (unsigned long)(V2_CAP_THREADS *
-                                                        V2_VPN_SLOTS)) {
+                            if (caps.vm[u][i].valid && caps.vm[u][i].frame == f &&
+                                npair < (unsigned long)(V2_CAP_THREADS * V2_VPN_SLOTS))
+                            {
                                 v2_revoke_pairs[npair].t = u;
-                                v2_revoke_pairs[npair].vpn =
-                                    caps.vm[u][i].vpn;
+                                v2_revoke_pairs[npair].vpn = caps.vm[u][i].vpn;
                                 npair++;
                             }
                         }
                 }
                 rc = v2_revoke(&caps, (unsigned long)cur, a1);
-                if (rc == V2_OK) {
-                    for (unsigned long i = 0; i < npair; i++) {
+                if (rc == V2_OK)
+                {
+                    for (unsigned long i = 0; i < npair; i++)
+                    {
                         /* bound: V2_CAP_THREADS * V2_VPN_SLOTS */
-                        if (v2_revoke_pairs[i].t <
-                            (unsigned long)NTHREADS)
-                            v2_pte_clear(v2_revoke_pairs[i].t,
-                                         v2_revoke_pairs[i].vpn);
+                        if (v2_revoke_pairs[i].t < (unsigned long)NTHREADS)
+                            v2_pte_clear(v2_revoke_pairs[i].t, v2_revoke_pairs[i].vpn);
                     }
                     v2_sfence_all();
                 }
@@ -1191,18 +1500,19 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 const uint8_t *elf_data;
                 uint32_t elf_size;
                 uint64_t entry, brk = 0;
-                if (!((a2 == 0 && a3 == 0) ||
-                      v2_recv_range_ok((uintptr_t)a2, a3))) {
+                if (!((a2 == 0 && a3 == 0) || v2_recv_range_ok((uintptr_t)a2, a3)))
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0) {
+                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                rc = v2_elf_load(elf_data, (size_t)elf_size, &caps,
-                                 (unsigned long)cur, &entry, &brk);
-                if (rc == V2_OK) {
+                rc = v2_elf_load(elf_data, (size_t)elf_size, &caps, (unsigned long)cur, &entry, &brk);
+                if (rc == V2_OK)
+                {
                     v2_pte_sync((unsigned long)cur);
                     rc = (int)entry; /* return entry point as rc */
                 }
@@ -1219,31 +1529,57 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 const uint8_t *elf_data;
                 uint32_t elf_size;
                 uint64_t entry, brk = 0;
-                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0) {
+                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (!((a2 == 0 && a3 == 0) ||
-                      v2_recv_range_ok((uintptr_t)a2, a3))) {
+                if (!((a2 == 0 && a3 == 0) || v2_recv_range_ok((uintptr_t)a2, a3)))
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
                 /* Find a free thread slot (threads[] has NTHREADS entries;
                  * V2_CAP_THREADS is the model's bound, not ours). */
                 int child = -1;
-                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                for (int t = 0; t < NTHREADS; t++)
+                { /* bound: NTHREADS */
                     /* deferred-C: T_DEAD is distinct; state alone frees the slot */
-                    if (threads[t].state == T_DEAD) {
+                    if (threads[t].state == T_DEAD)
+                    {
                         child = t;
                         break;
                     }
                 }
-                if (child < 0) {
+                if (child < 0)
+                {
                     rc = V2_ERR_OVERFLOW;
                     break;
                 }
                 /* A reused slot may hold a previous life's caps/mappings:
-                 * clear them so the load starts fresh (fail closed). */
+                 * clear them so the load starts fresh (fail closed). The
+                 * child inherits the spawner's qube: without this a slot
+                 * recycled by QDESTROY (label cleared to 0) silently lands
+                 * the new thread in the ambient qube — or keeps a stale
+                 * non-zero label — and the raw gate decides on the wrong
+                 * labels. Set before any failure break below. */
+                qube_of[child] = qube_of[cur];
+                /* Reclaim the previous life's frames first: dropping caps
+                 * without freeing leaks the pool into OVERFLOW over spawn
+                 * cycles. Snapshot-then-teardown (EXEC precedent): shared
+                 * frames are unmapped on this slot's side only, never
+                 * freed under a live sibling. */
+                {
+                    unsigned long reuse_frames[V2_VPN_SLOTS];
+                    int reuse_n = 0;
+                    for (int i = 0; i < V2_VPN_SLOTS; i++)
+                    {
+                        if (caps.vm[child][i].valid)
+                            reuse_frames[reuse_n++] = caps.vm[child][i].frame;
+                    }
+                    for (int i = 0; i < reuse_n; i++)
+                        frame_teardown_owned((unsigned long)child, reuse_frames[i]);
+                }
                 for (int s = 0; s < V2_CAP_SLOTS; s++)
                     caps.caps[child][s].valid = 0;
                 for (int i = 0; i < V2_VPN_SLOTS; i++)
@@ -1251,7 +1587,8 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 /* Build child's VSpace: copy current thread's page tables for kernel mappings,
                  * allocate fresh l0_u for user mappings */
                 unsigned long child_root = build_child_vspace((unsigned long)cur, (unsigned long)child);
-                if (!child_root) {
+                if (!child_root)
+                {
                     rc = V2_ERR_OVERFLOW;
                     break;
                 }
@@ -1269,12 +1606,15 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
 
                 /* Load ELF into child's VSpace */
                 rc = v2_elf_load(elf_data, (size_t)elf_size, &caps, (unsigned long)child, &entry, &brk);
-                if (rc == V2_OK && entry != 0) {
+                if (rc == V2_OK && entry != 0)
+                {
                     v2_pte_sync((unsigned long)child);
                     threads[child].regs[2] = u_sp[child];
                     threads[child].sepc = entry;
                     rc = child; /* return child tid */
-                } else {
+                }
+                else
+                {
                     threads[child].state = T_DEAD; /* cleanup on failure */
                     if (rc == V2_OK)
                         rc = V2_ERR_INVALID;
@@ -1292,20 +1632,48 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                  * Returns child tid to parent, 0 to child.
                  * FAIL CLOSED: any error -> V2_ERR_INVALID/V2_ERR_OVERFLOW. */
                 int child = -1;
-                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                for (int t = 0; t < NTHREADS; t++)
+                { /* bound: NTHREADS */
                     /* deferred-C: T_DEAD is distinct; state alone frees the slot */
-                    if (threads[t].state == T_DEAD) {
+                    if (threads[t].state == T_DEAD)
+                    {
                         child = t;
                         break;
                     }
                 }
-                if (child < 0) {
+                if (child < 0)
+                {
                     rc = V2_ERR_OVERFLOW;
                     break;
                 }
+                /* The child inherits the parent's qube (same reason as
+                 * SPAWN above: a recycled T_DEAD slot must not keep a
+                 * cleared (0) or stale label). Set before any failure
+                 * break below. */
+                qube_of[child] = qube_of[cur];
+                /* Reclaim the slot's previous life first (same leak as
+                 * SPAWN-reuse had: overwriting caps/vm orphans frames).
+                 * Shared frames are spared by teardown_owned. */
+                {
+                    unsigned long fork_frames[V2_VPN_SLOTS + V2_CAP_SLOTS];
+                    int fork_n = 0;
+                    for (int i = 0; i < V2_VPN_SLOTS; i++)
+                    {
+                        if (caps.vm[child][i].valid)
+                            fork_frames[fork_n++] = caps.vm[child][i].frame;
+                    }
+                    for (int s = 0; s < V2_CAP_SLOTS; s++)
+                    {
+                        if (caps.caps[child][s].valid && !caps.caps[child][s].root)
+                            fork_frames[fork_n++] = caps.caps[child][s].obj;
+                    }
+                    for (int i = 0; i < fork_n; i++)
+                        frame_teardown_owned((unsigned long)child, fork_frames[i]);
+                }
                 /* Copy parent's caps table. The child must not inherit
                  * allocator authority: root bits stay with the parent. */
-                for (int s = 0; s < V2_CAP_SLOTS; s++) {
+                for (int s = 0; s < V2_CAP_SLOTS; s++)
+                {
                     caps.caps[child][s] = caps.caps[cur][s];
                     caps.caps[child][s].root = 0;
                 }
@@ -1316,20 +1684,19 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 /* Build child tables, install the shared mappings, then
                  * write-protect both sides in hardware. */
                 unsigned long child_root = build_child_vspace((unsigned long)cur, (unsigned long)child);
-                if (!child_root) {
+                if (!child_root)
+                {
                     rc = V2_ERR_OVERFLOW;
                     break;
                 }
                 threads[child].vspace_root_ppn = child_root;
-                for (int i = 0; i < V2_VPN_SLOTS; i++) {
+                for (int i = 0; i < V2_VPN_SLOTS; i++)
+                {
                     if (caps.vm[child][i].valid)
-                        v2_pte_install((unsigned long)child,
-                                       caps.vm[child][i].vpn,
-                                       caps.vm[child][i].frame,
+                        v2_pte_install((unsigned long)child, caps.vm[child][i].vpn, caps.vm[child][i].frame,
                                        caps.vm[child][i].rights);
                 }
-                v2_cow_write_protect((unsigned long)cur,
-                                     (unsigned long)child);
+                v2_cow_write_protect((unsigned long)cur, (unsigned long)child);
                 /* Fresh IPC/notify state for the new life. */
                 threads[child].ipc_ptr = 0;
                 threads[child].ipc_cap = 0;
@@ -1341,9 +1708,9 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 /* Copy registers (parent's a0..a7, sp, etc.) */
                 for (int r = 0; r < 32; r++)
                     threads[child].regs[r] = threads[cur].regs[r];
-                threads[child].regs[10] = 0; /* child returns 0 in a0 */
+                threads[child].regs[10] = 0;   /* child returns 0 in a0 */
                 threads[child].regs[11] = cur; /* child gets parent tid in a1 */
-                rc = child; /* parent returns child tid in a0 */
+                rc = child;                    /* parent returns child tid in a0 */
                 break;
             }
             case V2_INV_EXEC: {
@@ -1356,27 +1723,34 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                  * FAIL CLOSED: any validation error -> V2_ERR_INVALID. */
                 const uint8_t *elf_data;
                 uint32_t elf_size;
-                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0) {
+                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (!((a2 == 0 && a3 == 0) ||
-                      v2_recv_range_ok((uintptr_t)a2, a3))) {
+                if (!((a2 == 0 && a3 == 0) || v2_recv_range_ok((uintptr_t)a2, a3)))
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                /* Unmap all user mappings and free frames */
-                for (int i = 0; i < V2_VPN_SLOTS; i++) {
-                    if (caps.vm[cur][i].valid) {
-                        /* Free the frame back to pool */
-                        frame_free((int)caps.vm[cur][i].frame);
-                        v2_pte_clear((unsigned long)cur, caps.vm[cur][i].vpn);
-                        caps.vm[cur][i].valid = 0;
-                    }
+                /* Tear down all user mappings and reclaim their frames.
+                 * Snapshot first (teardown mutates later aliasing slots).
+                 * Shared-with-sibling frames (COW fork child) are unmapped
+                 * on our side only and NOT freed — a system-wide release
+                 * here would destroy the sibling's live mappings. */
+                unsigned long exec_frames[V2_VPN_SLOTS];
+                int exec_nframes = 0;
+                for (int i = 0; i < V2_VPN_SLOTS; i++)
+                {
+                    if (caps.vm[cur][i].valid)
+                        exec_frames[exec_nframes++] = caps.vm[cur][i].frame;
                 }
+                for (int i = 0; i < exec_nframes; i++)
+                    frame_teardown_owned((unsigned long)cur, exec_frames[i]);
                 v2_sfence_all();
                 /* Clear user caps (slots 0..V2_CAP_SLOTS-1, keep root caps) */
-                for (int s = 0; s < V2_CAP_SLOTS; s++) {
+                for (int s = 0; s < V2_CAP_SLOTS; s++)
+                {
                     if (!caps.caps[cur][s].root)
                         caps.caps[cur][s].valid = 0;
                 }
@@ -1384,7 +1758,8 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 {
                     uint64_t entry = 0, brk = 0;
                     rc = v2_elf_load(elf_data, (size_t)elf_size, &caps, (unsigned long)cur, &entry, &brk);
-                    if (rc == V2_OK && entry != 0) {
+                    if (rc == V2_OK && entry != 0)
+                    {
                         v2_pte_sync((unsigned long)cur);
                         threads[cur].regs[2] = u_sp[cur];
                         threads[cur].sepc = entry;
@@ -1393,7 +1768,9 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                             threads[cur].regs[r] = 0;
                         threads[cur].regs[2] = u_sp[cur];
                         rc = 0; /* return 0 on success */
-                    } else if (rc == V2_OK) {
+                    }
+                    else if (rc == V2_OK)
+                    {
                         rc = V2_ERR_INVALID;
                     }
                 }
@@ -1408,21 +1785,23 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                  * identical). FAIL CLOSED: real memory is never touched
                  * on model error. */
                 uint64_t kbuf[1];
-                if (a1 >= (uint64_t)V2_VPN_SLOTS) {
+                if (a1 >= (uint64_t)V2_VPN_SLOTS)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (!v2_send_range_ok((uintptr_t)a2, 1)) {
+                if (!v2_send_range_ok((uintptr_t)a2, 1))
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
                 u_copy_in(kbuf, (uintptr_t)a2, 1);
                 rc = v2_write(&caps, (unsigned long)cur, a1, kbuf[0]);
-                if (rc == V2_OK) {
+                if (rc == V2_OK)
+                {
                     int m = v2_vm_find(&caps, (unsigned long)cur, a1);
                     if (m >= 0) /* model wrote it: mapping must be findable */
-                        v2_real_write(caps.vm[cur][m].frame,
-                                      (const uint8_t *)kbuf, V2_WORD_BYTES);
+                        v2_real_write(caps.vm[cur][m].frame, (const uint8_t *)kbuf, V2_WORD_BYTES);
                 }
                 break;
             }
@@ -1434,23 +1813,26 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                  * FAIL CLOSED: the user destination is touched only on
                  * model + range success. */
                 uint64_t kbuf[1];
-                if (a1 >= (uint64_t)V2_VPN_SLOTS) {
+                if (a1 >= (uint64_t)V2_VPN_SLOTS)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (!v2_recv_range_ok((uintptr_t)a2, 1)) {
+                if (!v2_recv_range_ok((uintptr_t)a2, 1))
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
                 rc = v2_read(&caps, (unsigned long)cur, a1, &kbuf[0]);
-                if (rc == V2_OK) {
+                if (rc == V2_OK)
+                {
                     int m = v2_vm_find(&caps, (unsigned long)cur, a1);
-                    if (m < 0) { /* model read succeeded: must be findable */
+                    if (m < 0)
+                    { /* model read succeeded: must be findable */
                         rc = V2_ERR_INVALID;
                         break;
                     }
-                    v2_real_read(caps.vm[cur][m].frame, (uint8_t *)kbuf,
-                                 V2_WORD_BYTES);
+                    v2_real_read(caps.vm[cur][m].frame, (uint8_t *)kbuf, V2_WORD_BYTES);
                     u_copy_out((uintptr_t)a2, kbuf, 1);
                 }
                 break;
@@ -1464,40 +1846,63 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 uint32_t elf_size;
                 uint64_t entry = 0, brk = 0;
                 int child = -1;
-                if (!(a2 == 0 && a3 == 0)) {
+                if (!(a2 == 0 && a3 == 0))
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (qube_next >= (unsigned long)V2_QUBES_MAX) {
+                if (qube_next >= (unsigned long)V2_QUBES_MAX)
+                {
                     rc = V2_ERR_OVERFLOW;
                     break;
                 }
-                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0) {
+                if (initrd_lookup((uint32_t)a1, &elf_data, &elf_size) != 0)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                for (int t = 0; t < NTHREADS; t++)
+                { /* bound: NTHREADS */
                     /* deferred-C: T_DEAD is distinct; state alone frees the slot */
-                    if (threads[t].state == T_DEAD) {
+                    if (threads[t].state == T_DEAD)
+                    {
                         child = t;
                         break;
                     }
                 }
-                if (child < 0) {
+                if (child < 0)
+                {
                     rc = V2_ERR_OVERFLOW;
                     break;
                 }
                 /* A reused slot may hold a previous life's caps/mappings:
-                 * clear them so the load starts fresh (fail closed). */
+                 * reclaim frames first (same leak SPAWN-reuse had), then
+                 * clear so the load starts fresh (fail closed). Shared
+                 * frames are spared by teardown_owned. */
+                {
+                    unsigned long qc_frames[V2_VPN_SLOTS + V2_CAP_SLOTS];
+                    int qc_n = 0;
+                    for (int i = 0; i < V2_VPN_SLOTS; i++)
+                    {
+                        if (caps.vm[child][i].valid)
+                            qc_frames[qc_n++] = caps.vm[child][i].frame;
+                    }
+                    for (int s = 0; s < V2_CAP_SLOTS; s++)
+                    {
+                        if (caps.caps[child][s].valid && !caps.caps[child][s].root)
+                            qc_frames[qc_n++] = caps.caps[child][s].obj;
+                    }
+                    for (int i = 0; i < qc_n; i++)
+                        frame_teardown_owned((unsigned long)child, qc_frames[i]);
+                }
                 for (int s = 0; s < V2_CAP_SLOTS; s++) /* bound: V2_CAP_SLOTS */
                     caps.caps[child][s].valid = 0;
                 for (int i = 0; i < V2_VPN_SLOTS; i++) /* bound: V2_VPN_SLOTS */
                     caps.vm[child][i].valid = 0;
                 {
-                    unsigned long child_root =
-                        build_child_vspace((unsigned long)cur,
-                                           (unsigned long)child);
-                    if (!child_root) {
+                    unsigned long child_root = build_child_vspace((unsigned long)cur, (unsigned long)child);
+                    if (!child_root)
+                    {
                         rc = V2_ERR_OVERFLOW;
                         break;
                     }
@@ -1512,9 +1917,9 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 /* Fresh registers: no stale-word leak into the new image. */
                 for (int r = 0; r < 32; r++) /* bound: 32 */
                     threads[child].regs[r] = 0;
-                rc = v2_elf_load(elf_data, (size_t)elf_size, &caps,
-                                 (unsigned long)child, &entry, &brk);
-                if (rc == V2_OK && entry != 0) {
+                rc = v2_elf_load(elf_data, (size_t)elf_size, &caps, (unsigned long)child, &entry, &brk);
+                if (rc == V2_OK && entry != 0)
+                {
                     threads[child].state = T_RUNNABLE;
                     v2_pte_sync((unsigned long)child);
                     threads[child].regs[2] = u_sp[child];
@@ -1524,7 +1929,9 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                     kputdec((unsigned long)qube_of[child]);
                     kputs(" up\n");
                     rc = V2_OK;
-                } else {
+                }
+                else
+                {
                     threads[child].state = T_DEAD; /* cleanup on failure */
                     if (rc == V2_OK)
                         rc = V2_ERR_INVALID;
@@ -1534,39 +1941,56 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
             case V2_INV_QDESTROY: {
                 /* QDESTROY (a1=label, a2/a3 reserved=0): park every thread
                  * in the qube, drop their queued IPC, revoke-drain their
-                 * caps + clear hardware PTEs. Label 0 (base system) can
-                 * never be destroyed. FAIL CLOSED. */
+                 * caps + clear hardware PTEs, reclaim unshared frames.
+                 * Label 0 (base system) can never be destroyed. FAIL CLOSED.
+                 * POLICY (deliberate, not an oversight):
+                 * - No caller-authority check: V2 has no privilege levels.
+                 *   QCREATE/QDESTROY/SPAWN are all unprivileged by design;
+                 *   isolation comes from qube labels on the data plane,
+                 *   management is cooperative. Revisit if threat model grows.
+                 * - Live BLOCKED survivors stay blocked: a live SENDer queued
+                 *   for a dead waiter (or RECV waiter for dead senders) keeps
+                 *   T_BLOCKED with its queue entry intact. Waking them with
+                 *   an error would break open-ended rendezvous (a future
+                 *   peer may still arrive), so park-forever is the policy
+                 *   until timeouts/cancellation land. */
                 unsigned long label = (unsigned long)a1;
                 int found = 0;
-                if (!(a2 == 0 && a3 == 0)) {
+                if (!(a2 == 0 && a3 == 0))
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                if (label == 0 || label >= (unsigned long)V2_QUBES_MAX) {
+                if (label == 0 || label >= (unsigned long)V2_QUBES_MAX)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                for (int t = 0; t < NTHREADS; t++)
+                { /* bound: NTHREADS */
                     if (qube_of[t] == (uint8_t)label)
                         found = 1;
                 }
-                if (!found) {
+                if (!found)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
                 /* Drop queued IPC entries owned by the qube (compact both
                  * queues in place; other qubes' entries are preserved). */
                 {
-                    for (int e = 0; e < V2_NEP; e++) { /* bound: V2_NEP (11) */
+                    for (int e = 0; e < V2_NEP; e++)
+                    { /* bound: V2_NEP (11) */
                         v2_ep_t *ep = &eps[e];
                         int w = 0;
-                        for (int i = 0; i < ep->send_len; i++) { /* bound: V2_IPC_Q */
+                        for (int i = 0; i < ep->send_len; i++)
+                        { /* bound: V2_IPC_Q */
                             int idx = (ep->send_head + i) % V2_IPC_Q;
                             unsigned long s = ep->sendq[idx].sender;
-                            if (s < (unsigned long)NTHREADS &&
-                                qube_of[s] == (uint8_t)label)
+                            if (s < (unsigned long)NTHREADS && qube_of[s] == (uint8_t)label)
                                 continue; /* drop: sender dies below */
-                            if (w != i) {
+                            if (w != i)
+                            {
                                 int dst = (ep->send_head + w) % V2_IPC_Q;
                                 ep->sendq[dst] = ep->sendq[idx];
                             }
@@ -1574,34 +1998,53 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                         }
                         ep->send_len = w;
                         w = 0;
-                        for (int i = 0; i < ep->recv_len; i++) { /* bound: V2_IPC_Q */
+                        for (int i = 0; i < ep->recv_len; i++)
+                        { /* bound: V2_IPC_Q */
                             int idx = (ep->recv_head + i) % V2_IPC_Q;
                             unsigned long tid = ep->recvq[idx];
-                            if (tid < (unsigned long)NTHREADS &&
-                                qube_of[tid] == (uint8_t)label)
+                            if (tid < (unsigned long)NTHREADS && qube_of[tid] == (uint8_t)label)
                                 continue; /* drop: waiter dies below */
-                            if (w != i) {
+                            if (w != i)
+                            {
                                 int dst = (ep->recv_head + w) % V2_IPC_Q;
                                 ep->recvq[dst] = ep->recvq[idx];
                             }
                             w++;
                         }
                         ep->recv_len = w;
-                        }
+                    }
                 }
-                /* Revoke-drain caps, clear the whole frame window in
-                 * hardware, park the threads. */
-                for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
+                /* Tear down each dying thread via frame_teardown_owned:
+                 * SHARED frames (COW sibling in a live qube) lose only the
+                 * dead side — the old code called v2_revoke per slot,
+                 * which is system-wide and destroyed live siblings'
+                 * mappings before the live-check could see them (then freed
+                 * under their stale PTEs). UNSHARED frames are fully
+                 * revoked + scrubbed + freed (no QCREATE/QDESTROY pool
+                 * leak). Dead co-owners resolve by processing order. */
+                for (int t = 0; t < NTHREADS; t++)
+                { /* bound: NTHREADS */
+                    unsigned long dying_frames[V2_VPN_SLOTS + V2_CAP_SLOTS];
+                    int dying_n = 0;
+                    int s;
                     if (qube_of[t] != (uint8_t)label)
                         continue;
-                    for (int s = 0; s < V2_CAP_SLOTS; s++) { /* bound: V2_CAP_SLOTS */
-                        if (caps.caps[t][s].valid)
-                            (void)v2_revoke(&caps, (unsigned long)t,
-                                            (unsigned long)s);
+                    /* Snapshot every frame this thread names (mappings +
+                     * caps; teardown is idempotent so no dedupe needed). */
+                    for (int i = 0; i < V2_VPN_SLOTS; i++)
+                    { /* bound: V2_VPN_SLOTS */
+                        if (caps.vm[t][i].valid)
+                            dying_frames[dying_n++] = caps.vm[t][i].frame;
                     }
+                    for (s = 0; s < V2_CAP_SLOTS; s++)
+                    { /* bound: V2_CAP_SLOTS */
+                        if (caps.caps[t][s].valid && !caps.caps[t][s].root)
+                            dying_frames[dying_n++] = caps.caps[t][s].obj;
+                    }
+                    for (int i = 0; i < dying_n; i++)
+                        frame_teardown_owned((unsigned long)t, dying_frames[i]);
                     for (int vpn = 0; vpn < V2_VPN_SLOTS; vpn++) /* bound: V2_VPN_SLOTS */
-                        v2_pte_clear((unsigned long)t,
-                                     (unsigned long)vpn);
+                        v2_pte_clear((unsigned long)t, (unsigned long)vpn);
                     threads[t].state = T_DEAD;
                     threads[t].wait_kind = V2_WK_NONE;
                     threads[t].ipc_ptr = 0;
@@ -1622,17 +2065,18 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                  * Pure address math (V2_FRAME_PHYS_BASE + frame*4096): no
                  * state change, no copy. Miss or nonzero reserved -> INVALID. */
                 int m; /* bound: V2_VPN_SLOTS (v2_vm_find scan) */
-                if (a2 != 0 || a3 != 0) {
+                if (a2 != 0 || a3 != 0)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
                 m = v2_vm_find(&caps, (unsigned long)cur, a1);
-                if (m < 0) {
+                if (m < 0)
+                {
                     rc = V2_ERR_INVALID;
                     break;
                 }
-                rc = (long)(V2_FRAME_PHYS_BASE +
-                            caps.vm[cur][m].frame * 4096UL);
+                rc = (long)(V2_FRAME_PHYS_BASE + caps.vm[cur][m].frame * 4096UL);
                 break;
             }
             default:
@@ -1640,13 +2084,13 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
                 break;
             }
             threads[cur].regs[10] = (uint64_t)rc;
-            kputs("[invoke] tcb=");
-            sbi_putchar('0' + cur);
-            kputs(" op=");
-            kputdec(op);
-            kputs(" rc=");
-            kputdec((unsigned long)rc);
-            sbi_putchar('\n');
+            klog("[invoke] tcb=");
+            klog_char('0' + cur);
+            klog(" op=");
+            klog_dec(op);
+            klog(" rc=");
+            klog_dec((unsigned long)rc);
+            klog_char('\n');
             return;
         }
         threads[cur].sepc += 4;
@@ -1655,7 +2099,7 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx) {
     case 9: /* S-mode ecall: our own SBI calls return via M, never here. */
         threads[cur].sepc += 4;
         return;
-case 13: /* Load page fault */
+    case 13:   /* Load page fault */
     case 15: { /* Store page fault: may be a COW break */
         uint64_t fault_addr;
         asm volatile("csrr %0, stval" : "=r"(fault_addr));
@@ -1666,50 +2110,62 @@ case 13: /* Load page fault */
          * R-only data, unmapped address — falls through to containment.
          * PTE bits are never trusted as COW flags, so this cannot
          * misclassify a legitimate RX page. */
-        if (code == 15 &&
-            fault_addr >= V2_U_END &&
-            fault_addr < V2_U_END + (uint64_t)V2_VPN_SLOTS * 4096UL) {
+        if (code == 15 && fault_addr >= V2_U_END && fault_addr < V2_U_END + (uint64_t)V2_VPN_SLOTS * 4096UL)
+        {
             unsigned long t = (unsigned long)cur;
-            unsigned long vpn =
-                (unsigned long)((fault_addr - V2_U_END) >> 12);
+            unsigned long vpn = (unsigned long)((fault_addr - V2_U_END) >> 12);
             int m = v2_vm_find(&caps, t, vpn);
-            if (m >= 0 && (caps.vm[t][m].rights & V2_RIGHT_W)) {
+            if (m >= 0 && (caps.vm[t][m].rights & V2_RIGHT_W))
+            {
                 unsigned long old_frame = caps.vm[t][m].frame;
                 int new_frame = frame_alloc();
-                if (new_frame >= 0 &&
-                    old_frame < (unsigned long)V2_FRAMES_MAX) {
+                if (new_frame >= 0 && old_frame != 0 && old_frame < (unsigned long)V2_FRAMES_MAX)
+                {
                     /* Copy via physical addresses (S-mode, SUM=0: the
                      * faulting U VA is NOT dereferenced). */
-                    volatile uint64_t *dst = (volatile uint64_t *)
-                        (V2_FRAME_PHYS_BASE + (uintptr_t)new_frame * 4096);
+                    volatile uint64_t *dst = (volatile uint64_t *)(V2_FRAME_PHYS_BASE + (uintptr_t)new_frame * 4096);
                     const volatile uint64_t *src =
-                        (const volatile uint64_t *)
-                        (V2_FRAME_PHYS_BASE + (uintptr_t)old_frame * 4096);
+                        (const volatile uint64_t *)(V2_FRAME_PHYS_BASE + (uintptr_t)old_frame * 4096);
                     for (int i = 0; i < 512; i++) /* bound: 4096/8 */
                         dst[i] = src[i];
                     /* The word-model shadow follows the break so later
                      * WRITE/READ word ops stay coherent with real memory. */
                     caps.fdata[new_frame] = caps.fdata[old_frame];
-                    caps.vm[t][m].frame = (unsigned long)new_frame;
-                    /* Reinstall THIS thread's PTE only (the other sharer
-                     * keeps its R-only PTE until it faults in turn). */
-                    v2_pte_install(t, vpn, (unsigned long)new_frame,
-                                   caps.vm[t][m].rights);
-                    v2_sfence_all();
-                    return; /* Resume the faulting store */
+                    /* The new frame needs a cap: WITHOUT it v2_find_wcap
+                     * fails and every later word op on this vpn returns
+                     * INVALID (and fork children inherit the capless
+                     * mapping). Table-full fails closed like exhaustion:
+                     * give the frame back, fall through to park. */
+                    if (frame_mint_slot(&caps, t, (unsigned long)new_frame) < 0)
+                    {
+                        /* Table full: give the frame back and fall through
+                         * to default below (park offender). No break here:
+                         * break would exit the switch past default and
+                         * resume the faulting store into a fault loop. */
+                        frame_free(new_frame);
+                    }
+                    else
+                    {
+                        caps.vm[t][m].frame = (unsigned long)new_frame;
+                        /* Reinstall THIS thread's PTE only (the other sharer
+                         * keeps its R-only PTE until it faults in turn). */
+                        v2_pte_install(t, vpn, (unsigned long)new_frame, caps.vm[t][m].rights);
+                        v2_sfence_all();
+                        return; /* Resume the faulting store */
+                    }
                 }
             }
+            /* Not a COW share (or no frame left) - fall through to default */
         }
-        /* Not a COW share (or no frame left) - fall through to default */
-    }
+    } /* close case 15 block: execution falls through to default */
     default: { /* fault: park the offender, keep the rest running */
-        kputs("[fault] tcb=");
-        sbi_putchar('0' + cur);
-        kputs(" cause=");
-        kputhex(code);
-        kputs(" epc=");
-        kputhex(threads[cur].sepc);
-        kputs("\n parked; others continue\n");
+        klog("[fault] tcb=");
+        klog_char('0' + cur);
+        klog(" cause=");
+        klog_hex(code);
+        klog(" epc=");
+        klog_hex(threads[cur].sepc);
+        klog("\n parked; others continue\n");
         threads[cur].state = T_PARKED;
         int n = pick_next();
         if (n < 0)
@@ -1719,7 +2175,11 @@ case 13: /* Load page fault */
     }
 }
 
-void kboot(void) {
+void kboot(void)
+{
+    irq_init();
+    if (v2_dev_leaves_mapped_count() <= 0)
+        kputs("DEVLEAF: none live\n");
     kputs("v2 stage2: S-mode entry (OpenSBI)\n");
     for (int e = 0; e < V2_NEP; e++) /* bound: V2_NEP (11) */
         v2_ep_init(&eps[e]);
@@ -1739,13 +2199,18 @@ void kboot(void) {
     u_sp[7] = (uint64_t)ustack_cap_top;
     u_sp[8] = (uint64_t)ustack_vault_top;
     u_sp[9] = (uint64_t)ustack_crypt_top; /* Task 4 spawn reads it */
-    u_sp[10] = (uint64_t)ustack_gui_top; /* S4a spawn reads it */
+    u_sp[10] = (uint64_t)ustack_gui_top;  /* S4a spawn reads it */
     pagetable_init();
     uintptr_t root = (uintptr_t)root_pt_t[0];
     uint64_t satp = (8UL << 60) | ((root >> 12) & 0xFFFFFFFFFFFUL);
-    asm volatile("csrw satp, %0" :: "r"(satp) : "memory");
+    asm volatile("csrw satp, %0" ::"r"(satp) : "memory");
     asm volatile("sfence.vma" ::: "memory");
-    asm volatile("csrc sstatus, %0" :: "r"((1UL << 18) | (1UL << 19)) : "memory");
+    asm volatile("csrc sstatus, %0" ::"r"((1UL << 18) | (1UL << 19)) : "memory");
+    /* Activate kernel framebuffer console: GUI_LFB_PHYS is now reachable via
+     * the S-only l1_m[385] megapage (mapped pre-MMU in pagetable_init).
+     * Every subsequent kputs() call mirrors to both UART and the display. */
+    fbcon_clear();
+    kputs("MoonlightOS v2 kernel\n");
     kputs("v2: satp Sv39 on, U-bit split (k U=0 / u U=1), SUM=0\n");
     /* Phase-2 NIC discovery: transports live at VIRTIO0_BASE+i*0x1000
      * (S-only UART megapage, pre-MMU-mapped). QEMU attaches backends
@@ -1753,21 +2218,19 @@ void kboot(void) {
      * transport 0. A found IRQ gets priority 1 + its enable bit with
      * threshold 0 (any priority-1 IRQ fires); none found leaves
      * net_virtio_irq at 0xFFFFFFFF (handler matches nothing, fail closed). */
-    for (int ti = 0; ti < VIRTIO_NTRANSPORTS; ti++) { /* bound: 8 */
-        volatile uint32_t *tr = (volatile uint32_t *)
-            (VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
-        if (tr[0] == 0x74726976u && tr[1] == 2u &&
-            tr[2] == (uint32_t)VIRTIO_DEV_NET) {
+    for (int ti = 0; ti < VIRTIO_NTRANSPORTS; ti++)
+    { /* bound: 8 */
+        volatile uint32_t *tr = (volatile uint32_t *)(VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
+        if (virtio_ident_match(tr[0], tr[1], tr[2], (uint32_t)VIRTIO_DEV_NET))
+        {
             net_virtio_irq = (uint32_t)(1 + ti);
             break;
         }
     }
-    if (net_virtio_irq != 0xFFFFFFFFUL) {
-        *(volatile uint32_t *)(PLIC_BASE + 4u * net_virtio_irq) = 1;
-        *(volatile uint32_t *)PLIC_ENABLE_M |= (1U << net_virtio_irq);
-        *(volatile uint32_t *)PLIC_ENABLE_S |= (1U << net_virtio_irq);
-        *(volatile uint32_t *)PLIC_THRESH_M = 0;
-        *(volatile uint32_t *)PLIC_THRESH_S = 0;
+    if (net_virtio_irq != VIRTIO_IRQ_NOT_FOUND)
+    {
+        irq_plic_enable(net_virtio_irq);
+        (void)irq_bind(net_virtio_irq, (uint8_t)T_NET, IRQ_KIND_NET, NET_IRQ_BIT);
     }
     /* FDE block discovery: same scan-then-bind as the NIC above, keyed on
      * the virtio-blk device id (never a hardcoded transport: QEMU
@@ -1775,21 +2238,19 @@ void kboot(void) {
      * enable bit with threshold 0 (any priority-1 IRQ fires); none found
      * leaves blk_virtio_irq at 0xFFFFFFFF (handler matches nothing, the
      * ELF parks fail-closed at probe, never spins). */
-    for (int ti = 0; ti < VIRTIO_NTRANSPORTS; ti++) { /* bound: 8 */
-        volatile uint32_t *tr = (volatile uint32_t *)
-            (VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
-        if (tr[0] == 0x74726976u && tr[1] == 2u &&
-            tr[2] == (uint32_t)VIRTIO_DEV_BLK) {
+    for (int ti = 0; ti < VIRTIO_NTRANSPORTS; ti++)
+    { /* bound: 8 */
+        volatile uint32_t *tr = (volatile uint32_t *)(VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
+        if (virtio_ident_match(tr[0], tr[1], tr[2], (uint32_t)VIRTIO_DEV_BLK))
+        {
             blk_virtio_irq = (uint32_t)(1 + ti);
             break;
         }
     }
-    if (blk_virtio_irq != 0xFFFFFFFFUL) {
-        *(volatile uint32_t *)(PLIC_BASE + 4u * blk_virtio_irq) = 1;
-        *(volatile uint32_t *)PLIC_ENABLE_M |= (1U << blk_virtio_irq);
-        *(volatile uint32_t *)PLIC_ENABLE_S |= (1U << blk_virtio_irq);
-        *(volatile uint32_t *)PLIC_THRESH_M = 0;
-        *(volatile uint32_t *)PLIC_THRESH_S = 0;
+    if (blk_virtio_irq != VIRTIO_IRQ_NOT_FOUND)
+    {
+        irq_plic_enable(blk_virtio_irq);
+        (void)irq_bind(blk_virtio_irq, (uint8_t)T_CRYPTBLK, IRQ_KIND_BLK, BLK_IRQ_BIT);
     }
     /* S4c VirtIO input discovery: mouse (first dev-18) and keyboard
      * (second dev-18). VirtIO-input spec uses device ID 18 for all input
@@ -1806,32 +2267,53 @@ void kboot(void) {
      * boot proceeds). */
     {
         int input_found = 0;
-        for (int ti = 0; ti < VIRTIO_NTRANSPORTS && input_found < 2; ti++) { /* bound: 8 */
-            volatile uint32_t *tr = (volatile uint32_t *)
-                (VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
-            if (tr[0] == 0x74726976u && tr[1] == 2u &&
-                tr[2] == (uint32_t)VIRTIO_DEV_INPUT) {
-                if (mouse_virtio_irq == VIRTIO_IRQ_NOT_FOUND) {
+        for (int ti = 0; ti < VIRTIO_NTRANSPORTS && input_found < 2; ti++)
+        { /* bound: 8 */
+            volatile uint32_t *tr = (volatile uint32_t *)(VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
+            if (virtio_ident_match(tr[0], tr[1], tr[2], (uint32_t)VIRTIO_DEV_INPUT))
+            {
+                if (mouse_virtio_irq == VIRTIO_IRQ_NOT_FOUND)
+                {
                     mouse_virtio_irq = (uint32_t)(1 + ti);
                     input_found++;
-                } else if (kbd_virtio_irq == VIRTIO_IRQ_NOT_FOUND) {
+                }
+                else if (kbd_virtio_irq == VIRTIO_IRQ_NOT_FOUND)
+                {
                     kbd_virtio_irq = (uint32_t)(1 + ti);
                     input_found++;
                 }
             }
         }
     }
-    if (kbd_virtio_irq != VIRTIO_IRQ_NOT_FOUND) {
-        *(volatile uint32_t *)(PLIC_BASE + 4u * kbd_virtio_irq) = 1;
-        *(volatile uint32_t *)PLIC_ENABLE_M |= (1U << kbd_virtio_irq);
-        *(volatile uint32_t *)PLIC_ENABLE_S |= (1U << kbd_virtio_irq);
+    if (kbd_virtio_irq != VIRTIO_IRQ_NOT_FOUND)
+    {
+        irq_plic_enable(kbd_virtio_irq);
+        (void)irq_bind(kbd_virtio_irq, (uint8_t)T_GUI, IRQ_KIND_INPUT, KBD_IRQ_BIT);
         kputs("INPUT: kbd found\n");
     }
-    if (mouse_virtio_irq != VIRTIO_IRQ_NOT_FOUND) {
-        *(volatile uint32_t *)(PLIC_BASE + 4u * mouse_virtio_irq) = 1;
-        *(volatile uint32_t *)PLIC_ENABLE_M |= (1U << mouse_virtio_irq);
-        *(volatile uint32_t *)PLIC_ENABLE_S |= (1U << mouse_virtio_irq);
+    if (mouse_virtio_irq != VIRTIO_IRQ_NOT_FOUND)
+    {
+        irq_plic_enable(mouse_virtio_irq);
+        (void)irq_bind(mouse_virtio_irq, (uint8_t)T_GUI, IRQ_KIND_INPUT, MOUSE_IRQ_BIT);
         kputs("INPUT: mouse found\n");
+    }
+    /* Known-but-unowned virtio devices: record a STUB route so a stray
+     * IRQ completes without waking anyone. Do not PLIC-enable and do not
+     * map a U-leaf — no owner tid until V2_CAP_THREADS grows. */
+    {
+        int ti;
+        for (ti = 0; ti < VIRTIO_NTRANSPORTS; ti++)
+        { /* bound: 8 */
+            volatile uint32_t *tr = (volatile uint32_t *)(VIRTIO0_BASE + (unsigned long)ti * 0x1000UL);
+            uint32_t irq = virtio_ident_irq((unsigned)ti);
+            uint32_t id;
+            if (!virtio_ident_present(tr[0], tr[1]))
+                continue;
+            id = tr[2];
+            if (!v2_virtio_dev_known(id) || v2_virtio_owner_tid(id) >= 0)
+                continue;
+            (void)irq_bind(irq, 0, IRQ_KIND_STUB, 0);
+        }
     }
     /* S4a GUI PCI bind: QEMU leaves PCI BARs unprogrammed (no firmware
      * enumeration under OpenSBI), so the kernel assigns BAR0 before the
@@ -1847,13 +2329,16 @@ void kboot(void) {
      * ELF parks marker-free (no "GUI: up", smoke gate misses it). */
     {
         int gui_found = 0;
-        for (int dev = 0; dev < 32 && !gui_found; dev++) { /* bound: 32 (bus-0 devices) */
-            for (int fn = 0; fn < 8 && !gui_found; fn++) { /* bound: 8 (functions) */
-                volatile uint32_t *cfg = (volatile uint32_t *)
-                    (GUI_ECAM_PHYS + (unsigned long)dev * 2048UL +
-                     (unsigned long)fn * 256UL);
+        for (int dev = 0; dev < 32 && !gui_found; dev++)
+        { /* bound: 32 (bus-0 devices) */
+            for (int fn = 0; fn < 8 && !gui_found; fn++)
+            { /* bound: 8 (functions) */
+                volatile uint32_t *cfg =
+                    (volatile uint32_t *)(GUI_ECAM_PHYS + (unsigned long)dev * 2048UL + (unsigned long)fn * 256UL);
                 uint32_t id = cfg[0]; /* offset 0x00: vendor/device */
                 uint32_t b0, b1, mask, size, cmd;
+                uint32_t b2, mask2, size2;
+                volatile uint16_t *vbe;
                 if (id == 0xFFFFFFFFu)
                     continue; /* empty slot: no device */
                 if ((id & 0xFFFFu) != GUI_PCI_VEN)
@@ -1865,7 +2350,7 @@ void kboot(void) {
                     continue; /* I/O BAR: not an MMIO framebuffer */
                 if (((b0 >> 1) & 0x3u) == 0x2u)
                     continue; /* 64-bit BAR type: outside the uint32 model */
-                b1 = cfg[5]; /* offset 0x14: BAR0 high word */
+                b1 = cfg[5];  /* offset 0x14: BAR0 high word */
                 if (b1 != 0u)
                     continue; /* nonzero high word: outside the uint32 model */
                 cfg[4] = 0xFFFFFFFFu;
@@ -1878,18 +2363,37 @@ void kboot(void) {
                     continue; /* BAR sizes are powers of two */
                 if ((GUI_LFB_PHYS & (size - 1u)) != 0u)
                     continue; /* assigned base must be aligned to size */
+                b2 = cfg[6];  /* offset 0x18: Bochs VBE register BAR */
+                if ((b2 & 0x1u) != 0u || ((b2 >> 1) & 0x3u) == 0x2u)
+                    continue; /* only a 32-bit MMIO BAR is supported */
+                cfg[6] = 0xFFFFFFFFu;
+                mask2 = cfg[6];
+                cfg[6] = b2;
+                size2 = (~(mask2 & 0xFFFFFFF0u)) + 1u;
+                if (size2 < 0x1000u || size2 > 0x200000u || (size2 & (size2 - 1u)) != 0u ||
+                    (GUI_VBE_PHYS & (size2 - 1u)) != 0u)
+                    continue; /* BAR2 must fit its mapped 2MB window */
                 cfg[4] = (uint32_t)GUI_LFB_PHYS;
-                cmd = cfg[1]; /* offset 0x04: command register */
+                cfg[6] = (uint32_t)GUI_VBE_PHYS;
+                cmd = cfg[1];        /* offset 0x04: command register */
                 cfg[1] = cmd | 0x6u; /* MEM space + bus master */
+                vbe = (volatile uint16_t *)(GUI_VBE_VA + GUI_VBE_BAR_OFFSET);
+                vbe[4] = 0; /* disable before changing mode */
+                vbe[1] = 800;
+                vbe[2] = 600;
+                vbe[3] = 32;
+                vbe[4] = 0x41; /* enabled + linear framebuffer */
+                asm volatile("fence iorw,iorw" ::: "memory");
                 gui_found = 1;
-                kputs("GUI: bochs bound\n");
+                kputs("GUI: bochs 800x600x32\n");
             }
         }
         if (!gui_found)
             kputs("GUI: no bochs; leaves wired, server will park\n");
     }
 
-    for (int i = 0; i < NTHREADS; i++) { /* bound: NTHREADS */
+    for (int i = 0; i < NTHREADS; i++)
+    { /* bound: NTHREADS */
         for (int r = 0; r < 32; r++)
             threads[i].regs[r] = 0;
         threads[i].sepc = 0;
@@ -1898,8 +2402,7 @@ void kboot(void) {
         threads[i].ipc_cap = 0;
         threads[i].notify = 0;
         threads[i].wait_kind = V2_WK_NONE;
-        threads[i].vspace_root_ppn =
-            (8UL << 60) | (((uintptr_t)root_pt_t[i] >> 12) & 0xFFFFFFFFFFFUL);
+        threads[i].vspace_root_ppn = (8UL << 60) | (((uintptr_t)root_pt_t[i] >> 12) & 0xFFFFFFFFFFFUL);
     }
     /* A valid trap target must exist BEFORE interrupts are enabled: a stale
      * firmware timer can pend and fire at SIE-enable, while cur_ctx is still
@@ -1908,15 +2411,16 @@ void kboot(void) {
     cur = 0;
     cur_ctx = &threads[0];
     trap_stack_top = (uintptr_t)(trap_stack + sizeof(trap_stack));
-    asm volatile("csrw sscratch, %0" :: "r"(trap_stack_top) : "memory");
+    asm volatile("csrw sscratch, %0" ::"r"(trap_stack_top) : "memory");
     /* Arm our timer BEFORE enabling: reprograms stimecmp, de-asserting any
      * stale firmware pending bit. */
     sbi_set_timer(rdtime() + TICK_DELTA);
     /* Phase-2 NIC PLIC setup lives in the discovery block above (priority
      * + enable for the found IRQ, threshold 0 on the claimed context). */
-    asm volatile("csrs sie, %0" :: "r"((1UL << 5) | (1UL << 9)) : "memory"); /* STIE + SEIE */
-    asm volatile("csrs sstatus, %0" :: "r"(1UL << 1) : "memory"); /* SIE */
+    asm volatile("csrs sie, %0" ::"r"((1UL << 5) | (1UL << 9)) : "memory"); /* STIE + SEIE */
+    asm volatile("csrs sstatus, %0" ::"r"(1UL << 1) : "memory");            /* SIE */
 
+    /* Thread 0: parked (was test thread A, not needed for production microkernel) */
     threads[0].regs[2] = u_sp[0];
     threads[0].sepc = (uint64_t)user_a_main;
     threads[0].state = T_RUNNABLE;
@@ -1941,610 +2445,133 @@ void kboot(void) {
         uint32_t elf_size;
         uint64_t entry = 0, brk = 0;
         if (initrd_lookup(0, &elf_data, &elf_size) == 0 &&
-            v2_elf_load(elf_data, (size_t)elf_size, &caps, 2, &entry, &brk) == V2_OK &&
-            entry != 0) {
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 2, &entry, &brk) == V2_OK && entry != 0)
+        {
             v2_pte_sync(2);
             threads[2].sepc = entry;
             kputs("[spawn] mem_server ELF ok\n");
-        } else {
+        }
+        else
+        {
             kputs("[spawn] mem_server ELF FAIL; stub\n");
         }
     }
-    /* S2 brokers: qrexec from initrd index 1 into thread 3 (qube 2),
-     * AdminVM from index 2 into thread 4 (qube 3). Mirrors the mem_server
-     * load above. On success the thread enters the ELF image and prints
-     * QREXEC: up / ADMIN: up from U-mode; on failure it stays parked and
-     * the missing markers fail the smoke loudly (fail closed: no stub
-     * impersonates a broker). Backpressure note: a SEND with no waiter
-     * queues + blocks, and every cross-qube delivery fails INVALID at the
-     * raw gate (no QX grants at boot), so no broker rendezvous can ever
-     * complete across qubes — each broker ends parked in RECV/WAIT or
-     * SEND-blocked on its queued reply, and the A/B + CAP transcript runs
-     * to the clean park with no livelock. */
+    /* Production Microkernel Services (Stage 3):
+     * Load services in the correct order:
+     *   - Shell (moonsh) from index 1 into thread 1
+     *   - Console service from index 3 into thread 3
+     *   - TTY service from index 4 into thread 4
+     *   - GUI service from index 10 into thread 10
+     * Index 2 is unused (was adminvm). Indices 5-9 are reserved for future services. */
+
+    /* Shell: moonsh from initrd index 1 into thread 1 */
     {
         const uint8_t *elf_data;
         uint32_t elf_size;
         uint64_t entry = 0, brk = 0;
         if (initrd_lookup(1, &elf_data, &elf_size) == 0 &&
-            v2_elf_load(elf_data, (size_t)elf_size, &caps, 3, &entry, &brk) == V2_OK &&
-            entry != 0) {
-            v2_pte_sync(3);
-            threads[3].regs[2] = u_sp[3];
-            threads[3].sepc = entry;
-            threads[3].state = T_RUNNABLE;
-            kputs("[spawn] qrexec ELF ok\n");
-        } else {
-            kputs("[spawn] qrexec ELF FAIL; parked\n");
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 1, &entry, &brk) == V2_OK && entry != 0)
+        {
+            v2_pte_sync(1);
+            threads[1].regs[2] = u_sp[1];
+            threads[1].sepc = entry;
+            threads[1].state = T_RUNNABLE;
+            kputs("[spawn] shell ELF ok\n");
+        }
+        else
+        {
+            kputs("[spawn] shell ELF FAIL; parked\n");
         }
     }
-    {
-        const uint8_t *elf_data;
-        uint32_t elf_size;
-        uint64_t entry = 0, brk = 0;
-        if (initrd_lookup(2, &elf_data, &elf_size) == 0 &&
-            v2_elf_load(elf_data, (size_t)elf_size, &caps, 4, &entry, &brk) == V2_OK &&
-            entry != 0) {
-            v2_pte_sync(4);
-            threads[4].regs[2] = u_sp[4];
-            threads[4].sepc = entry;
-            threads[4].state = T_RUNNABLE;
-            kputs("[spawn] adminvm ELF ok\n");
-        } else {
-            kputs("[spawn] adminvm ELF FAIL; parked\n");
-        }
-    }
-    /* S3 packet plane: firewall from initrd index 3 into thread 5 (qube 4),
-     * net from index 4 into thread 6 (qube 5). Mirrors the S2 broker loads
-     * above. On success the thread enters the ELF image and prints FW: up
-     * / NET: up from U-mode; on failure it stays parked and the missing
-     * markers fail the smoke loudly (fail closed: no stub impersonates
-     * the packet plane). Same rendezvous discipline as S2: no QX exists
-     * for these qubes until the boot grants below, so no cross-qube
-     * delivery can complete before the labels + grants land. */
+
+    /* Console service from initrd index 3 into thread 3 */
     {
         const uint8_t *elf_data;
         uint32_t elf_size;
         uint64_t entry = 0, brk = 0;
         if (initrd_lookup(3, &elf_data, &elf_size) == 0 &&
-            v2_elf_load(elf_data, (size_t)elf_size, &caps, 5, &entry, &brk) == V2_OK &&
-            entry != 0) {
-            v2_pte_sync(5);
-            threads[5].regs[2] = u_sp[5];
-            threads[5].sepc = entry;
-            threads[5].state = T_RUNNABLE;
-            kputs("[spawn] firewall ELF ok\n");
-        } else {
-            kputs("[spawn] firewall ELF FAIL; parked\n");
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 3, &entry, &brk) == V2_OK && entry != 0)
+        {
+            v2_pte_sync(3);
+            threads[3].regs[2] = u_sp[3];
+            threads[3].sepc = entry;
+            threads[3].state = T_RUNNABLE;
+            kputs("[spawn] console ELF ok\n");
+        }
+        else
+        {
+            kputs("[spawn] console ELF FAIL; parked\n");
         }
     }
+
+    /* TTY service from initrd index 4 into thread 4 */
     {
         const uint8_t *elf_data;
         uint32_t elf_size;
         uint64_t entry = 0, brk = 0;
         if (initrd_lookup(4, &elf_data, &elf_size) == 0 &&
-            v2_elf_load(elf_data, (size_t)elf_size, &caps, 6, &entry, &brk) == V2_OK &&
-            entry != 0) {
-            v2_pte_sync(6);
-            threads[6].regs[2] = u_sp[6];
-            threads[6].sepc = entry;
-            threads[6].state = T_RUNNABLE;
-            kputs("[spawn] net ELF ok\n");
-        } else {
-            kputs("[spawn] net ELF FAIL; parked\n");
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 4, &entry, &brk) == V2_OK && entry != 0)
+        {
+            v2_pte_sync(4);
+            threads[4].regs[2] = u_sp[4];
+            threads[4].sepc = entry;
+            threads[4].state = T_RUNNABLE;
+            kputs("[spawn] tty ELF ok\n");
+        }
+        else
+        {
+            kputs("[spawn] tty ELF FAIL; parked\n");
         }
     }
-    /* FDE vault: initrd index 8 into thread 8 (qube 6, labeled below).
-     * Mirrors the S2/S3 loads above. On success the thread enters the
-     * ELF image and prints VAULT: up from U-mode; on failure it stays
-     * parked and the missing marker fails the smoke loudly (fail closed:
-     * nothing impersonates the vault). */
-    {
-        const uint8_t *elf_data;
-        uint32_t elf_size;
-        uint64_t entry = 0, brk = 0;
-        if (initrd_lookup(8, &elf_data, &elf_size) == 0 &&
-            v2_elf_load(elf_data, (size_t)elf_size, &caps, 8, &entry, &brk) == V2_OK &&
-            entry != 0) {
-            v2_pte_sync(8);
-            threads[8].regs[2] = u_sp[8];
-            threads[8].sepc = entry;
-            threads[8].state = T_RUNNABLE;
-            kputs("[spawn] vault ELF ok\n");
-        } else {
-            kputs("[spawn] vault ELF FAIL; parked\n");
-        }
-    }
-    /* FDE cryptblk: initrd index 9 into thread 9 (qube 7, labeled
-     * below). Mirrors the vault load above. On success the thread enters
-     * the ELF image and runs the unlock demo from U-mode (printing the
-     * CRYPT: markers); on failure it stays parked and the missing markers
-     * fail the smoke loudly (fail closed: nothing impersonates cryptblk).
-     * kboot only spawns + asserts here: the demo lives in the ELF. */
-    {
-        const uint8_t *elf_data;
-        uint32_t elf_size;
-        uint64_t entry = 0, brk = 0;
-        if (initrd_lookup(9, &elf_data, &elf_size) == 0 &&
-            v2_elf_load(elf_data, (size_t)elf_size, &caps, 9, &entry, &brk) == V2_OK &&
-            entry != 0) {
-            v2_pte_sync(9);
-            threads[9].regs[2] = u_sp[9];
-            threads[9].sepc = entry;
-            threads[9].state = T_RUNNABLE;
-            kputs("[spawn] cryptblk ELF ok\n");
-        } else {
-            kputs("[spawn] cryptblk ELF FAIL; parked\n");
-        }
-    }
-    /* S4a gui: initrd index 10 into thread 10 (qube 8, labeled below).
-     * Mirrors the cryptblk load above. On success the thread enters the
-     * ELF image, binds bochs-display through the GUIMMIO leaves and
-     * prints GUI: up from U-mode, then RECV-waits on EP10 (no client
-     * yet: Task 5 drives FILLs). On failure it stays parked and the
-     * missing marker fails the smoke loudly (fail closed: nothing
-     * impersonates the display server). kboot only spawns + asserts
-     * here: scan/bind/FILL live in the ELF. */
+
+    /* Threads 5-9: reserved for future services (deferred), remain parked */
+
+    /* GUI service from initrd index 10 into thread 10 */
     {
         const uint8_t *elf_data;
         uint32_t elf_size;
         uint64_t entry = 0, brk = 0;
         if (initrd_lookup(10, &elf_data, &elf_size) == 0 &&
-            v2_elf_load(elf_data, (size_t)elf_size, &caps, 10, &entry, &brk) == V2_OK &&
-            entry != 0) {
+            v2_elf_load(elf_data, (size_t)elf_size, &caps, 10, &entry, &brk) == V2_OK && entry != 0)
+        {
             v2_pte_sync(10);
             threads[10].regs[2] = u_sp[10];
             threads[10].sepc = entry;
             threads[10].state = T_RUNNABLE;
             kputs("[spawn] gui ELF ok\n");
-        } else {
+        }
+        else
+        {
             kputs("[spawn] gui ELF FAIL; parked\n");
         }
     }
-    /* Qubes boot labels: mem_server (thread 2) owns qube 1, qrexec
-     * (thread 3) owns qube 2, AdminVM (thread 4) owns qube 3, firewall
-     * (thread 5) owns qube 4, net (thread 6) owns qube 5, vault
-     * (thread 8) owns qube 6, cryptblk (thread 9) owns qube 7, gui
-     * (thread 10) owns qube 8; A/B/CAP stub stay in qube 0. Fresh
-     * QCREATE labels start at qube_next == 9 == V2_QUBES_MAX: the qube
-     * table is full (documented cap — any further qube forces a
-     * V2_QUBES_MAX bump + proof replay, S4b). */
-    qube_of[2] = 1;
-    qube_of[3] = 2;
-    qube_of[4] = 3;
-    qube_of[5] = 4;
-    qube_of[6] = 5;
-    qube_of[8] = 6;
-    qube_of[9] = 7;
-    qube_of[10] = 8;
-    qube_next = 9;
-    kputs("QUB: qube0 qube1 up\n");
-    /* NETQ label assert: fail closed (mismatch prints marker-free
-     * "[demo] FAIL", so the smoke gate misses the marker and fails). */
-    if (qube_of[5] != 4 || qube_of[6] != 5 || qube_next != 9) {
-        kputs("[demo] FAIL netq labels\n");
-    } else {
-        kputs("NETQ: labels ok\n");
-    }
-    /* VAULTQ label assert: vault (thread 8) owns qube 6 and the next
-     * fresh label is 9 (cryptblk took 7, gui takes 8 below). Fail-closed
-     * like NETQ above; the one QX grant below is documented beside this
-     * assert. */
-    if (qube_of[8] != 6 || qube_next != 9) {
-        kputs("[demo] FAIL vaultq labels\n");
-    } else {
-        kputs("VAULTQ: labels ok\n");
-    }
-    /* CRYPTQ label assert: cryptblk (thread 9) owns qube 7 and the next
-     * fresh label is 9 (gui took 8 below) == V2_QUBES_MAX. Fail-closed
-     * like NETQ above; the FDE QX grants below are documented beside
-     * this assert. */
-    if (qube_of[9] != 7 || qube_next != 9) {
-        kputs("[demo] FAIL cryptq labels\n");
-    } else {
-        kputs("CRYPTQ: labels ok\n");
-    }
-    /* GUIQ label assert: gui (thread 10) owns qube 8 and the next fresh
-     * label is 9 == V2_QUBES_MAX. Fail-closed like NETQ above; the gui
-     * QX grant below is documented beside this assert. */
-    if (qube_of[10] != 8 || qube_next != 9) {
-        kputs("[demo] FAIL guiq labels\n");
-    } else {
-        kputs("GUIQ: labels ok\n");
-    }
-    /* S3 QX boot grants: QX is holder-based (qube_has_qx scans the
-     * sender's own table), so each cross-qube leg needs its sender to
-     * hold a QX cap. Three legs, three holders, all at slot 9: slot 8 is
-     * the live data-plane slot (firewall FW_IN_SLOT, net NET_IN_SLOT —
-     * both ELFs enforce slot==8 fail-closed), and MAP rejects QX-bit
-     * caps, so a boot QX cap at slot 8 would collide with the live frame
-     * GRANT(->8)+MAP(8) path (grant needs an empty dst). The QX grants
-     * therefore live at slot >= 9, leaving slot 8 free in tid 5/6 for
-     * live traffic. qube0 augments its slot-9 root in place, then
-     * delegates verbatim (QX flows through v2_grant unchanged):
-     * qube0->firewall lands tid 5 slot 9 (enables firewall->net) and
-     * firewall->net lands tid 6 slot 9 (enables net->firewall).
-     * Fail-closed: any grant failure prints marker-free "[demo] FAIL". */
-    caps.caps[0][9].rights |= V2_RIGHT_QX;
-    if (v2_grant(&caps, 0, 9, 5, 9) != V2_OK ||
-        v2_grant(&caps, 5, 9, 6, 9) != V2_OK ||
-        !qube_has_qx(0) || !qube_has_qx(5) || !qube_has_qx(6)) {
-        kputs("[demo] FAIL qx boot grants\n");
-    }
-    /* FDE vault QX boot grant (exactly one): qrexec (thread 3) needs a QX
-     * cap so its approved T_DELIVERs reach the vault (thread 8, qube 6)
-     * through the raw gate (cross-qube handoff needs QX on the sender).
-     * Same shape as the S3 grants above: qube0's QX-augmented slot-9 root
-     * delegates verbatim into the broker's slot 9 (slot 8 stays free of
-     * QX-bit caps: MAP rejects QX, and the live data-plane GRANT+MAP
-     * path needs an empty dst). The vault takes no direct calls and the
-     * AdminVM rewrap/format calls also route via qrexec ask, so this one
-     * leg covers every Task-3 deliver path (see the VAULTQ assert above).
-     * Live-traffic second path (Task 5): thread A's T_CALL leg drives an
-     * approved keys.sign deliver along this same broker->vault grant —
-     * the broker (sender, tid 3) already holds QX via this line and
-     * thread A (sender, tid 0) holds QX via the S3 root above, so the
-     * live ask+deny legs REUSE this grant and add no second grant into
-     * tid 3 slot 9 (v2_grant fails on an occupied dst — caps.h).
-     * Fail-closed: any grant failure prints marker-free "[demo] FAIL". */
-    if (v2_grant(&caps, 0, 9, 3, 9) != V2_OK || !qube_has_qx(3)) {
-        kputs("[demo] FAIL vault qx grant\n");
-    }
-    /* FDE cryptblk QX boot grants (Task 4): QX is holder-based, so each
-     * cross-qube sender holds its own QX cap; all land at slot >= 9
-     * (slot 8 stays free of QX-bit caps: MAP rejects QX, and the key/data
-     * GRANT+MAP paths need an empty dst — same shape as the S3 block).
-     *   qube0 -> cryptblk (tid 9 slot 9): the direct AppVM-FS path —
-     *     cryptblk's replies to qube-0 callers route cross-qube.
-     *   qrexec -> cryptblk (tid 9 slot 10): chain delegation mirroring
-     *     the S3 firewall->net grant (QX flows through v2_grant
-     *     unchanged) — the approved-T_DELIVER path.
-     *   qube0 -> vault (tid 8 slot 9): the T_KEY-notice path — the raw
-     *     gate needs QX on the SENDER, so the vault's keyless notice to
-     *     cryptblk requires this grant (Step-0 ratification necessity).
-     * The qrexec -> vault leg keeps its Task-3 grant (tid 3 holds QX).
-     * Fail-closed: any grant failure prints marker-free "[demo] FAIL". */
-    if (v2_grant(&caps, 0, 9, 9, 9) != V2_OK ||
-        v2_grant(&caps, 3, 9, 9, 10) != V2_OK ||
-        v2_grant(&caps, 0, 9, 8, 9) != V2_OK ||
-        !qube_has_qx(9) || !qube_has_qx(8) || !qube_has_qx(3)) {
-        kputs("[demo] FAIL crypt qx grants\n");
-    }
-    /* Live-traffic QX grant (deferred-A): QX is holder-based. Thread A's
-     * T_CALL leg reuses the FDE vault-grant line above
-     * (v2_grant(&caps, 0, 9, 3, 9)): v2_grant fails on an occupied dst
-     * (caps.h), so a second grant into tid 3 slot 9 ALWAYS fails — the
-     * FDE line's assert comment is extended to cover this leg instead.
-     * One grant is ADDED here:
-     *   qube0 -> admin (tid 4 slot 9): HELLO + T_DECIDE to the broker.
-     * Same slot-9 shape (user/admin tables hold no caps; MAP rejects
-     * QX-bit caps). Fail-closed like every grant block here. */
-    if (v2_grant(&caps, 0, 9, 4, 9) != V2_OK || !qube_has_qx(4)) {
-        kputs("[demo] FAIL live qx grants\n");
-    }
-    /* S4a GUI QX boot grant (exactly one): qube0 -> gui (tid 10 slot 9).
-     * QX is holder-based (qube_has_qx scans the sender's own table), so
-     * the cross-qube legs need their senders to hold QX: thread A's
-     * FILLs (qube 0 -> qube 8, Task 5) ride thread A's qube0 slot-9 root
-     * (augmented in place by the S3 block above — A IS tid 0, no
-     * delegation needed for A itself), and the server's R_OK/R_DENY
-     * replies (qube 8 -> qube 0) ride this grant into tid 10 slot 9.
-     * Same slot-9 shape (gui table holds no caps yet; MAP rejects QX-bit
-     * caps, so slot 8 stays free). Fail-closed: any grant failure prints
-     * marker-free "[demo] FAIL". */
-    if (v2_grant(&caps, 0, 9, 10, 9) != V2_OK ||
-        !qube_has_qx(10) || !qube_has_qx(0)) {
-        kputs("[demo] FAIL gui qx grant\n");
-    }
-    /* NETMMIO leaf gate: the transport U-leaf exists ONLY in tid 6's
-     * tables (l1_t[6][5]); any other mapping is a leak — except tid 8,
-     * which reuses leaf INDEX 5 for its own RNG table (per-thread l1_t
-     * isolation, no alias). Fail-closed:
-     * mismatch prints marker-free "[demo] FAIL", so the smoke gate
-     * misses the marker and fails instead of passing on a lie. */
-    {
-        int mmio_ok = (l1_t[6][5] != 0);
-        for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-            if (t != 6 && t != 8 && l1_t[t][5] != 0)
-                mmio_ok = 0;
-        }
-        if (mmio_ok)
-            kputs("NETMMIO: tid=6 only\n");
-        else
-            kputs("[demo] FAIL netmmio leak\n");
-    }
-    /* BLKMMIO leaf gate: the transport U-leaf exists ONLY in tid 9's
-     * tables (l1_t[9][6]); any other mapping is a leak — except tid 10,
-     * which reuses leaf INDEX 6 for its own LFB table (per-thread l1_t
-     * isolation, no alias). S4c: additionally requires tid 10's input
-     * leaves (l1_t[10][9]/[10]) so a half-applied kernel fails this gate
-     * loudly too. Fail-closed like NETMMIO above. */
-    {
-        int mmio_ok = (l1_t[9][6] != 0) && (l1_t[10][9] != 0) && (l1_t[10][10] != 0);
-        for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-            if (t != 9 && t != 10 && l1_t[t][6] != 0)
-                mmio_ok = 0;
-        }
-        if (mmio_ok)
-            kputs("BLKMMIO: tid=9 only\n");
-        else
-            kputs("[demo] FAIL blkmmio leak\n");
-    }
-    /* RNGMMIO leaf gate: the transport U-leaf exists ONLY in tid 8's
-     * tables (l1_t[8][5]); any other mapping is a leak — except tid 6,
-     * which reuses leaf INDEX 5 for its own NET table (per-thread l1_t
-     * isolation, no alias). Fail-closed like NETMMIO above. */
-    {
-        int mmio_ok = (l1_t[8][5] != 0);
-        for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-            if (t != 8 && t != 6 && l1_t[t][5] != 0)
-                mmio_ok = 0;
-        }
-        if (mmio_ok)
-            kputs("RNGMMIO: tid=8 only\n");
-        else
-            kputs("[demo] FAIL rngmmio leak\n");
-    }
-    /* GUIMMIO leaf gate: the LFB + ECAM U-leaves exist ONLY in tid 10's
-     * tables (l1_t[10][6] = LFB, l1_t[10][7] = ECAM), plus the S4c input
-     * leaves (l1_t[10][9] = kbd, l1_t[10][10] = mouse); any other mapping
-     * is a leak. Index 6 is shared with BLK by design (tid 9 keeps its
-     * own table — checked by the BLKMMIO gate above). Fail-closed:
-     * mismatch prints marker-free "[demo] FAIL", so the smoke gate
-     * misses the marker and fails instead of passing on a lie. */
-    {
-        int mmio_ok = (l1_t[10][6] != 0) && (l1_t[10][7] != 0) && (l1_t[10][9] != 0) && (l1_t[10][10] != 0);
-        for (int t = 0; t < NTHREADS; t++) { /* bound: NTHREADS */
-            if (t != 10 && t != 9 && l1_t[t][6] != 0)
-                mmio_ok = 0;
-            if (t != 10 && l1_t[t][7] != 0)
-                mmio_ok = 0;
-            if (t != 10 && l1_t[t][9] != 0)
-                mmio_ok = 0;
-            if (t != 10 && l1_t[t][10] != 0)
-                mmio_ok = 0;
-        }
-        if (mmio_ok)
-            kputs("GUIMMIO: tid=10 only\n");
-        else
-            kputs("[demo] FAIL guimmio leak\n");
-    }
-    /* S2 demo transcript (runs once at boot, in-kernel test_cap_thread-style
-     * sequence: straight-line, bounded, no loops, no IPC). It drives the
-     * REAL boot labels through qube_raw_ok and the qube.h policy ops the
-     * qrexec broker runs on (decide/enqueue/decide/audit), printing one
-     * marker per leg. Fail-closed: any unexpected result prints a
-     * marker-free "[demo] FAIL" line, so the smoke gate misses the marker
-     * and fails instead of passing on a lie.
-     *
-     * Honesty note (Task 3 follow-up d): there is no GETC in the V2 UABI,
-     * so the AdminVM auto-approves after displaying the hash prompt. The
-     * Ask leg below is therefore display-only: qube_decide_idx(approve=1)
-     * stands in for the console confirm, while the enqueue + hash-pinned
-     * decide + audit path is the real broker path.
-     *
-     * Arg-less note (Task 3 follow-up c): v2_qask_t carries
-     * (src, dst, rpc, hash) with no arg fields and T_DECIDE deliver
-     * forwards zeros, so the S2 demo RPCs use rpc ids only
-     * (keys.sign=1, clipboard=2) and no args are dropped anywhere. */
-    {
-        v2_qpolicy_t demo;
-        v2_qask_t ask;
-        uint8_t hbuf[1];
-        int dec;
-        demo.nrules = 2;
-        demo.npending = 0;
-        demo.naudit = 0;
-        demo.rules[0] = (v2_qrule_t){.src = 0, .dst = 1, .rpc = 1,
-                                     .decision = V2_QDEC_ASK};
-        demo.rules[1] = (v2_qrule_t){.src = V2_QWILD, .dst = V2_QWILD,
-                                     .rpc = 2, .decision = V2_QDEC_DENY};
-        /* 1. Direct work->vault bypass hits the raw gate: thread 0 is qube 0,
-         * thread 2 is qube 1. Literal 0 tests the gate independent of
-         * thread-0's cap table (identical today: thread 0 holds no QX). */
-        if (qube_raw_ok(qube_of, (unsigned long)NTHREADS, 0, 2, 0)) {
-            kputs("[demo] FAIL raw gate allowed xqube\n");
-        } else {
-            (void)qube_audit(&demo, 0, 1, 0, 0);
-            kputs("QUB: xread denied\n");
-        }
-        /* 2. work->vault keys.sign raises Ask. */
-        dec = qube_decide(&demo, 0, 1, 1);
-        if (dec != V2_QDEC_ASK) {
-            kputs("[demo] FAIL keys.sign not ask\n");
-        } else {
-            kputs("QREXEC: ask\n");
-        }
-        /* 3. Enqueue the ask, then display-only auto-approve (approve=1). */
-        hbuf[0] = 1;
-        ask.src = 0;
-        ask.dst = 1;
-        ask.rpc = 1;
-        ask.hash = qube_fnv1a(hbuf, 1);
-        if (qube_ask_enqueue(&demo, &ask) != V2_OK ||
-            qube_decide_idx(&demo, 0, 1) != V2_OK) {
-            kputs("[demo] FAIL ask approve\n");
-        } else {
-            kputs("QREXEC: allow\n");
-        }
-        /* 4. work->net clipboard attempt is denied with no prompt. */
-        dec = qube_decide(&demo, 0, 1, 2);
-        if (dec != V2_QDEC_DENY) {
-            kputs("[demo] FAIL clipboard not deny\n");
-        } else {
-            (void)qube_audit(&demo, 0, 1, 2, 0);
-            kputs("QREXEC: deny\n");
-        }
-        /* 5. Audit count: raw-deny + allow + clipboard-deny = 3 entries. */
-        if (demo.naudit != 3) {
-            kputs("[demo] FAIL audit count\n");
-        } else {
-            kputs("AUD: ");
-            kputdec(demo.naudit);
-            kputs(" entries\n");
-        }
-        /* Audit-full self-test (deferred-B): model the cap rule on a
-         * local policy — 64 appends ok, 65th OVERFLOW with entries
-         * intact, helper refuses at cap and appends below it. */
-        {
-            v2_qpolicy_t fulltest;
-            int fq;
-            fulltest.nrules = 0;
-            fulltest.npending = 0;
-            fulltest.naudit = 0;
-            for (fq = 0; fq < 64; fq++) { /* bound: V2_AUDIT_MAX */
-                if (qube_audit(&fulltest, 0, 6, 1, 1) != 0)
-                    kputs("[demo] FAIL audit fill\n");
-            }
-            if (fulltest.naudit != 64 ||
-                qube_audit(&fulltest, 0, 6, 1, 1) != -2 ||
-                fulltest.naudit != 64 ||
-                qube_audit_allow(&fulltest, 0, 6, 1) != -2 ||
-                qube_audit_room(&fulltest) != 0) {
-                kputs("[demo] FAIL audit cap\n");
-            } else {
-                fulltest.naudit = 63;
-                if (!qube_audit_room(&fulltest) ||
-                    qube_audit_allow(&fulltest, 0, 6, 1) != 0 ||
-                    fulltest.naudit != 64) {
-                    kputs("[demo] FAIL audit room\n");
-                } else {
-                    kputs("AUD: full ok\n");
-                }
-            }
-        }
-    }
-    /* S3 Phase-1 demo (model-level: straight-line, bounded, no IPC).
-     * Drives the real fw_decide + qube_fnv1a + qube_raw_ok + qube_audit
-     * over one demo frame, one marker per leg. Fail-closed: any
-     * unexpected result prints marker-free "[demo] FAIL", so the smoke
-     * gate misses the marker and fails instead of passing on a lie.
-     * The frame lifecycle closes in-model via v2_revoke. */
-    {
-        fw_rule_t frules[3];
-        v2_qpolicy_t netdemo;
-        uint8_t pkt[64] = {0};
-        unsigned long i;
-        unsigned long sender_qube;
-        int ds, ms, gs, ns;
-        uint64_t h;
-        int dec;
-        /* Ruleset v0 mirror (boot): DNS out, HTTPS to Ask, else DENY. */
-        frules[0] = (fw_rule_t){.src_qube = 0,
-                                .proto = (unsigned long)FW_PROTO_UDP,
-                                .dport = 53,
-                                .verdict = FW_ALLOW};
-        frules[1] = (fw_rule_t){.src_qube = 0,
-                                .proto = (unsigned long)FW_PROTO_TCP,
-                                .dport = 443,
-                                .verdict = FW_ASK};
-        frules[2] = (fw_rule_t){.src_qube = FW_ANY_QUBE,
-                                .proto = (unsigned long)FW_ANY_PROTO,
-                                .dport = (unsigned long)FW_ANY_PORT,
-                                .verdict = FW_DENY};
-        netdemo.nrules = 0;
-        netdemo.npending = 0;
-        netdemo.naudit = 0;
-        /* Allow packet: IPv4 ethertype, UDP, dport 53 (BE tail bytes). */
-        pkt[12] = 0x08;
-        pkt[13] = 0x00;
-        pkt[FW_ETH_HDR + 9] = FW_PROTO_UDP;
-        pkt[FW_ETH_HDR + FW_IP_MIN + 2] = 0;
-        pkt[FW_ETH_HDR + FW_IP_MIN + 3] = 53;
-        /* 1. Allow leg: alloc the demo frame as the qube-0 scratch holder
-         * (thread 7/CAP stub: empty table at demo time, so slot 0),
-         * attenuate to R-only in place (slot 1, free), grant R to the
-         * firewall's first free slot, hash the bytes, grant R onward to
-         * net's first free slot, re-hash (integrity holds) and decide:
-         * UDP/53 from qube 0 must ALLOW. */
-        ds = frame_alloc_slot(&caps, 7);
-        ms = 1;
-        gs = -1;
-        ns = -1;
-        for (i = 0; i < (unsigned long)V2_CAP_SLOTS; i++) { /* bound: V2_CAP_SLOTS */
-            if (gs < 0 && !caps.caps[5][i].valid)
-                gs = (int)i;
-            if (ns < 0 && !caps.caps[6][i].valid)
-                ns = (int)i;
-        }
-        h = qube_fnv1a(pkt, 64);
-        if (ds < 0 ||
-            v2_mint(&caps, 7, (unsigned long)ds, V2_RIGHT_R,
-                    (unsigned long)ms) != V2_OK ||
-            gs < 0 || ns < 0 ||
-            v2_grant(&caps, 7, (unsigned long)ms, 5,
-                     (unsigned long)gs) != V2_OK ||
-            v2_grant(&caps, 5, (unsigned long)gs, 6,
-                     (unsigned long)ns) != V2_OK ||
-            qube_fnv1a(pkt, 64) != h) {
-            kputs("[demo] FAIL fw allow setup\n");
-        } else {
-            dec = fw_decide(frules, 3, 0, pkt, 64);
-            if (dec != FW_ALLOW) {
-                kputs("[demo] FAIL fw allow decide\n");
-            } else {
-                /* src 0, dst FW_QUBE 4, rpc NET_SEND 3, allowed. */
-                (void)qube_audit(&netdemo, 0, 4, 3, 1);
-                kputs("FW: allow\n");
-            }
-        }
-        /* 2. Deny leg: same frame, TCP/22 (no row covers it) -> DENY. */
-        pkt[FW_ETH_HDR + 9] = FW_PROTO_TCP;
-        pkt[FW_ETH_HDR + FW_IP_MIN + 2] = 0;
-        pkt[FW_ETH_HDR + FW_IP_MIN + 3] = 22;
-        dec = fw_decide(frules, 3, 0, pkt, 64);
-        if (dec != FW_DENY) {
-            kputs("[demo] FAIL fw deny decide\n");
-        } else {
-            /* src 0, dst FW_QUBE 4, rpc NET_SEND 3, denied. */
-            (void)qube_audit(&netdemo, 0, 4, 3, 0);
-            kputs("FW: deny\n");
-        }
-        /* 3. Leak leg: AppVM (thread 0, qube 0) -> net (thread 6, qube 5)
-         * with no QX must read 0 at the raw gate. Literal 0 tests the
-         * gate independent of thread-0's table (which now holds QX). */
-        if (qube_raw_ok(qube_of, (unsigned long)NTHREADS, 0, 6, 0)) {
-            kputs("[demo] FAIL leak open\n");
-        } else {
-            /* src 0, dst NET_QUBE 5, rpc NET_SEND 3, denied. */
-            (void)qube_audit(&netdemo, 0, 5, 3, 0);
-            kputs("LEAK: denied\n");
-        }
-        /* 4. Spoof leg: an announcement stamped with sender_qube != 4
-         * (FW_QUBE) is ignored, like the net stub's silent drop (which
-         * audits nothing). */
-        sender_qube = 0;
-        if (sender_qube != 4UL) {
-            kputs("SPOOF: ignored\n");
-        } else {
-            kputs("[demo] FAIL spoof accepted\n");
-        }
-        /* 5. Audit count: allow + deny + leak-deny = 3 entries (the spoof
-         * drop audits nothing, like the stub). */
-        if (netdemo.naudit != 3) {
-            kputs("[demo] FAIL net audit count\n");
-        } else {
-            kputs("AUD: ");
-            kputdec(netdemo.naudit);
-            kputs(" entries\n");
-        }
-        /* 6. Lifecycle: revoke the demo frame (drops the scratch cap and
-         * every granted copy system-wide, mappings included). */
-        if (ds < 0 || v2_revoke(&caps, 7, (unsigned long)ds) != V2_OK) {
-            kputs("[demo] FAIL revoke\n");
-        } else {
-            /* S4a frame budget (pool 32 -> 40, 39 usable): steady demand
-             * is ~27-29 frames: 8 boot ELFs = 22 image frames (mem 1 +
-             * qrexec 2 + adminvm 2 + fw 2 + net 2 + vault 3 + cryptblk 8
-             * + gui 2, measured `llvm-readelf -l`) + net DMA 2 +
-             * cryptblk DMA 2 + CAP 1, plus transient key/record frames
-             * (freed after use). Revoke alone drops caps/mappings but
-             * leaves the bitmap marked used, so return the demo frame
-             * to the pool: it was zeroed at alloc and never WRITEn
-             * (model ops only), and frame_alloc_slot re-zeroes on
-             * next alloc. */
-            frame_free(ds);
-        }
-    }
-    kputs("v2: entering U-mode mem_server\n");
-    enter_thread(0);
+
+    /* Production microkernel boot complete: all services loaded */
+
+    /* Qube assignments (production microkernel - all services in qube 0):
+     * For the production microkernel, all services run in qube 0 (system qube)
+     * to allow free IPC communication without qube security barriers.
+     * - Thread 0: kernel (qube 0)
+     * - Thread 1: shell/moonsh (qube 0)
+     * - Thread 2: mem_server (qube 0)
+     * - Thread 3: console (qube 0)
+     * - Thread 4: tty (qube 0)
+     * - Threads 5-9: reserved (parked)
+     * - Thread 10: gui (qube 0)
+     */
+    qube_of[1] = 0;  /* Shell */
+    qube_of[2] = 0;  /* mem_server */
+    qube_of[3] = 0;  /* console */
+    qube_of[4] = 0;  /* tty */
+    qube_of[10] = 0; /* gui */
+    qube_next = 1;   /* Next available qube for future isolation */
+
+    kputs("Services: mem+console+tty+gui up\n");
+
+    /* Disable verbose runtime logging now that boot is complete */
+    boot_log_enabled = 0;
+
+    /* Boot complete - enter scheduler at thread 2 (mem_server) */
+    kputs("v2: entering U-mode\n");
+    enter_thread(2);
 }

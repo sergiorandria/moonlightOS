@@ -34,15 +34,14 @@
  * per service-loop iteration, no state held across iterations except the
  * VMK + mounted superblock.
  *
- * Seed honesty (dev-grade): the boot demo derives its KEK from the
- * vault-attested seed words via pbkdf2_hmac_sha256 with the per-volume
- * header salt at CRYPT_KDF_SMOKE_ITERS iterations (small for the QEMU
- * gate; no compiled-in passphrase). The attestation nonce is public wire
- * bytes, so secrecy still rests on future AdminVM passphrase entry at
- * CRYPT_KDF_ITERS_DEFAULT work factor, documented, never compiled in.
- * Format folds rdtime into the DRBG (fresh salt/VMK per format); the
- * DRBG itself stays test-grade, disclosed in userspace/crypt/kdf.h —
- * production hardware-RNG seeding is future work (audit-deferred).
+ * Seed honesty (dev-grade seed, production KDF): the boot demo derives
+ * its KEK from the vault-attested seed words via pbkdf2_hmac_sha256 with
+ * the per-volume header salt at KDF_ITERS_DEFAULT iterations (600K,
+ * OWASP 2023; no compiled-in passphrase). The attestation nonce is public
+ * wire bytes, so secrecy still rests on future AdminVM passphrase entry,
+ * documented, never compiled in. Format folds rdtime into the production
+ * DRBG (fresh salt/VMK per format; production hardware-RNG seeding is
+ * future work, audit-deferred).
  *
  * Sector layout (4K sectors; disk 256M = 65536 sectors of 512B LBA):
  *   0..1 header (HEADER_SECTORS; USED bytes 568 all in sector 0)
@@ -56,9 +55,10 @@
  * plaintext. Data sector first, tag sector second (crash between =
  * mismatch = detected, never silent).
  *
- * Single-DRBG-owner rule (kdf.h): this TU defines CRYPT_DRBG_DEFINE and
- * is the only owner of the DRBG state in this ELF (cryptblk_start.S is
- * asm). All key-bearing locals and one-shot buffers are crypt_wipe'd on
+ * Single-DRBG-owner rule (kdf_production.h): this TU defines
+ * CRYPT_DRBG_DEFINE and is the only owner of the production DRBG state in
+ * this ELF (cryptblk_start.S is asm; ChaCha20 stream with entropy
+ * accounting, fail-closed on exhaustion). All key-bearing locals and one-shot buffers are crypt_wipe'd on
  * every exit path. All loops carry bounds. State is stack-local except
  * the DMA frames (capability-held, RW, never X); string literals are
  * private rodata (U-mapped). W^X intact (linker script unchanged).
@@ -68,7 +68,7 @@
 
 #include "../../kernel/qube.h"
 #include "../crypt/aead.h"
-#include "../crypt/kdf.h"
+#include "../crypt/kdf_production.h"
 #include "layout.h"
 #include "slot.h"
 
@@ -206,10 +206,11 @@
  * pbkdf2_hmac_sha256 (no compiled-in vectors, no fixed format seed). The seed
  * words arrive through crypt_get_seed below (RANDOM_REQ on EP8, R_OK
  * from vault qube6 on EP9); the format salt/VMK come from fresh
- * drbg_next bytes (no fixed DRBG seed). */
-/* QEMU-gate KDF work factor (release factor CRYPT_KDF_ITERS_DEFAULT,
- * AdminVM-attended, never compiled in). */
-#define CRYPT_KDF_SMOKE_ITERS 8192UL
+ * drbg_generate_production bytes (no fixed DRBG seed). */
+/* Production KDF work factor (OWASP 2023): format stamps new slots at
+ * KDF_ITERS_DEFAULT. Unlock honors the per-slot stored iters, so
+ * pre-migration volumes (8192-iter demo factor) keep unlocking. */
+#define CRYPT_KDF_SMOKE_ITERS KDF_ITERS_DEFAULT
 
 struct blk_desc {
     uint64_t addr;
@@ -968,20 +969,31 @@ static int crypt_format(crypt_state_t *st, const uint8_t *seed)
     h->slots[0].iters = (uint32_t)CRYPT_KDF_SMOKE_ITERS;
     h->slots[0].label = CRYPT_QUBE;
     /* Fresh per-format DRBG state (no fixed seed): the caller seed
-     * folded with rdtime, hashed into the DRBG; the header salt, VMK
-     * and slot salt come from fresh drbg_next bytes (already linked).
-     * The salt is stored in the header, so freshness here never
-     * affects unlock stability across boots. */
+     * folded with rdtime reseeds the production DRBG; the header salt, VMK
+     * and slot salt come from fresh drbg_generate_production bytes. The
+     * salt is stored in the header, so freshness here never affects
+     * unlock stability across boots. Entropy claim is conservative (64):
+     * the vault-attested words are near-public (see seed-honesty note),
+     * so only rdtime + transport timing back the estimate; pulls per
+     * boot (≈4) sit orders of magnitude below the catastrophic gate. */
     now = u_rdtime();
     for (i = 0; i < 8UL; i++) /* bound: 8 (rdtime bytes) */
         mix[i] = (uint8_t)(now >> (8u * i));
     for (i = 0; i < 32UL; i++) /* bound: 32 (seed bytes) */
         mix[8u + i] = seed[i];
-    drbg_seed(mix, sizeof(mix));
+    if (drbg_reseed_production(mix, sizeof(mix), 64) != 0) {
+        crypt_wipe(mix, sizeof(mix));
+        return -1;
+    }
     crypt_wipe(mix, sizeof(mix));
-    drbg_next(h->salt, 32);
-    drbg_next(st->vmk, 32);
-    drbg_next(salt8, 8);
+    if (drbg_generate_production(h->salt, 32) != 0 ||
+        drbg_generate_production(st->vmk, 32) != 0 ||
+        drbg_generate_production(salt8, 8) != 0) {
+        crypt_wipe(h->salt, sizeof(h->salt));
+        crypt_wipe(st->vmk, sizeof(st->vmk));
+        crypt_wipe(salt8, sizeof(salt8));
+        return -1;
+    }
     if (crypt_kek(h, seed, kek) != 0) {
         crypt_wipe(st->vmk, sizeof(st->vmk));
         return -1;

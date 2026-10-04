@@ -56,6 +56,17 @@
 
 #define VMM_QCAP 256u /* max descriptors per queue handled here */
 
+/* Overflow-safe containment check for an address range in a pool/window. */
+static inline int vmm_range_within(uintptr_t base, size_t span,
+                                   uintptr_t addr, size_t len)
+{
+    uintptr_t offset;
+    if (len == 0 || span > UINTPTR_MAX - base || addr < base)
+        return 0;
+    offset = addr - base;
+    return offset <= span && len <= span - offset;
+}
+
 /* virtio device IDs seen on riscv-virt */
 #define VIRTIO_DEV_NET 1u
 #define VIRTIO_DEV_BLK 2u

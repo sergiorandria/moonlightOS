@@ -8,14 +8,15 @@
  * AEAD nonce discipline for slots (unique-(slot,salt) construction):
  * the 12B ChaCha20-Poly1305 nonce is salt[8] || label-u32-LE, and the
  * associated data is "SLOT" || label-u32-LE || iters-u32-LE. Fresh
- * drbg_next bytes per wrap in production make every wrapped record
+ * production-DRBG salt per wrap makes every wrapped record
  * distinct even for the same KEK+VMK (the test seeds the DRBG explicitly
  * and checks two wraps differ); the label in BOTH nonce and AD means a
  * record transplanted across labels fails authentication. iters == 0 is
  * rejected on both paths as a public-metadata guard.
  *
  * Single-DRBG-owner rule: this header never defines CRYPT_DRBG_DEFINE;
- * the test TU (or exactly one TU per later ELF) owns the kdf.h DRBG state.
+ * the test TU (or exactly one TU per later ELF) owns the
+ * kdf_production.h DRBG state.
  * Wrapped layout: rec.wrapped = ct[32] || tag[16] (SLOT_WRAPPED 48). */
 #ifndef MOONLIGHT_CRYPTBLK_SLOT_H
 #define MOONLIGHT_CRYPTBLK_SLOT_H

@@ -138,8 +138,7 @@ per-function where not).
 
 ## 7. Scheduling (dispatch exists at Stage 1)
 
-- Stage 1: preemptive round-robin, timer-driven, per-hart, O(1) bitmap
-  picker (v1's 256×N scan is banned by the C-subset loop-bound rule).
+- Stage 1: preemptive round-robin, timer-driven, per-hart, bounded picker.
 - Stage 3+: EDF within static time partitions (v1's design, kept), but
   admission control lives in the sched_server while *enforcement*
   (budget decrement, overrun → preempt + fault to server) is kernel.
@@ -167,8 +166,8 @@ per-function where not).
   *Demo:* `E` runs as a host simulator stepping two threads.
   - BUILT 2026-09-09: `kernel/isabelle/V2_A.thy` (session `V2`, `isabelle build`
     clean, 0 axioms, 0 `sorry`). State = thread list + `cur`; transitions
-    `tcb_create/suspend/resume` + `sched_step` (lowest-Runnable; round-robin
-    fairness is Stage-1 liveness work, noted in the theory). Invariants
+    `tcb_create/suspend/resume` + `sched_step` (round-robin from `cur`, with
+    a concrete three-thread rotation trace). Invariants
     `valid_ids`/`bounded` with preservation across all 4 transitions,
     `step_picks_runnable`, mutant witnesses for both, `eval` lemmas pinning
     demo values. Gated in `verify.sh [2b/2c]` + CI `isabelle` job.
@@ -180,16 +179,15 @@ per-function where not).
     (`no_M`, `kw` stable), `console_correct`, `bad_traps`, concrete mutants,
     `eval` trace lemma. Implementation: Sv39 with U-bit split (2MB
     megapages for user text/data, 4K pages for kernel RX/RW split),
-    stvec traps, SBI timer preemption (100ms), lowest-Runnable scheduler
+    stvec traps, SBI timer preemption (100ms), round-robin scheduler
     (mirrors `V2_A.sched_step`), UABI yield/putc/park, SBI-forward console,
     fault containment (B executes illegal insn, parked, A unaffected).
     Demo transcript: `A0..4`, `[sched] parked 0`, `B`, `!`,
     `[fault] tcb=1 cause=2`, `no runnable left; parking cpu`.
     REFINEMENTS vs this doc: (a) memory isolation is via U-bit, not PMP
     (base PMP cannot distinguish S from U; PMP stays firmware-owned,
-    lockdown is later work); (b) scheduler is lowest-Runnable, not
-    round-robin-from-cur (fairness is Stage-1-liveness vs Stage-0-safety
-    split; the implementation matches the proven spec exactly);
+    lockdown is later work); (b) scheduler rotates round-robin from the
+    current TID, matching the executable `V2_A.sched_step` model;
     (c) a `V2_PARK` blocking primitive arrived early (needed so B runs;
     specified as `UPark` in `V2_B` with preservation lemmas).
     PAID DEBUGGING LESSONS: arm SBI timer before enabling SIE (stale

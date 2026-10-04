@@ -667,6 +667,7 @@ void vfs_server_run(uint32_t ep) {
  * mints a zeroed frame cap in our table). riscv: real ecall; host-sim:
  * stub that fails closed (init creates nothing, same as alloc failure). */
 #define VFS_INV_PT_ALLOC 6
+#define VFS_INV_MAP 3
 #ifdef __riscv
 static long vfs_ecall4(long sys, long a0, long a1, long a2, long a3) {
     register long r_a0 asm("a0") = a0;
@@ -690,11 +691,31 @@ static long vfs_invoke(long op, long a1, long a2, long a3) {
 }
 #endif
 
+/* Mapped-frame VA window: VA = 0x80800000 + vpn * 4096, vpns
+ * bump-allocated 32..63 (32 files max, never freed: files live to reboot).
+ * Base 32 clears the ELF image + net scratch precedent at vpn<8 with wide
+ * headroom; 32-bit truncation is safe (all VAs < 4GB). riscv: the MAP
+ * invoke installs the mapping; host-sim: the invoke fails, so this fails
+ * closed. Returns 0 on any failure (bad frame, window full, MAP denied). */
+#define VFS_MAP_VPN_BASE 32UL
+#define VFS_MAP_VPN_MAX 64UL
+static unsigned long vfs_map_next = VFS_MAP_VPN_BASE; /* bump: 32..63 */
+unsigned long vfs_map_frame(unsigned long frame) {
+    unsigned long vpn;
+    if (frame == 0xFFFFFFFFUL) return 0;
+    if (vfs_map_next >= VFS_MAP_VPN_MAX) return 0;
+    vpn = vfs_map_next;
+    if (vfs_invoke(VFS_INV_MAP, (long)frame, (long)vpn, 0) != 0) return 0;
+    vfs_map_next++;
+    return 0x80800000UL + vpn * 4096UL;
+}
+
 /* Seed for the in-kernel shell build (called from shell_main via a
  * weak symbol; the bare moonsh.elf build has no VFS server so the call is
  * skipped there). Registers a placeholder "sh" file backed by a PT_ALLOC
- * invoked frame recorded in the file slot (minted via Untyped retype,
- * no hardcoded frame). Clamp/validate-then-write stays in
+ * invoked frame mapped to the VA window above and recorded in the file
+ * slot (minted via Untyped retype, no hardcoded frame, never the raw slot:
+ * slots are not VAs). Clamp/validate-then-write stays in
  * vfs_create/vfs_write and the IPC reply shapes are untouched.
  * NOTE: this is NOT the initrd: the initrd blob lives in the kernel image
  * (.data) and is looked up via initrd_lookup(), it never occupies pool
@@ -702,8 +723,11 @@ static long vfs_invoke(long op, long a1, long a2, long a3) {
  * initrd TOC instead of hardcoding one frame. */
 void vfs_server_init(void) {
     long slot = vfs_invoke(VFS_INV_PT_ALLOC, 0, 0, 0);
+    unsigned long va;
     if (slot < 0) return; /* fail closed: no placeholder without a frame */
+    va = vfs_map_frame((unsigned long)slot);
+    if (va == 0) return; /* fail closed: no mapping, no placeholder */
     /* moonsh (shell): 1 frame = 4096 bytes. */
-    vfs_create(VFS_SHELL_CLIENT, "sh", (unsigned)slot, 4096, 0, VFS_READ);
+    vfs_create(VFS_SHELL_CLIENT, "sh", (unsigned)va, 4096, 0, VFS_READ);
     /* Add more binaries here as they're added to initrd */
 }

@@ -28,23 +28,34 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Frame pool bound (Task 4: 16 -> 32; S4a: 32 -> 40; Task 5 owns the
- * proof impact, V2_D max_frames divergence note extended there, never
- * here).
- * Budget table (measured Task-4 exit, `llvm-readelf -l` page counts):
- *   images: mem 1 + qrexec 2 + adminvm 2 + fw 2 + net 2 + vault 3 +
- *     cryptblk 8 (6 text + rodata + bss) = 20 steady
+/* Frame pool bound (Task 4: 16 -> 32; S4a: 32 -> 40; shell: 40 -> 128;
+ * Task 5 owns the proof impact, V2_D max_frames divergence note extended
+ * there, never here).
+ * Budget table (measured ELF file sizes, 2026-10-04):
+ *   boot images: mem 2 + qrexec 4 + adminvm 3 + fw 3 + net 3 + vault 6 +
+ *     cryptblk 9 + gui 5 = ~35 pages steady
  *   runtime: net DMA 2 + cryptblk DMA 2 + CAP 1 = 5 steady
  *   transient: key/record frames <= 2 (zeroed + revoked after use)
- *   total steady ~25-27 of 31 usable (frame 0 stays kernel-reserved).
- * Task-3 exit was exactly 15/15 usable: the pool could not fit cryptblk
- * without this bump. 32x4K = 128K fits the 0x81000000 window trivially
- * (asserted in kboot.c beside the pool).
- * S4a: gui image 2 pages (measured `llvm-readelf -l`: RX text + RW bss)
- * + headroom -> 40 (39 usable, steady ~27-29).
+ *   on-demand shell: moonsh ~13 + ls/cat ~4 = ~17 (SPAWN after boot)
+ *   total peak ~35 + 5 + 2 + 17 = ~59 of 127 usable (frame 0 stays
+ *   kernel-reserved). 40 frames (39 usable) fit boot alone but CANNOT fit
+ *   an on-demand moonsh spawn afterwards: the 128 bump is required for
+ *   the shell to function, and replaces the reverted lazy-spawn
+ *   experiment (single strategy: measured bump, not lazy + bump).
+ * 128x4K = 512K fits the 0x81000000 window trivially (_Static_assert in
+ * kboot.c beside the pool scales with V2_FRAMES_MAX).
+ * Cap slots 32 -> 64 alongside: full boot + shell spawn address more
+ * live caps (per-thread data-plane + QX grants); 64 keeps every table
+ * sparse. BSS impact ~29KB total (caps 11x64 + fdata 128 + vm 11x32).
+ * PROOF DIVERGENCE: kernel/isabelle/V2_D.thy still pins max_frames = 8,
+ * max_slots = 16 lineage. Every bump widens the gap between the shipped
+ * configuration and the verified model: Task 5 must replay the proofs at
+ * 128/64 before this configuration is called verified. Until then the
+ * host tests (test_v2caps/test_elf/test_frames) cover the MECHANISM, not
+ * the BOUND.
  * The LFB is MMIO-leaf range (l0_guifb, never pool frames). */
-#define V2_FRAMES_MAX 40
-#define V2_CAP_SLOTS 32
+#define V2_FRAMES_MAX 128
+#define V2_CAP_SLOTS 64
 /* FDE growth (Task 3): 8 -> 10 threads (vault tid 8, cryptblk tid 9).
  * S4a growth: 10 -> 11 threads (gui tid 10).
  * Page tables (kboot root_pt_t/l1_t/l0_u_t), qube_of[], u_sp[] and the
@@ -70,28 +81,32 @@
 #define V2_ERR_OVERFLOW (-2)
 #endif
 
-typedef struct {
+typedef struct
+{
     int valid;
     unsigned long obj;    /* frame id (< V2_FRAMES_MAX) */
     unsigned long rights; /* subset of {R,W,X}; W^X enforced */
     int root;             /* single-level lineage: init roots only */
 } v2_capslot_t;
 
-typedef struct {
+typedef struct
+{
     int valid;
     unsigned long vpn;
     unsigned long frame;
     unsigned long rights; /* copied from the mapping cap (X allowed, W^X enforced) */
 } v2_mapslot_t;
 
-typedef struct {
+typedef struct
+{
     v2_capslot_t caps[V2_CAP_THREADS][V2_CAP_SLOTS];
     uint64_t fdata[V2_FRAMES_MAX];
     v2_mapslot_t vm[V2_CAP_THREADS][V2_VPN_SLOTS];
     unsigned long nthreads;
 } v2_caps_t;
 
-typedef struct {
+typedef struct
+{
     unsigned long vpn;
     unsigned long len;
     int write;
@@ -103,6 +118,15 @@ typedef struct {
 
 /* Cap is well-formed: object in range, rights subset of {R,W,X,QX}, W^X enforced.
  * QX is an IPC-gate bit only (never installed in a PTE; v2_map rejects it). */
+
+/* Rights masks for clarity */
+#define V2_RIGHT_MEM_MASK 0x7UL         /* R|W|X (memory rights only) */
+#define V2_RIGHT_IPC_GATE (V2_RIGHT_QX) /* cross-qube IPC gate */
+#define V2_RIGHT_ALL_MASK 0xFUL         /* R|W|X|QX (all rights) */
+
+/* Range validation: maximum span for overflow-safe checks */
+#define V2_MAX_RANGE_WORDS 262144UL /* 2MB max span (safety limit for u_copy) */
+
 static inline int v2_cap_ok(unsigned long obj, unsigned long rights)
 {
     if (obj >= (unsigned long)V2_FRAMES_MAX)
@@ -155,25 +179,29 @@ static inline void v2_caps_init(v2_caps_t *st, unsigned long nthreads)
     if (nthreads > (unsigned long)V2_CAP_THREADS)
         nthreads = (unsigned long)V2_CAP_THREADS;
     st->nthreads = nthreads;
-    for (t = 0; t < (unsigned long)V2_CAP_THREADS; t++) {
-        for (i = 0; i < V2_CAP_SLOTS; i++) {
+    for (t = 0; t < (unsigned long)V2_CAP_THREADS; t++)
+    {
+        for (i = 0; i < V2_CAP_SLOTS; i++)
+        {
             st->caps[t][i].valid = 0;
             st->caps[t][i].obj = 0;
             st->caps[t][i].rights = 0;
             st->caps[t][i].root = 0;
         }
-        for (i = 0; i < V2_VPN_SLOTS; i++) {
+        for (i = 0; i < V2_VPN_SLOTS; i++)
+        {
             st->vm[t][i].valid = 0;
             st->vm[t][i].vpn = 0;
             st->vm[t][i].frame = 0;
             st->vm[t][i].rights = 0;
         }
     }
-    for (i = 0; i < V2_FRAMES_MAX; i++) /* bound: V2_FRAMES_MAX (40) */
+    for (i = 0; i < V2_FRAMES_MAX; i++) /* bound: V2_FRAMES_MAX */
         st->fdata[i] = 0;
-    for (i = 0; i < V2_FRAMES_MAX && i < V2_CAP_SLOTS; i++) { /* bound: V2_FRAMES_MAX (40) */
+    for (i = 0; i < V2_FRAMES_MAX && i < V2_CAP_SLOTS; i++)
+    { /* bound: min(FRAMES_MAX, CAP_SLOTS) */
         /* Init roots: thread 0 holds a root cap on every frame the table
-         * can name (40 frames, 32 slots: the first 32 frames). */
+         * can name (the first V2_CAP_SLOTS frames). */
         st->caps[0][i].valid = 1;
         st->caps[0][i].obj = (unsigned long)i;
         st->caps[0][i].rights = V2_RIGHT_RW;
@@ -185,8 +213,7 @@ static inline void v2_caps_init(v2_caps_t *st, unsigned long nthreads)
  * table. Copies never inherit the root bit. Mirrors d_mint.
  * Rights may include X (for ELF code caps) or QX (IPC cross-qube grant);
  * W^X is enforced: no W+X together. QX attenuates via the subset check. */
-static inline int v2_mint(v2_caps_t *st, unsigned long t, unsigned long src,
-                          unsigned long rights, unsigned long dst)
+static inline int v2_mint(v2_caps_t *st, unsigned long t, unsigned long src, unsigned long rights, unsigned long dst)
 {
     const v2_capslot_t *c;
     if (!st || !v2_has_cap(st, t, src))
@@ -213,8 +240,7 @@ static inline int v2_mint(v2_caps_t *st, unsigned long t, unsigned long src,
  * root bit cleared; QX flows through verbatim so a holder can delegate the
  * cross-qube grant — attenuation happens at MINT time). The only op that
  * grows another thread. Mirrors d_grant. */
-static inline int v2_grant(v2_caps_t *st, unsigned long from, unsigned long slot,
-                           unsigned long to, unsigned long dst)
+static inline int v2_grant(v2_caps_t *st, unsigned long from, unsigned long slot, unsigned long to, unsigned long dst)
 {
     const v2_capslot_t *c;
     if (!st || !v2_has_cap(st, from, slot))
@@ -235,8 +261,7 @@ static inline int v2_grant(v2_caps_t *st, unsigned long from, unsigned long slot
 
 /* MAP t slot vpn: map the frame through a valid cap. Mapping rights = cap
  * rights (X allowed for ELF code, W^X enforced). Mirrors d_map. */
-static inline int v2_map(v2_caps_t *st, unsigned long t, unsigned long slot,
-                         unsigned long vpn)
+static inline int v2_map(v2_caps_t *st, unsigned long t, unsigned long slot, unsigned long vpn)
 {
     const v2_capslot_t *c;
     int i;
@@ -249,8 +274,10 @@ static inline int v2_map(v2_caps_t *st, unsigned long t, unsigned long slot,
         return V2_ERR_INVALID; /* QX is an IPC-gate bit, never a memory right */
     if ((c->rights & V2_RIGHT_W) && (c->rights & V2_RIGHT_X))
         return V2_ERR_INVALID; /* W^X: mapping cannot be both writable and executable */
-    for (i = 0; i < V2_VPN_SLOTS; i++) {
-        if (!st->vm[t][i].valid) {
+    for (i = 0; i < V2_VPN_SLOTS; i++)
+    {
+        if (!st->vm[t][i].valid)
+        {
             st->vm[t][i].valid = 1;
             st->vm[t][i].vpn = vpn;
             st->vm[t][i].frame = c->obj;
@@ -279,35 +306,52 @@ static inline unsigned long v2_vm_install_rights(unsigned long rights)
 {
     unsigned long flags = 0;
     rights &= 0x7UL; /* mask: QX never reaches hardware flags */
-    if (rights & V2_RIGHT_R) flags |= 1UL << 1; /* PTE_R */
-    if (rights & V2_RIGHT_W) flags |= (1UL << 2) | (1UL << 3); /* PTE_W | PTE_D */
-    if ((rights & V2_RIGHT_X) && !(rights & V2_RIGHT_W)) flags |= 1UL << 4; /* PTE_X (only if not W) */
+    if (rights & V2_RIGHT_R)
+        flags |= 1UL << 1; /* PTE_R */
+    if (rights & V2_RIGHT_W)
+        flags |= (1UL << 2) | (1UL << 3); /* PTE_W | PTE_D */
+    if ((rights & V2_RIGHT_X) && !(rights & V2_RIGHT_W))
+        flags |= 1UL << 4;            /* PTE_X (only if not W) */
     flags |= (1UL << 0) | (1UL << 6); /* PTE_V | PTE_A (valid + accessed) */
     return flags;
 }
 
-/* REVOKE t slot: destroy every NON-ROOT cap to the object system-wide,
- * drop every mapping to it. Roots (the allocator's caps) survive so the
- * mem_server can re-issue. Mirrors d_revoke. bound: threads x slots. */
-static inline int v2_revoke(v2_caps_t *st, unsigned long t, unsigned long slot)
+/* Kernel-authority core of REVOKE: destroy every non-root cap to frame f
+ * and every mapping of f, system-wide, with no actor check. Used by the
+ * actor-checked v2_revoke below and by kernel-driven teardown (qube
+ * destroy, exec, failed ELF load), where the kernel is the authority.
+ * bound: threads x (slots + vpn slots). */
+static inline void v2_revoke_frame(v2_caps_t *st, unsigned long f)
 {
-    unsigned long f, u;
+    unsigned long u;
     int i;
-    if (!st || !v2_has_cap(st, t, slot))
-        return V2_ERR_INVALID;
-    f = st->caps[t][slot].obj;
-    for (u = 0; u < st->nthreads; u++) {
-        for (i = 0; i < V2_CAP_SLOTS; i++) {
+    if (!st)
+        return;
+    for (u = 0; u < st->nthreads; u++)
+    {
+        for (i = 0; i < V2_CAP_SLOTS; i++)
+        {
             v2_capslot_t *c = &st->caps[u][i];
             if (c->valid && c->obj == f && !c->root)
                 c->valid = 0;
         }
-        for (i = 0; i < V2_VPN_SLOTS; i++) {
+        for (i = 0; i < V2_VPN_SLOTS; i++)
+        {
             v2_mapslot_t *m = &st->vm[u][i];
             if (m->valid && m->frame == f)
                 m->valid = 0;
         }
     }
+}
+
+/* REVOKE t slot: destroy every NON-ROOT cap to the object system-wide,
+ * drop every mapping to it. Roots (the allocator's caps) survive so the
+ * mem_server can re-issue. Mirrors d_revoke. */
+static inline int v2_revoke(v2_caps_t *st, unsigned long t, unsigned long slot)
+{
+    if (!st || !v2_has_cap(st, t, slot))
+        return V2_ERR_INVALID;
+    v2_revoke_frame(st, st->caps[t][slot].obj);
     return V2_OK;
 }
 
@@ -318,10 +362,10 @@ static inline int v2_find_wcap(const v2_caps_t *st, unsigned long t, unsigned lo
     int i;
     if (!v2_cap_holder_ok(st, t))
         return 0;
-    for (i = 0; i < V2_CAP_SLOTS; i++) {
+    for (i = 0; i < V2_CAP_SLOTS; i++)
+    {
         const v2_capslot_t *c = &st->caps[t][i];
-        if (c->valid && (c->rights & V2_RIGHT_W) && c->obj == f &&
-            v2_cap_ok(c->obj, c->rights))
+        if (c->valid && (c->rights & V2_RIGHT_W) && c->obj == f && v2_cap_ok(c->obj, c->rights))
             return 1;
     }
     return 0;
@@ -332,18 +376,17 @@ static inline int v2_find_rcap(const v2_caps_t *st, unsigned long t, unsigned lo
     int i;
     if (!v2_cap_holder_ok(st, t))
         return 0;
-    for (i = 0; i < V2_CAP_SLOTS; i++) {
+    for (i = 0; i < V2_CAP_SLOTS; i++)
+    {
         const v2_capslot_t *c = &st->caps[t][i];
-        if (c->valid && (c->rights & V2_RIGHT_R) && c->obj == f &&
-            v2_cap_ok(c->obj, c->rights))
+        if (c->valid && (c->rights & V2_RIGHT_R) && c->obj == f && v2_cap_ok(c->obj, c->rights))
             return 1;
     }
     return 0;
 }
 
 /* Data path: needs cap right AND mapping right. Mirrors d_write/d_read. */
-static inline int v2_write(v2_caps_t *st, unsigned long t, unsigned long vpn,
-                           uint64_t val)
+static inline int v2_write(v2_caps_t *st, unsigned long t, unsigned long vpn, uint64_t val)
 {
     int i;
     unsigned long f;
@@ -363,8 +406,7 @@ static inline int v2_write(v2_caps_t *st, unsigned long t, unsigned long vpn,
     return V2_OK;
 }
 
-static inline int v2_read(v2_caps_t *st, unsigned long t, unsigned long vpn,
-                          uint64_t *out)
+static inline int v2_read(v2_caps_t *st, unsigned long t, unsigned long vpn, uint64_t *out)
 {
     int i;
     unsigned long f;
@@ -393,11 +435,11 @@ static inline int v2_vm_noexec(const v2_caps_t *st)
     int i;
     if (!st)
         return 0;
-    for (t = 0; t < st->nthreads; t++) {
-        for (i = 0; i < V2_VPN_SLOTS; i++) {
-            if (st->vm[t][i].valid &&
-                (st->vm[t][i].rights & V2_RIGHT_W) &&
-                (st->vm[t][i].rights & V2_RIGHT_X))
+    for (t = 0; t < st->nthreads; t++)
+    {
+        for (i = 0; i < V2_VPN_SLOTS; i++)
+        {
+            if (st->vm[t][i].valid && (st->vm[t][i].rights & V2_RIGHT_W) && (st->vm[t][i].rights & V2_RIGHT_X))
                 return 0;
         }
     }
@@ -415,7 +457,8 @@ static inline int v2_elf_ok(int magic_ok, const v2_phdr_t *ph, unsigned long n)
         return 0;
     if (!ph)
         return 0;
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < n; i++)
+    {
         if (ph[i].len < 1 || ph[i].len > (unsigned long)V2_SEG_LEN_MAX)
             return 0;
         if (ph[i].write && ph[i].exec)
@@ -435,8 +478,7 @@ static inline unsigned long v2_elf_map_count(const v2_phdr_t *ph, unsigned long 
     return total;
 }
 
-static inline int v2_elf_map(const v2_phdr_t *ph, unsigned long n,
-                             unsigned long *out_vpn, int *out_w,
+static inline int v2_elf_map(const v2_phdr_t *ph, unsigned long n, unsigned long *out_vpn, int *out_w,
                              unsigned long cap, unsigned long *out_n)
 {
     unsigned long i, k, at = 0;
@@ -445,8 +487,10 @@ static inline int v2_elf_map(const v2_phdr_t *ph, unsigned long n,
     *out_n = 0;
     if (v2_elf_map_count(ph, n) > cap)
         return V2_ERR_OVERFLOW;
-    for (i = 0; i < n; i++) {
-        for (k = 0; k < ph[i].len; k++) { /* bound: V2_SEG_LEN_MAX */
+    for (i = 0; i < n; i++)
+    {
+        for (k = 0; k < ph[i].len; k++)
+        { /* bound: V2_SEG_LEN_MAX */
             out_vpn[at] = ph[i].vpn + k;
             out_w[at] = ph[i].write ? 1 : 0;
             at++;
@@ -456,7 +500,19 @@ static inline int v2_elf_map(const v2_phdr_t *ph, unsigned long n,
     return V2_OK;
 }
 
-/* Frame pool allocator (called from ELF loader). Mirrors kernel frame_pool_init. */
+/* Physical base of the frame pool (QEMU virt: 256M RAM at 0x80000000, free
+ * region above the image). Frame f lives at V2_FRAME_PHYS_BASE + f*4096. */
+#ifndef V2_FRAME_PHYS_BASE
+#define V2_FRAME_PHYS_BASE 0x81000000UL
+#endif
+
+/* Frame pool hooks implemented by the kernel (kboot.c), consumed by the
+ * ELF loader. frame_alloc_slot: allocate a zeroed frame owned by `tid`
+ * and mint a RW cap to it in tid's table; returns the cap slot (>= 0) or
+ * a negative V2_ERR_*. frame_release: zero a frame and return it to the
+ * pool (no-op on frame 0 / already-free frames). The caller is
+ * responsible for dropping every cap and mapping first. */
 int frame_alloc_slot(v2_caps_t *caps, unsigned long tid);
+void frame_release(unsigned long frame);
 
 #endif /* V2_CAPS_H */

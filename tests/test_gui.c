@@ -4,6 +4,10 @@
 #include "../userspace/gui/rect.h"
 #include "../userspace/gui/pci.h"
 #include "../userspace/gui/surf.h"
+#include "../userspace/gui/chrome.h"
+#include "../userspace/gui/cursor.h"
+#include "../userspace/gui/wm.h"
+#include "../userspace/gui/display.h"
 
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 
@@ -38,6 +42,16 @@ int main(void) {
     CHECK(!surf_fill_ok(0, 39, 29, 2, 2));
     CHECK(!surf_fill_ok(0, 0xFFFFFF00u, 0, 0x200u, 1));
     CHECK(surf_px(1, 3, 2) == (2u*40u+3u));
+    CHECK(chrome_y_ok(0) && !chrome_y_ok(20));
+    CHECK(!chrome_client_fill_ok(0, 0, 10, 10));
+    CHECK(chrome_client_fill_ok(0, 20, 10, 10));
+    CHECK(cursor_clamp_x(-3) == 0);
+    CHECK(cursor_clamp_x(900) == 799);
+    CHECK(wm_id_ok(0) && !wm_id_ok(4));
+    CHECK(!wm_place_ok(0, 0, 10, 10)); /* chrome band */
+    CHECK(wm_place_ok(0, 20, 10, 10));
+    CHECK(wm_z_clamp(9) == 3);
+    CHECK(GUI_RPC_FILL == 6u);
     printf("PASS: test_gui\n");
     return 0;
 }

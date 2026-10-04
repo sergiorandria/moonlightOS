@@ -6,13 +6,17 @@
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
 
 int main(void) {
-    kbd_modifiers_t m = {0, 0, 0};
+    kbd_modifiers_t m = {0};
     CHECK(keycode_to_ascii(KEY_1, &m) == '1');
     CHECK(keycode_to_ascii(KEY_ESC, &m) == 0x1B);
     update_modifiers(&m, KEY_LEFTSHIFT, 1);
     CHECK(m.shift == 1);
-    CHECK(keycode_to_ascii(KEY_A, &m) == 'A');
+    update_modifiers(&m, KEY_RIGHTSHIFT, 1);
     update_modifiers(&m, KEY_LEFTSHIFT, 0);
+    CHECK(m.shift == 1); /* releasing one side preserves the other */
+    CHECK(keycode_to_ascii(KEY_A, &m) == 'A');
+    update_modifiers(&m, KEY_RIGHTSHIFT, 0);
+    CHECK(m.shift == 0);
     m.ctrl = 1;
     CHECK(keycode_to_ascii(KEY_A, &m) == 0x01);
     /* M-4 Ctrl evidence (Task 3 ad-hoc vectors, folded in): table-derived,
@@ -28,6 +32,10 @@ int main(void) {
     mouse_move(&ms, -50, -50);
     CHECK(ms.x == 0 && ms.y == 0);
     mouse_move(&ms, 5000, 5000);
+    CHECK(ms.x == 799 && ms.y == 599);
+    mouse_move(&ms, INT32_MIN, INT32_MIN);
+    CHECK(ms.x == 0 && ms.y == 0);
+    mouse_move(&ms, INT32_MAX, INT32_MAX);
     CHECK(ms.x == 799 && ms.y == 599);
     mouse_button(&ms, BTN_LEFT, 1);
     CHECK(ms.left == 1);

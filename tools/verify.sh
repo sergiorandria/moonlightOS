@@ -28,6 +28,8 @@ echo "[1e] userspace ELFs + driver compile gates (freestanding rv64 -Werror)"
 if command -v clang &>/dev/null; then
   make -C userspace 2>&1 | tail -n 2 || echo "FAIL: userspace ELFs"
   make -C userspace drivers 2>&1 | tail -n 3 || echo "FAIL: userspace drivers"
+  make -C userspace stubs 2>&1 | tail -n 3 || echo "FAIL: userspace stubs"
+  make -C userspace build/vault.elf build/cryptblk.elf 2>&1 | tail -n 3 || echo "FAIL: vault/cryptblk ELFs (outside all:, explicitly gated)"
 else
   echo "SKIP: userspace ELFs (clang not found)"
 fi
@@ -40,10 +42,19 @@ clang -Wall -Wextra -Werror -o /tmp/test_qargs tests/test_qargs.c 2>&1 && /tmp/t
 gcc -Wall -Wextra -Werror -o /tmp/test_netfw tests/test_netfw.c 2>&1 && /tmp/test_netfw || echo "FAIL: test_netfw"
 gcc -Wall -Wextra -Werror -o /tmp/test_aead tests/test_aead.c 2>&1 && /tmp/test_aead || echo "FAIL: test_aead"
 gcc -Wall -Wextra -Werror -o /tmp/test_crypt tests/test_crypt.c 2>&1 && /tmp/test_crypt || echo "FAIL: test_crypt"
+gcc -Wall -Wextra -Werror -o /tmp/test_argon2id tests/test_argon2id.c 2>&1 && /tmp/test_argon2id || echo "FAIL: test_argon2id"
 gcc -Wall -Wextra -Werror -o /tmp/test_gui tests/test_gui.c 2>&1 && /tmp/test_gui || echo "FAIL: test_gui"
+gcc -Wall -Wextra -Werror -o /tmp/test_irq tests/test_irq.c 2>&1 && /tmp/test_irq || echo "FAIL: test_irq"
+gcc -Wall -Wextra -Werror -o /tmp/test_dev_leaves tests/test_dev_leaves.c 2>&1 && /tmp/test_dev_leaves || echo "FAIL: test_dev_leaves"
+gcc -Wall -Wextra -Werror -o /tmp/test_net_stack tests/test_net_stack.c 2>&1 && /tmp/test_net_stack || echo "FAIL: test_net_stack"
+gcc -Wall -Wextra -Werror -o /tmp/test_stub_drivers tests/test_stub_drivers.c 2>&1 && /tmp/test_stub_drivers || echo "FAIL: test_stub_drivers"
 gcc -Wall -Wextra -Werror -o /tmp/test_input tests/test_input.c 2>&1 && /tmp/test_input || echo "FAIL: test_input"
+gcc -Wall -Wextra -Werror -o /tmp/test_virtio_input tests/test_virtio_input.c 2>&1 && /tmp/test_virtio_input || echo "FAIL: test_virtio_input"
+gcc -Wall -Wextra -Werror -I userspace/abi -o /tmp/test_driver_bounds tests/test_driver_bounds.c 2>&1 && /tmp/test_driver_bounds || echo "FAIL: test_driver_bounds"
 gcc -Wall -Wextra -Werror -o /tmp/test_rng tests/test_rng.c 2>&1 && /tmp/test_rng || echo "FAIL: test_rng"
 gcc -Wall -Wextra -no-pie -o /tmp/test_shell_vfs tests/test_shell_vfs.c userspace/vfs_server/server.c 2>&1 && /tmp/test_shell_vfs || echo "FAIL: test_shell_vfs"
+gcc -Wall -Wextra -Werror -o /tmp/test_abi_sync tests/test_abi_sync.c 2>&1 && /tmp/test_abi_sync || echo "FAIL: test_abi_sync"
+gcc -Wall -Wextra -Werror -o /tmp/test_shell_programs tests/test_shell_programs.c 2>&1 && /tmp/test_shell_programs || echo "FAIL: test_shell_programs"
 if command -v clang &>/dev/null; then
   make -C kernel 2>&1 | tail -n 1 || echo "FAIL: kernel build"
 else
@@ -153,75 +164,34 @@ if [ -f kernel/build/moonlight.elf ]; then
     # Fail closed: every missing marker flips the gate to FAIL (a smoke
     # that only prints FAIL lines but reports PASS proves nothing).
     QEMU_FAIL=0
+    # Production microkernel gates (all services in qube 0; the retired
+    # qube-demo set — B00pn/A10pg, QREXEC/FW/NET/VAULT/CRYPT, MMIO-leaf
+    # asserts, FILL/COMPOSE — no longer exists, so gating it would fail
+    # on phantom markers).
     echo "$V2LOG" | grep -q "satp Sv39 on" && echo "v2 smoke: satp on" || { echo "v2 smoke: FAIL (no satp)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "entering U-mode" && echo "v2 smoke: U-mode entry" || { echo "v2 smoke: FAIL (no U entry)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "B00pn" && echo "v2 smoke: ping 0->1 intact" || { echo "v2 smoke: FAIL (no B00pn)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "A10pg" && echo "v2 smoke: pong 1->0 intact" || { echo "v2 smoke: FAIL (no A10pg)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "W1" && echo "v2 smoke: notify delivered" || { echo "v2 smoke: FAIL (no W1)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "MEM" && echo "v2 smoke: MEM frame init" || { echo "v2 smoke: FAIL (no MEM)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "MEM-SRV" && echo "v2 smoke: MEM-SRV userspace" || { echo "v2 smoke: FAIL (no MEM-SRV)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "CAP" && echo "v2 smoke: CAP report" || { echo "v2 smoke: FAIL (no CAP)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "OK" && echo "v2 smoke: OK invoke success" || { echo "v2 smoke: FAIL (no OK)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "DU: vpn0 mirrored" && echo "v2 smoke: DU real-frame proof" || { echo "v2 smoke: FAIL (no DU)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "NP" && echo "v2 smoke: NP negative-passed" || { echo "v2 smoke: FAIL (no NP)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "QUB: qube0 qube1 up" && echo "v2 smoke: qubes up" || { echo "v2 smoke: FAIL (no qubes)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "QUB: xread denied" && echo "v2 smoke: xread denied" || { echo "v2 smoke: FAIL (no xdeny)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "QREXEC: ask" && echo "v2 smoke: qrexec ask" || { echo "v2 smoke: FAIL (no ask)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "QREXEC: allow" && echo "v2 smoke: qrexec allow" || { echo "v2 smoke: FAIL (no allow)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "QREXEC: deny" && echo "v2 smoke: qrexec deny" || { echo "v2 smoke: FAIL (no deny)"; QEMU_FAIL=1; }
-    [ "$(echo "$V2LOG" | grep -c "AUD: 3 entries")" -ge 2 ] && echo "v2 smoke: audit x2" || { echo "v2 smoke: FAIL (audit legs)"; QEMU_FAIL=1; }
-    # S3 phase-1: NET: fwd ok is NOT gated — the net stub prints it only
-    # on a processed T_FWD announcement and the smoke drives no live
-    # traffic, so gating it would fail on a phantom marker. FW: up /
-    # NET: up prove both ELFs run; FW: allow/deny prove the model demo.
-    echo "$V2LOG" | grep -q "NETQ: labels ok" && echo "v2 smoke: netq labels" || { echo "v2 smoke: FAIL (no netq)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "FW: allow" && echo "v2 smoke: fw allow" || { echo "v2 smoke: FAIL (no fw allow)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "FW: deny" && echo "v2 smoke: fw deny" || { echo "v2 smoke: FAIL (no fw deny)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "FW: up" && echo "v2 smoke: firewall up" || { echo "v2 smoke: FAIL (no FW up)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "NET: up" && echo "v2 smoke: net up" || { echo "v2 smoke: FAIL (no NET up)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "LEAK: denied" && echo "v2 smoke: leak denied" || { echo "v2 smoke: FAIL (no leak)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "SPOOF: ignored" && echo "v2 smoke: spoof ignored" || { echo "v2 smoke: FAIL (no spoof)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "NETMMIO: tid=6 only" && echo "v2 smoke: netmmio leaf" || { echo "v2 smoke: FAIL (no netmmio)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "NET: link up" && echo "v2 smoke: net link" || { echo "v2 smoke: FAIL (no link)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "NET: tx ok" && echo "v2 smoke: net tx" || { echo "v2 smoke: FAIL (no tx)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "NET: irq ok" && echo "v2 smoke: net irq" || { echo "v2 smoke: FAIL (no irq)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "VAULT: up" && echo "v2 smoke: vault up" || { echo "v2 smoke: FAIL (no vault)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "VAULTQ: labels ok" && echo "v2 smoke: vaultq labels" || { echo "v2 smoke: FAIL (no vaultq)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "CRYPTQ: labels ok" && echo "v2 smoke: cryptq labels" || { echo "v2 smoke: FAIL (no cryptq)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "CRYPT: up" && echo "v2 smoke: crypt up" || { echo "v2 smoke: FAIL (no crypt up)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "CRYPT: locked" && echo "v2 smoke: crypt locked" || { echo "v2 smoke: FAIL (no crypt locked)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "CRYPT: unlock ok" && echo "v2 smoke: crypt unlock" || { echo "v2 smoke: FAIL (no crypt unlock)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "CRYPT: rw ok" && echo "v2 smoke: crypt rw" || { echo "v2 smoke: FAIL (no crypt rw)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "CRYPT: wrong-key denied" && echo "v2 smoke: crypt wrong-key" || { echo "v2 smoke: FAIL (no crypt wrong-key)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "CRYPT: leak denied" && echo "v2 smoke: crypt leak" || { echo "v2 smoke: FAIL (no crypt leak)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "CRYPT: no volume" && echo "v2 smoke: crypt no-volume" || { echo "v2 smoke: FAIL (no crypt no-volume)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "BLKMMIO: tid=9 only" && echo "v2 smoke: blkmmio leaf" || { echo "v2 smoke: FAIL (no blkmmio)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "GUI: up" && echo "v2 smoke: gui up" || { echo "v2 smoke: FAIL (no gui up)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "GUIMMIO: tid=10 only" && echo "v2 smoke: guimmio leaf" || { echo "v2 smoke: FAIL (no guimmio)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "RNGMMIO: tid=8 only" && echo "v2 smoke: rngmmio leaf" || { echo "v2 smoke: FAIL (no rngmmio)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "RNG: up" && echo "v2 smoke: rng up" || { echo "v2 smoke: FAIL (no rng up)"; QEMU_FAIL=1; }
-    # S4a display pattern (Task 5): thread-A drives 4 FILL legs through
-    # the gui server (words: tag 6, xy=x<<16|y, wh=w<<16|h, 32-bit XRGB
-    # color in the low 32 bits) — fullscreen black clear + full-width
-    # 100px red/green/blue bars at y=100/250/400. First validated FILL
-    # prints "GUI: fill ok" once; any leg deviation parks marker-free.
-    echo "$V2LOG" | grep -q "GUI: fill ok" && echo "v2 smoke: gui fill" || { echo "v2 smoke: FAIL (no gui fill)"; QEMU_FAIL=1; }
-    # S4c input gate: kernel discovery (both dev-18 transports) + the
-    # armed userspace probe (fails closed to the S4b loop when absent).
     echo "$V2LOG" | grep -q "INPUT: kbd found" && echo "v2 smoke: input kbd" || { echo "v2 smoke: FAIL (no input kbd)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "INPUT: mouse found" && echo "v2 smoke: input mouse" || { echo "v2 smoke: FAIL (no input mouse)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "INPUT: kbd and mouse ready" && echo "v2 smoke: input userspace" || { echo "v2 smoke: FAIL (no input userspace)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "GUI: composed ok" && echo "v2 smoke: gui composed" || { echo "v2 smoke: FAIL (no gui composed)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "QREXEC: admin registered" && echo "v2 smoke: admin live" || { echo "v2 smoke: FAIL (no admin registered)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "VAULT: live ok" && echo "v2 smoke: vault live" || { echo "v2 smoke: FAIL (no vault live)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "AUD: deny rpc=2" && echo "v2 smoke: live deny" || { echo "v2 smoke: FAIL (no live deny)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "AUD: full ok" && echo "v2 smoke: audit full" || { echo "v2 smoke: FAIL (no audit full)"; QEMU_FAIL=1; }
-    # Format-leg union gate (Task 4 idempotent provision: first-ever boot
-    # on a fresh image prints "CRYPT: formatted", later boots reuse the
-    # header and print "CRYPT: volume ok"; the disk persists across runs,
-    # so exactly one of the two appears — gate the union, never each leg).
-    echo "$V2LOG" | grep -qE "CRYPT: (formatted|volume ok)" && echo "v2 smoke: crypt format-or-volume" || { echo "v2 smoke: FAIL (no crypt format/volume)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "no runnable left; parking cpu" && echo "v2 smoke: clean park" || { echo "v2 smoke: FAIL (no clean park)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "GUI: bochs 800x600x32" && echo "v2 smoke: bochs mode" || { echo "v2 smoke: FAIL (no bochs mode)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "\[spawn\] mem_server ELF ok" && echo "v2 smoke: mem spawn" || { echo "v2 smoke: FAIL (no mem spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "\[spawn\] shell ELF ok" && echo "v2 smoke: shell spawn" || { echo "v2 smoke: FAIL (no shell spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "\[spawn\] console ELF ok" && echo "v2 smoke: console spawn" || { echo "v2 smoke: FAIL (no console spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "\[spawn\] tty ELF ok" && echo "v2 smoke: tty spawn" || { echo "v2 smoke: FAIL (no tty spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "\[spawn\] gui ELF ok" && echo "v2 smoke: gui spawn" || { echo "v2 smoke: FAIL (no gui spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "Services: mem+console+tty+gui up" && echo "v2 smoke: services up" || { echo "v2 smoke: FAIL (no services up)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "MEM-SRV" && echo "v2 smoke: MEM-SRV userspace" || { echo "v2 smoke: FAIL (no MEM-SRV)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "DU: vpn0 mirrored" && echo "v2 smoke: DU real-frame proof" || { echo "v2 smoke: FAIL (no DU)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "NP" && echo "v2 smoke: NP negative-passed" || { echo "v2 smoke: FAIL (no NP)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "\[sched\] exited 7" && echo "v2 smoke: demo exited (spawn slot)" || { echo "v2 smoke: FAIL (no demo exit)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "GUI: Bochs VGA found" && echo "v2 smoke: vga bind" || { echo "v2 smoke: FAIL (no vga bind)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "GUI: framebuffer initialised" && echo "v2 smoke: fb init" || { echo "v2 smoke: FAIL (no fb init)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "GUI: keyboard ready" && echo "v2 smoke: kbd ready" || { echo "v2 smoke: FAIL (no kbd ready)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "GUI: mouse ready" && echo "v2 smoke: mouse ready" || { echo "v2 smoke: FAIL (no mouse ready)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "SHELL: thread 1 starting" && echo "v2 smoke: shell live" || { echo "v2 smoke: FAIL (no shell live)"; QEMU_FAIL=1; }
+    # Liveness (not clean-park: the production system stays up serving
+    # IPC — shell/tty traffic at the timeout proves the scheduler + IPC
+    # plane are alive instead of wedged).
+    echo "$V2LOG" | grep -q "\[ipc\] send tcb=1 -> 4" && echo "v2 smoke: shell->tty live IPC" || { echo "v2 smoke: FAIL (no live IPC)"; QEMU_FAIL=1; }
     if [ "$QEMU_FAIL" = "0" ]; then
       QEMU_STATUS="PASS"
     else

@@ -83,6 +83,8 @@ bool net_driver_init(drv_caps_t c) {
 bool net_driver_set_iommu(cap_t iommu_cap, iommu_state_t *iommu, uintptr_t dev_id,
                           uintptr_t dma_paddr, size_t dma_size) {
     if (!iommu) return false;
+    if (dma_size == 0 || dma_size % PAGE_SIZE || dma_paddr % PAGE_SIZE ||
+        dma_paddr > UINTPTR_MAX - dma_size) return false;
     if (iommu_cap.type != CAP_IOMMU) return false;
     if (!iommu_cap.is_valid || !cheri_tag_get(iommu_cap.hw_cap)) return false;
     g_iommu = iommu;
@@ -102,9 +104,8 @@ bool net_driver_set_iommu(cap_t iommu_cap, iommu_state_t *iommu, uintptr_t dev_i
 /* Register an additional DMA buffer (e.g. per-packet) */
 bool net_driver_dma_map(uintptr_t paddr, size_t size, uint32_t perms) {
     if (!g_iommu || !g_iommu_bound) return false;
-    if (size % PAGE_SIZE || paddr % PAGE_SIZE) return false;
-    /* Validate within the driver's DMA pool bounds before calling iommu_map */
-    if (paddr < g_dma_base || paddr + size > g_dma_base + g_dma_len) return false;
+    if (size % PAGE_SIZE || paddr % PAGE_SIZE ||
+        !vmm_range_within(g_dma_base, g_dma_len, paddr, size)) return false;
     kerror_t e = iommu_map(g_iommu, &g_iommu_cap, g_dev_id, paddr, size, perms);
     return e == ERR_OK;
 }
@@ -116,7 +117,8 @@ bool net_driver_dma_unmap(uintptr_t paddr) {
 
 /* Hot-path check: must be called before touching any DMA buffer */
 bool net_driver_dma_check(uintptr_t paddr, size_t len, bool is_write) {
-    if (!g_iommu) return false;
+    if (!g_iommu || !g_iommu_bound ||
+        !vmm_range_within(g_dma_base, g_dma_len, paddr, len)) return false;
     return iommu_check(g_iommu, g_dev_id, paddr, len, is_write);
 }
 
@@ -124,16 +126,17 @@ bool net_driver_dma_check(uintptr_t paddr, size_t len, bool is_write) {
  * Split virtqueues q0=RX, q1=TX, 64 descriptors each. Descriptors live in
  * driver memory; packet buffers live in the DMA pool and are validated
  * against the IOMMU window on every enqueue AND on IRQ completion.
- * Bounded work: enqueue is O(1), IRQ drain completes at most 32 per call. */
+ * Bounded work: enqueue is O(1), IRQ drain completes at most QSIZE per queue. */
 #define NET_QSIZE 64u
 #define NET_MTU 1514u
-#define NET_MAX_DRAIN 32u
+#define NET_MAX_DRAIN NET_QSIZE
 
 typedef struct {
     uintptr_t paddr;
     uint16_t len;
     uint8_t in_use;   /* descriptor owned by device */
     uint8_t done;     /* device completed, awaiting drain */
+    uint8_t failed;   /* malformed completion; do not report success */
 } net_desc_t;
 
 typedef struct {
@@ -240,7 +243,7 @@ static void net_chain_program(int is_rx, uint16_t s, uint8_t p,
     uint16_t d = (uint16_t)p * 2u;
     desc[d].addr = (uint64_t)(uintptr_t)&hdr[s][0];
     desc[d].len = NET_HDR_LEN;
-    desc[d].flags = VRING_DESC_F_NEXT;
+    desc[d].flags = VRING_DESC_F_NEXT | (is_rx ? VRING_DESC_F_WRITE : 0u);
     desc[d].next = (uint16_t)(d + 1u);
     desc[d + 1].addr = (uint64_t)paddr;
     desc[d + 1].len = is_rx ? net_rxd[s].len : net_txd[s].len;
@@ -277,13 +280,15 @@ static void net_drain_queue(int is_rx) {
                 int s = owner[p];
                 if (s >= 0 && slots[s].in_use && !slots[s].done) {
                     if (is_rx) {
-                        uint32_t paylen =
-                            e.len >= NET_HDR_LEN ? e.len - NET_HDR_LEN : 0u;
-                        if (paylen <= slots[s].len) {
-                            slots[s].len =
-                                (uint16_t)(paylen ? paylen : slots[s].len);
-                            slots[s].done = 1;
+                        uint32_t paylen = e.len >= NET_HDR_LEN ?
+                            e.len - NET_HDR_LEN : 0u;
+                        if (paylen == 0 || paylen > slots[s].len) {
+                            slots[s].failed = 1;
+                            slots[s].len = 0;
+                        } else {
+                            slots[s].len = (uint16_t)paylen;
                         }
+                        slots[s].done = 1;
                     } else {
                         slots[s].done = 1;
                     }
@@ -305,10 +310,10 @@ bool net_driver_tx(uintptr_t paddr, uint16_t len) {
     if (!virtio_regs) return false;
     if (!g_iommu || !g_iommu_bound) return false;
     if (len == 0 || len > NET_MTU) { net_st.tx_drop++; return false; }
-    if (paddr < g_dma_base || len > g_dma_len ||
-        paddr + len > g_dma_base + g_dma_len) { net_st.tx_drop++; return false; }
-    /* Wrap-safe overflow check (paddr+len must not wrap) */
-    if (paddr + len < paddr) { net_st.tx_drop++; return false; }
+    if (!vmm_range_within(g_dma_base, g_dma_len, paddr, len)) {
+        net_st.tx_drop++;
+        return false;
+    }
     if (!iommu_check(g_iommu, g_dev_id, paddr, len, false)) { net_st.tx_drop++; return false; }
     if (net_tx_pending >= NET_QSIZE) { net_st.tx_drop++; return false; }
     uint16_t slot = net_tx_head % NET_QSIZE;
@@ -320,6 +325,7 @@ bool net_driver_tx(uintptr_t paddr, uint16_t len) {
             net_txd[s].len = len;
             net_txd[s].in_use = 1;
             net_txd[s].done = 0;
+            net_txd[s].failed = 0;
             net_tx_pending++;
             net_tx_head = (uint16_t)((s + 1u) % NET_QSIZE);
             net_st.tx_pending = net_tx_pending;
@@ -349,9 +355,10 @@ bool net_driver_rx_provide(uintptr_t paddr, uint16_t len) {
     if (!virtio_regs) return false;
     if (!g_iommu || !g_iommu_bound) return false;
     if (len == 0 || len > NET_MTU) { net_st.rx_drop++; return false; }
-    if (paddr < g_dma_base || len > g_dma_len ||
-        paddr + len > g_dma_base + g_dma_len) { net_st.rx_drop++; return false; }
-    if (paddr + len < paddr) { net_st.rx_drop++; return false; }
+    if (!vmm_range_within(g_dma_base, g_dma_len, paddr, len)) {
+        net_st.rx_drop++;
+        return false;
+    }
     if (!iommu_check(g_iommu, g_dev_id, paddr, len, true)) { net_st.rx_drop++; return false; }
     if (net_rx_pending >= NET_QSIZE) { net_st.rx_drop++; return false; }
     uint16_t slot = net_rx_head % NET_QSIZE;
@@ -362,6 +369,7 @@ bool net_driver_rx_provide(uintptr_t paddr, uint16_t len) {
             net_rxd[s].len = len;
             net_rxd[s].in_use = 1;
             net_rxd[s].done = 0;
+            net_rxd[s].failed = 0;
             net_rx_pending++;
             net_rx_head = (uint16_t)((s + 1u) % NET_QSIZE);
             net_st.rx_pending = net_rx_pending;
@@ -445,8 +453,9 @@ void net_driver_handle_irq(void) {
         net_txd[i].in_use = 0;
         net_txd[i].done = 0;
         if (net_tx_pending > 0) net_tx_pending--;
-        if (ok) net_st.tx_ok++;
+                if (ok && !net_txd[i].failed) net_st.tx_ok++;
         else net_st.tx_drop++;
+                net_txd[i].failed = 0;
         drained++;
     }
     /* Drain RX completions (bounded): device-filled buffers need STORE. */
@@ -454,7 +463,7 @@ void net_driver_handle_irq(void) {
     for (uint16_t i = 0; i < NET_QSIZE && drained < NET_MAX_DRAIN; i++) {
         if (!net_rxd[i].in_use || !net_rxd[i].done) continue;
         bool ok = false;
-        if (g_iommu && g_iommu_bound &&
+        if (!net_rxd[i].failed && g_iommu && g_iommu_bound &&
             iommu_check(g_iommu, g_dev_id, net_rxd[i].paddr, net_rxd[i].len, true))
             ok = true;
         net_rxd[i].in_use = 0;
@@ -462,6 +471,7 @@ void net_driver_handle_irq(void) {
         if (net_rx_pending > 0) net_rx_pending--;
         if (ok) net_st.rx_ok++;
         else net_st.rx_drop++;
+        net_rxd[i].failed = 0;
         drained++;
     }
     net_st.tx_pending = net_tx_pending;

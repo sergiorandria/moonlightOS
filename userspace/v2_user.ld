@@ -16,6 +16,7 @@ SECTIONS {
     .rodata : { *(.rodata*) }
     . = ALIGN(4096);
     .data : { *(.data*) *(.got*) *(.sdata*) }
+    . = ALIGN(4096);
     .bss : { *(.bss*) *(COMMON) }
     PROVIDE(__global_pointer$ = BASE + 0x800);
     _v2_end = .;

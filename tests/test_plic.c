@@ -57,14 +57,34 @@ int main(void) {
     printf("PASS: claim/dispatch/complete with badge\n");
 
     /* unbound IRQ completes but delivers nothing (drop counted) */
+    assert(plic_set_priority(11, 3) == true);
+    assert(plic_enable(11) == true);
     plic_sim_raise(11);
     assert(plic_handle(ntfn, badge, 4) == 0);
     plic_driver_stats(&st);
     assert(st.disabled_drops == 1);
     printf("PASS: unbound IRQ dropped + counted\n");
 
+    /* Host arbitration must honor enable, priority, and threshold. */
+    assert(plic_set_threshold(3) == true);
+    assert(plic_set_priority(12, 3) == true);
+    assert(plic_enable(12) == true);
+    plic_bind(12, 12, 0x1200);
+    plic_sim_raise(12);
+    assert(plic_handle(ntfn, badge, 4) == 0); /* priority == threshold */
+    assert(plic_set_priority(12, 4) == true);
+    assert(plic_disable(12) == true);
+    assert(plic_handle(ntfn, badge, 4) == 0); /* disabled */
+    assert(plic_enable(12) == true);
+    assert(plic_handle(ntfn, badge, 4) == 1);
+    assert(ntfn[0] == 12 && badge[0] == 0x1200);
+    assert(plic_set_threshold(2) == true);
+    printf("PASS: arbitration honors enable/priority/threshold\n");
+
     /* dispatch is bounded: raise many, caller cap enforced, 32 max */
     for (uint32_t i = 1; i < 64; i++) {
+        assert(plic_set_priority(i, 3) == true);
+        assert(plic_enable(i) == true);
         plic_bind(i, 9, 0x1000 + i);
         plic_sim_raise(i);
     }

@@ -66,7 +66,8 @@ static inline void t_wr64(uint32_t off, uint64_t v) {
 }
 
 bool timer_driver_init(timer_caps_t c) {
-    t_caps = c;
+    t_regs = NULL;
+    memset(&t_caps, 0, sizeof(t_caps));
     if (c.mmio_base == 0 || c.mmio_len < CLINT_MIN_LEN) return false;
 #ifdef __CHERI_PURE_CAPABILITY__
     __capability void *cap = (void *)c.mmio_base;
@@ -83,6 +84,7 @@ bool timer_driver_init(timer_caps_t c) {
     host_mtime = 0;
 #endif
 #endif
+    t_caps = c;
     /* ticks preserved across micro-reboot by design (see reboot below);
      * fresh init starts at zero. */
     t_slice = TIMER_SLICE_TICKS;
@@ -117,7 +119,9 @@ void timer_sim_advance(uint64_t dt) {
 void timer_arm(uint64_t slice) {
     if (!t_regs || slice == 0) return;
     t_slice = slice;
-    t_wr64(CLINT_MTIMECMP0, timer_now() + slice);
+    uint64_t now = timer_now();
+    uint64_t deadline = slice > UINT64_MAX - now ? UINT64_MAX : now + slice;
+    t_wr64(CLINT_MTIMECMP0, deadline);
     t_st.slices++;
     t_st.rearms++;
 }
@@ -143,8 +147,9 @@ int timer_driver_handle_irq(void) {
     t_st.ticks++;
     /* Catch up whole slices so a long-blackout tick doesn't burst: the
      * next compare is strictly ahead of now (bounded single re-arm). */
-    uint64_t next = cmp + t_slice;
-    if (next <= now) next = now + t_slice;
+    uint64_t next = t_slice > UINT64_MAX - now ? UINT64_MAX : now + t_slice;
+    if (next <= now && now != UINT64_MAX)
+        next = UINT64_MAX;
     t_wr64(CLINT_MTIMECMP0, next);
     t_st.rearms++;
     return 1;

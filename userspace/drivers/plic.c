@@ -3,9 +3,9 @@
  * badges (mirrors kernel irq.c bookkeeping, but programs real HW).
  * No kernel access, crash -> micro-reboot (bindings cleared, threshold kept).
  *
- * Hart0 M-mode context 0 layout (riscv-virt, 240+ sources wired):
- *   priority[i]  0x000000 + 4*i | pending 0x001000 | enable[hart0] 0x002000
- *   threshold    0x200000       | claim/complete  0x200004
+ * Hart0 S-mode context 1 layout (QEMU riscv-virt, 240+ sources wired):
+ *   priority[i]  0x000000 + 4*i | pending 0x001000 | enable[hart0,S] 0x2080
+ *   threshold    0x201000       | claim/complete  0x201004
  * Core is plain C (host-testable); MMIO is __riscv-only. Claim/complete
  * and dispatch are bounded (32 IRQs per handle call).
  */
@@ -20,10 +20,10 @@
 #define PLIC_BASE_EXPECT 0x0c000000u
 #define PLIC_PRIO_OFF   0x000000u
 #define PLIC_PEND_OFF   0x001000u
-#define PLIC_ENABLE_OFF 0x002000u
-#define PLIC_THRESH_OFF 0x200000u
-#define PLIC_CLAIM_OFF  0x200004u
-#define PLIC_MIN_LEN    0x200008u
+#define PLIC_ENABLE_OFF 0x002080u
+#define PLIC_THRESH_OFF 0x201000u
+#define PLIC_CLAIM_OFF  0x201004u
+#define PLIC_MIN_LEN    0x201008u
 #define PLIC_MAX_IRQ    64u
 #define PLIC_MAX_DISPATCH 32u
 
@@ -64,7 +64,8 @@ static inline void p_wr(uint32_t off, uint32_t v) {
 }
 
 bool plic_driver_init(plic_caps_t c) {
-    p_caps = c;
+    p_regs = NULL;
+    memset(&p_caps, 0, sizeof(p_caps));
     if (c.mmio_base == 0 || c.mmio_len < PLIC_MIN_LEN) return false;
 #ifdef __CHERI_PURE_CAPABILITY__
     __capability void *cap = (void *)c.mmio_base;
@@ -80,6 +81,7 @@ bool plic_driver_init(plic_caps_t c) {
     p_regs = (volatile uint32_t *)host_plic;
 #endif
 #endif
+    p_caps = c;
     memset(p_bind, 0, sizeof(p_bind));
     memset(&p_st, 0, sizeof(p_st));
     p_threshold = 0;
@@ -139,18 +141,22 @@ uint32_t plic_claim(void); /* forward (arbitration helper below) */
 void plic_complete(uint32_t irq); /* forward */
 
 #if !defined(__riscv)
-/* Host model of PLIC arbitration: the claim register always presents the
- * lowest pending IRQ (real HW re-arbitrates on claim/complete the same
- * way). Bounded O(64) scan per call. */
+/* Host model of S-context PLIC arbitration: only enabled sources with
+ * priority above threshold are claimable; highest priority wins, ties use
+ * the lowest source ID. Bounded O(64) scan per call. */
 static void plic_arbitrate(void) {
+    uint32_t best_irq = 0;
+    uint32_t best_prio = p_threshold;
     for (uint32_t irq = 1; irq < PLIC_MAX_IRQ; irq++) {
         uint32_t w = p_rd(PLIC_PEND_OFF + (irq / 32u) * 4u);
-        if (w & (1u << (irq % 32u))) {
-            p_wr(PLIC_CLAIM_OFF, irq);
-            return;
+        uint32_t enabled = p_rd(PLIC_ENABLE_OFF + (irq / 32u) * 4u);
+        uint32_t prio = p_rd(PLIC_PRIO_OFF + irq * 4u);
+        if ((w & enabled & (1u << (irq % 32u))) && prio > best_prio) {
+            best_irq = irq;
+            best_prio = prio;
         }
     }
-    p_wr(PLIC_CLAIM_OFF, 0u);
+    p_wr(PLIC_CLAIM_OFF, best_irq);
 }
 #endif
 
@@ -180,7 +186,7 @@ void plic_complete(uint32_t irq) {
 
 /* Test hook: force a pending bit as if the device raised its line. */
 void plic_sim_raise(uint32_t irq) {
-    if (irq == 0 || irq >= PLIC_MAX_IRQ) return;
+    if (!p_regs || irq == 0 || irq >= PLIC_MAX_IRQ) return;
     uint32_t w = p_rd(PLIC_PEND_OFF + (irq / 32u) * 4u);
     w |= 1u << (irq % 32u);
     p_wr(PLIC_PEND_OFF + (irq / 32u) * 4u, w);

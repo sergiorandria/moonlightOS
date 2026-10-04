@@ -51,10 +51,11 @@
  * rewrapped record's header writeback is Task 4 (cryptblk owns the disk);
  * the in-memory KEK table rotates immediately.
  *
- * Single-DRBG-owner rule (kdf.h): this TU defines CRYPT_DRBG_DEFINE and
- * is the only owner of the DRBG state in this ELF (vault_start.S is asm).
- * Fresh drbg_next bytes salt every rewrap (test-grade DRBG, disclosed in
- * the stage spec; TEST_KEYS seeding is Task 4).
+ * Single-DRBG-owner rule (kdf_production.h): this TU defines
+ * CRYPT_DRBG_DEFINE and is the only owner of the DRBG state in this ELF
+ * (vault_start.S is asm). Fresh drbg_generate_production bytes salt every
+ * rewrap (production ChaCha20 DRBG with entropy accounting: reseed
+ * failures and the catastrophic gate deny the operation fail-closed).
  *
  * All key-bearing locals and one-shot buffers are crypt_wipe'd on every
  * exit path (handlers funnel to a single exit to keep the wipe sites
@@ -65,7 +66,7 @@
 #include <stdint.h>
 
 #include "../../kernel/qube.h"
-#include "../crypt/kdf.h"
+#include "../crypt/kdf_production.h"
 #include "../cryptblk/slot.h"
 #include "rng_mix.h"
 #include "rng_scan.h"
@@ -157,18 +158,21 @@
  * RANDOM_REQ [11, nonce, 0, 0] arrives as its own tag (11), NOT as a
  * T_DELIVER, so its arm sits BEFORE the deliver gate below (after the
  * T_CALL DENY-direct arm). Allowlist is cryptblk qube7-only
- * (sqb != 7 -> R_DENY), mirroring the GUI qube0-only precedent
- * (userspace/gui/v2_main.c). On success the 32B device sample is mixed
- * with rdtime + service_delta via rng_mix_ok and reseeds this ELF's DRBG
- * (kdf.h single owner); the reply is [0] = OK, [-1] = DENY.
+ * (sqb != 7 -> R_DENY), mirroring the old GUI qube0-only deliver gate
+ * (that code lived in userspace/gui/v2_main.c, removed in the GUI
+ * restructure; the pattern survives here). NOTE: legacy qube-demo
+ * numbering — production boot runs everything in qube 0, and this ELF
+ * is currently not packed (see mkinitrd.sh). On success the 32B device
+ * sample is mixed
+ * with rdtime + service_delta via rng_mix_ok and reseeds this ELF's
+ * production DRBG (kdf_production.h single owner,
+ * drbg_reseed_production with 256 claimed bits); the reply is
+ * [0] = OK, [-1] = DENY.
  *
  * service_delta note: the brief assumes an IRQ path, but the vault owns no
  * IRQ line (the kernel raises notify bits only for tids 6/9), so
  * rng_last_t tracks the last RANDOM service time (boot rdtime on the
  * first request); the delta is fresh rdtime per request, not IRQ jitter.
- *
- * drbg note: the brief names drbg_reseed, which does not exist in
- * kdf.h; the existing owner API drbg_seed(mixed, 32) is the reseed.
  */
 #define RNG_TID 8
 #define RNG_EP 8
@@ -227,25 +231,29 @@ static long u_invoke(long op, long a1, long a2, long a3);
 static long u_yield(void);
 static uint64_t u_rdtime(void);
 
-struct rng_desc {
+struct rng_desc
+{
     uint64_t addr;
     uint32_t len;
     uint16_t flags;
     uint16_t next;
 };
 
-struct rng_avail {
+struct rng_avail
+{
     uint16_t flags;
     uint16_t idx;
     uint16_t ring[1];
 };
 
-struct rng_used_elem {
+struct rng_used_elem
+{
     uint32_t id;
     uint32_t len;
 };
 
-struct rng_used {
+struct rng_used
+{
     uint16_t flags;
     uint16_t idx;
     struct rng_used_elem ring[1];
@@ -291,7 +299,8 @@ static int vault_rng_bind(void)
     volatile uint8_t *dma;
     unsigned long i;
     uint32_t max;
-    for (t = 0u; t < 8u; t++) { /* bound: 8 (virtio transports) */
+    for (t = 0u; t < 8u; t++)
+    { /* bound: 8 (virtio transports) */
         unsigned long base = rng_trans_off(t);
         uint32_t magic;
         uint32_t dev;
@@ -319,12 +328,11 @@ static int vault_rng_bind(void)
     rng_w(regs, RNG_R_DRV_FEAT, 1u);
     rng_w(regs, RNG_R_DRV_SEL, 0u);
     rng_w(regs, RNG_R_DRV_FEAT, 0u);
-    rng_w(regs, RNG_R_STATUS,
-           RNG_ST_ACK | RNG_ST_DRIVER | RNG_ST_FEAT_OK);
+    rng_w(regs, RNG_R_STATUS, RNG_ST_ACK | RNG_ST_DRIVER | RNG_ST_FEAT_OK);
     rng_fence();
-    if (!(rng_r(regs, RNG_R_STATUS) & RNG_ST_FEAT_OK)) {
-        rng_w(regs, RNG_R_STATUS,
-               RNG_ST_ACK | RNG_ST_DRIVER | RNG_ST_FAILED);
+    if (!(rng_r(regs, RNG_R_STATUS) & RNG_ST_FEAT_OK))
+    {
+        rng_w(regs, RNG_R_STATUS, RNG_ST_ACK | RNG_ST_DRIVER | RNG_ST_FAILED);
         return 0;
     }
     /* One DMA frame (RW only) for queue 0: desc[1] @0, avail @64,
@@ -348,8 +356,7 @@ static int vault_rng_bind(void)
     rng_w64(regs, RNG_R_QDEV_LO, (uint64_t)pa + 1024u);
     rng_w(regs, RNG_R_QREADY, 1u);
     rng_fence();
-    rng_w(regs, RNG_R_STATUS, RNG_ST_ACK | RNG_ST_DRIVER |
-           RNG_ST_FEAT_OK | RNG_ST_DRIVER_OK);
+    rng_w(regs, RNG_R_STATUS, RNG_ST_ACK | RNG_ST_DRIVER | RNG_ST_FEAT_OK | RNG_ST_DRIVER_OK);
     rng_fence();
     rng_regs = regs;
     rng_dma_pa = pa;
@@ -396,8 +403,10 @@ static int vault_read_hw(uint8_t *hw)
     rng_w(rng_regs, RNG_R_QNOTIFY, 0u);
     rng_fence();
     t0 = u_rdtime();
-    for (p = 0; p < RNG_POLL_BOUND; p++) { /* bound: RNG_POLL_BOUND */
-        if (u->idx != rng_seen) {
+    for (p = 0; p < RNG_POLL_BOUND; p++)
+    { /* bound: RNG_POLL_BOUND */
+        if (u->idx != rng_seen)
+        {
             done = 1;
             break;
         }
@@ -426,10 +435,7 @@ static long u_ecall3(long sys, long a0, long a1, long a2)
     register long r_a1 asm("a1") = a1;
     register long r_a2 asm("a2") = a2;
     register long r_a7 asm("a7") = sys;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2)
-                 : "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2) : "r"(r_a7) : "memory");
     return r_a0;
 }
 
@@ -440,10 +446,7 @@ static long u_ecall4(long sys, long a0, long a1, long a2, long a3)
     register long r_a2 asm("a2") = a2;
     register long r_a3 asm("a3") = a3;
     register long r_a7 asm("a7") = sys;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
-                 : "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3) : "r"(r_a7) : "memory");
     return r_a0;
 }
 
@@ -471,8 +474,7 @@ static long u_send(unsigned long ep, const uint64_t *p, unsigned long n)
 
 /* RECV returns words-written in a0, kernel-stamped sender in a1,
  * sender qube in a2, truncation flag in a3 (explicit, never silent). */
-static long u_recv(unsigned long ep, uint64_t *buf, unsigned long cap,
-                   unsigned long *sender, unsigned long *qube,
+static long u_recv(unsigned long ep, uint64_t *buf, unsigned long cap, unsigned long *sender, unsigned long *qube,
                    unsigned long *ovf)
 {
     register long r_a0 asm("a0") = (long)ep;
@@ -480,10 +482,7 @@ static long u_recv(unsigned long ep, uint64_t *buf, unsigned long cap,
     register long r_a2 asm("a2") = (long)cap;
     register long r_a3 asm("a3") = 0;
     register long r_a7 asm("a7") = V2_RECV;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
-                 : "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3) : "r"(r_a7) : "memory");
     *sender = (unsigned long)r_a1;
     *qube = (unsigned long)r_a2;
     *ovf = (unsigned long)r_a3;
@@ -553,9 +552,10 @@ static long key_release(unsigned long slot, const uint8_t *vmk32)
         return -1;
     if (u_invoke(V2_INV_MAP, c0, (long)VAULT_SCRATCH_VPN, 0) != 0)
         return -1;
-    for (i = 0; i < 4UL; i++) { /* bound: 4 (VMK words) */
-        if (u_invoke(V2_INV_WRITE, (long)VAULT_SCRATCH_VPN,
-                     (long)(vmk32 + i * 8UL), 0) != 0) {
+    for (i = 0; i < 4UL; i++)
+    { /* bound: 4 (VMK words) */
+        if (u_invoke(V2_INV_WRITE, (long)VAULT_SCRATCH_VPN, (long)(vmk32 + i * 8UL), 0) != 0)
+        {
             u_invoke(V2_INV_UNMAP, (long)VAULT_SCRATCH_VPN, 0, 0);
             (void)u_invoke(V2_INV_REVOKE, c0, 0, 0);
             return -1;
@@ -563,14 +563,16 @@ static long key_release(unsigned long slot, const uint8_t *vmk32)
     }
     /* Attenuate RW -> R-only: first free ladder slot wins (MINT fails
      * INVALID on occupied dst, fail-closed per try). */
-    for (i = VAULT_MINT_LO; i < VAULT_MINT_HI; i++) { /* bound: 8 */
-        if (u_invoke(V2_INV_MINT, c0, (long)V2_RIGHT_R, (long)i) == 0) {
+    for (i = VAULT_MINT_LO; i < VAULT_MINT_HI; i++)
+    { /* bound: 8 */
+        if (u_invoke(V2_INV_MINT, c0, (long)V2_RIGHT_R, (long)i) == 0)
+        {
             c1 = (long)i;
             break;
         }
     }
-    if (c1 < 0 || u_invoke(V2_INV_GRANT, c1, (long)CRYPT_TID,
-                           (long)CRYPT_KEY_SLOT) != 0) {
+    if (c1 < 0 || u_invoke(V2_INV_GRANT, c1, (long)CRYPT_TID, (long)CRYPT_KEY_SLOT) != 0)
+    {
         u_invoke(V2_INV_UNMAP, (long)VAULT_SCRATCH_VPN, 0, 0);
         (void)u_invoke(V2_INV_REVOKE, c0, 0, 0);
         return -1;
@@ -579,7 +581,8 @@ static long key_release(unsigned long slot, const uint8_t *vmk32)
     note[1] = (uint64_t)slot;
     note[2] = 0;
     note[3] = 0;
-    if (u_send(9, note, 4) != 0) {
+    if (u_send(9, note, 4) != 0)
+    {
         u_invoke(V2_INV_UNMAP, (long)VAULT_SCRATCH_VPN, 0, 0);
         (void)u_invoke(V2_INV_REVOKE, c0, 0, 0);
         return -1;
@@ -592,17 +595,20 @@ static long key_release(unsigned long slot, const uint8_t *vmk32)
         uint64_t t0 = u_rdtime();
         int acked = 0;
         long p;
-        for (p = 0; p < 2000000L; p++) { /* bound: VAULT_ACK_POLL_BOUND */
+        for (p = 0; p < 2000000L; p++)
+        { /* bound: VAULT_ACK_POLL_BOUND */
             uint64_t ack[4];
             unsigned long snd = 0;
             unsigned long sqb = 0;
             unsigned long ovf = 0;
             long n = u_recv(8, ack, 4, &snd, &sqb, &ovf);
-            if (n >= 1 && ack[0] == (uint64_t)T_CALL) {
+            if (n >= 1 && ack[0] == (uint64_t)T_CALL)
+            {
                 u_reply(snd, R_INVALID);
-            } else if (n >= 2 && ack[0] == (uint64_t)T_KEY_ACK &&
-                       (unsigned long)ack[1] == slot &&
-                       sqb == (unsigned long)CRYPT_QUBE) {
+            }
+            else if (n >= 2 && ack[0] == (uint64_t)T_KEY_ACK && (unsigned long)ack[1] == slot &&
+                     sqb == (unsigned long)CRYPT_QUBE)
+            {
                 acked = 1;
                 break;
             }
@@ -616,8 +622,7 @@ static long key_release(unsigned long slot, const uint8_t *vmk32)
          * frame. The wipe runs on the expiry path too: never wedge
          * holding frame+grant. */
         for (i = 0; i < 4UL; i++) /* bound: 4 (VMK words) */
-            (void)u_invoke(V2_INV_WRITE, (long)VAULT_SCRATCH_VPN,
-                           (long)&zero, 0);
+            (void)u_invoke(V2_INV_WRITE, (long)VAULT_SCRATCH_VPN, (long)&zero, 0);
         u_invoke(V2_INV_UNMAP, (long)VAULT_SCRATCH_VPN, 0, 0);
         (void)u_invoke(V2_INV_REVOKE, c0, 0, 0);
         if (!acked)
@@ -626,7 +631,8 @@ static long key_release(unsigned long slot, const uint8_t *vmk32)
     }
 }
 
-typedef struct {
+typedef struct
+{
     uint32_t label;
     int valid;
     uint8_t key[32];
@@ -641,7 +647,8 @@ void vault_main(void)
     int vmk_valid = 0;
     unsigned long i;
     unsigned long j;
-    for (i = 0; i < 8UL; i++) { /* bound: 8 (KEK slots) */
+    for (i = 0; i < 8UL; i++)
+    { /* bound: 8 (KEK slots) */
         keks[i].label = 0;
         keks[i].valid = 0;
         for (j = 0; j < 32UL; j++) /* bound: 32 (KEK bytes) */
@@ -656,7 +663,8 @@ void vault_main(void)
     u_puts("RNG: up\n");
     u_puts("VAULT: up\n");
 
-    for (;;) { /* bound: inf - service loop */
+    for (;;)
+    { /* bound: inf - service loop */
         uint64_t buf[4];
         unsigned long snd = 0;
         unsigned long sqb = 0;
@@ -664,13 +672,15 @@ void vault_main(void)
         unsigned long tag;
         long n = u_recv(8, buf, 4, &snd, &sqb, &ovf);
 
-        if (n < 1) {
+        if (n < 1)
+        {
             u_reply(snd, R_INVALID);
             continue;
         }
         tag = (unsigned long)buf[0];
 
-        if (tag == (unsigned long)T_CALL) {
+        if (tag == (unsigned long)T_CALL)
+        {
             /* DENY-direct (firewall precedent, cited above): direct
              * calls never carry approval. No T_CALL form is honored. */
             u_puts("VAULT: deny\n");
@@ -682,31 +692,44 @@ void vault_main(void)
          * claimed here, before the deliver gate below (which would
          * silently drop it). Placed after the T_CALL arm: direct calls
          * stay DENY-direct. */
-        if (n >= 2 && buf[0] == (uint64_t)RANDOM_REQ) {
+        if (n >= 2 && buf[0] == (uint64_t)RANDOM_REQ)
+        {
             unsigned long req_qb;
             uint8_t hw[32];
             uint8_t mixed[32];
             uint64_t now;
             uint64_t service_delta;
             req_qb = sqb;
-            if (req_qb != 7u) {
+            if (req_qb != 7u)
+            {
                 u_reply(snd, R_DENY);
                 continue;
             } /* cryptblk qube7-only */
-            for (i = 0; i < 32UL; i++) { /* bound: 32 (RANDOM buffers) */
+            for (i = 0; i < 32UL; i++)
+            { /* bound: 32 (RANDOM buffers) */
                 hw[i] = 0;
                 mixed[i] = 0;
             }
             now = u_rdtime();
             service_delta = now - rng_last_t;
-            if (!vault_read_hw(hw) ||
-                !rng_mix_ok(hw, 32u, now, service_delta, mixed)) {
+            if (!vault_read_hw(hw) || !rng_mix_ok(hw, 32u, now, service_delta, mixed))
+            {
                 crypt_wipe(hw, sizeof(hw));
                 crypt_wipe(mixed, sizeof(mixed));
                 u_reply(snd, R_DENY);
                 continue;
             }
-            drbg_seed(mixed, 32u);
+            /* Production reseed: the 32B virtio-rng sample is claimed as
+             * full entropy (device-RNG assumption, documented in
+             * kdf_production.h); a failed reseed denies fail-closed rather
+             * than continuing on a stale stream. */
+            if (drbg_reseed_production(mixed, 32u, 256) != 0)
+            {
+                crypt_wipe(hw, sizeof(hw));
+                crypt_wipe(mixed, sizeof(mixed));
+                u_reply(snd, R_DENY);
+                continue;
+            }
             rng_last_t = now;
             crypt_wipe(hw, sizeof(hw));
             crypt_wipe(mixed, sizeof(mixed));
@@ -714,11 +737,11 @@ void vault_main(void)
             continue;
         }
 
-        if (tag != (unsigned long)T_DELIVER || n < 4 ||
-            sqb != (unsigned long)QREXEC_QUBE)
+        if (tag != (unsigned long)T_DELIVER || n < 4 || sqb != (unsigned long)QREXEC_QUBE)
             continue; /* not ours: silent drop, no reply (no waiter) */
 
-        if ((unsigned long)buf[1] == (unsigned long)VAULT_UNWRAP) {
+        if ((unsigned long)buf[1] == (unsigned long)VAULT_UNWRAP)
+        {
             /* Approved unwrap: broker row pins src == 0, so this deliver
              * releases only the slot naming that qube's KEK. arg0 = KEK
              * table slot, arg1 = our cap-table slot holding the
@@ -737,12 +760,11 @@ void vault_main(void)
                 img[i] = 0;
             for (i = 0; i < sizeof(oneshot); i++) /* bound: 32 */
                 oneshot[i] = 0;
-            if (slot < 8UL && keks[slot].valid &&
-                u_invoke(V2_INV_MAP, (long)recslot,
-                         (long)VAULT_SCRATCH_VPN, 0) == 0) {
-                for (i = 0; i < 8UL; i++) { /* bound: 8 (record words) */
-                    if (u_invoke(V2_INV_READ, (long)VAULT_SCRATCH_VPN,
-                                 (long)(img + i * 8UL), 0) != 0)
+            if (slot < 8UL && keks[slot].valid && u_invoke(V2_INV_MAP, (long)recslot, (long)VAULT_SCRATCH_VPN, 0) == 0)
+            {
+                for (i = 0; i < 8UL; i++)
+                { /* bound: 8 (record words) */
+                    if (u_invoke(V2_INV_READ, (long)VAULT_SCRATCH_VPN, (long)(img + i * 8UL), 0) != 0)
                         break;
                     got++;
                 }
@@ -750,7 +772,8 @@ void vault_main(void)
             /* UNMAP is a no-op unless the MAP above succeeded (fail-closed
              * model op); the scratch vpn never holds a live mapping here. */
             u_invoke(V2_INV_UNMAP, (long)VAULT_SCRATCH_VPN, 0, 0);
-            if (got == 8UL) {
+            if (got == 8UL)
+            {
                 for (i = 0; i < 48UL; i++) /* bound: 48 (wrapped bytes) */
                     rec.wrapped[i] = img[i];
                 for (i = 0; i < 8UL; i++) /* bound: 8 (slot salt) */
@@ -760,30 +783,38 @@ void vault_main(void)
                 /* Policy check, explicit (parse-ok is not policy-ok: the
                  * layout codec accepts any u32 here; the vault refuses
                  * the zero work factor before any crypto runs). */
-                if (rec.iters == 0) {
+                if (rec.iters == 0)
+                {
                     iters0 = 1;
-                } else if (slot_unwrap(keks[slot].key, &rec, oneshot) == 0 &&
-                           key_release(slot, oneshot) == 0) {
+                }
+                else if (slot_unwrap(keks[slot].key, &rec, oneshot) == 0 && key_release(slot, oneshot) == 0)
+                {
                     done = 1;
                 }
                 slot_wipe(&rec);
             }
             crypt_wipe(img, sizeof(img));
             crypt_wipe(oneshot, sizeof(oneshot));
-            if (done) {
+            if (done)
+            {
                 /* Release audit: the event only, never key bytes. */
                 u_puts("AUD: release slot=");
                 u_putdigit(slot);
                 u_putc('\n');
-            } else if (iters0) {
+            }
+            else if (iters0)
+            {
                 u_puts("VAULT: deny iters0\n");
-            } else {
+            }
+            else
+            {
                 u_puts("VAULT: deny\n");
             }
             continue;
         }
 
-        if ((unsigned long)buf[1] == (unsigned long)VAULT_REWRAP) {
+        if ((unsigned long)buf[1] == (unsigned long)VAULT_REWRAP)
+        {
             /* Approved rewrap: broker row pins src == 3 (AdminVM), so
              * this deliver rotates only an admin-approved slot. arg0 =
              * KEK table slot, arg1 = our cap-table slot holding the
@@ -802,20 +833,23 @@ void vault_main(void)
             for (i = 0; i < sizeof(salt); i++) /* bound: 8 */
                 salt[i] = 0;
             if (slot < 8UL && keks[slot].valid && vmk_valid &&
-                u_invoke(V2_INV_MAP, (long)kekslot,
-                         (long)VAULT_SCRATCH_VPN, 0) == 0) {
-                for (i = 0; i < 4UL; i++) { /* bound: 4 (KEK words) */
-                    if (u_invoke(V2_INV_READ, (long)VAULT_SCRATCH_VPN,
-                                 (long)(newkek + i * 8UL), 0) != 0)
+                u_invoke(V2_INV_MAP, (long)kekslot, (long)VAULT_SCRATCH_VPN, 0) == 0)
+            {
+                for (i = 0; i < 4UL; i++)
+                { /* bound: 4 (KEK words) */
+                    if (u_invoke(V2_INV_READ, (long)VAULT_SCRATCH_VPN, (long)(newkek + i * 8UL), 0) != 0)
                         break;
                     got++;
                 }
             }
             u_invoke(V2_INV_UNMAP, (long)VAULT_SCRATCH_VPN, 0, 0);
-            if (got == 4UL) {
-                drbg_next(salt, sizeof(salt));
-                if (slot_wrap(newkek, vmk, salt, keks[slot].label,
-                              (uint32_t)KDF_ITERS_DEFAULT, &newrec) == 0) {
+            if (got == 4UL && drbg_generate_production(salt, sizeof(salt)) == 0)
+            {
+                /* Fresh production-DRBG salt per wrap (fail-closed above:
+                 * a catastrophic gate trip denies instead of wrapping
+                 * with the zeroed salt). */
+                if (slot_wrap(newkek, vmk, salt, keks[slot].label, (uint32_t)KDF_ITERS_DEFAULT, &newrec) == 0)
+                {
                     /* Rotation: the slot's KEK becomes the new KEK. The
                      * fresh record stages on-stack and is wiped; its
                      * header writeback rides Task 4's cryptblk path. */
@@ -827,19 +861,23 @@ void vault_main(void)
             }
             crypt_wipe(newkek, sizeof(newkek));
             crypt_wipe(salt, sizeof(salt));
-            if (done) {
+            if (done)
+            {
                 u_puts("VAULT: rewrap ok\n");
-            } else {
+            }
+            else
+            {
                 u_puts("VAULT: deny\n");
             }
             continue;
         }
 
-        if ((unsigned long)buf[1] == KEYSSIGN_LIVE) { /* keys.sign:
-            * live-traffic probe (S2 row), NOT an unwrap — print the
-            * end-to-end marker, no state change, no handoff (handoff
-            * runs only for VAULT_UNWRAP). Boot unlock uses rpc 7, so
-            * this marker is honest. */
+        if ((unsigned long)buf[1] == KEYSSIGN_LIVE)
+        { /* keys.sign:
+           * live-traffic probe (S2 row), NOT an unwrap — print the
+           * end-to-end marker, no state change, no handoff (handoff
+           * runs only for VAULT_UNWRAP). Boot unlock uses rpc 7, so
+           * this marker is honest. */
             u_puts("VAULT: live ok\n");
             continue;
         }

@@ -47,89 +47,102 @@
 #define V2_INV_UNMAP 4
 #define V2_INV_REVOKE 5
 
-static long u_ecall3(long sys, long a0, long a1, long a2) {
+static long u_ecall3(long sys, long a0, long a1, long a2)
+{
     register long r_a0 asm("a0") = a0;
     register long r_a1 asm("a1") = a1;
     register long r_a2 asm("a2") = a2;
     register long r_a7 asm("a7") = sys;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2)
-                 : "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2) : "r"(r_a7) : "memory");
     return r_a0;
 }
 
-static long u_ecall4(long sys, long a0, long a1, long a2, long a3) {
+static long u_ecall4(long sys, long a0, long a1, long a2, long a3)
+{
     register long r_a0 asm("a0") = a0;
     register long r_a1 asm("a1") = a1;
     register long r_a2 asm("a2") = a2;
     register long r_a3 asm("a3") = a3;
     register long r_a7 asm("a7") = sys;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
-                 : "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3) : "r"(r_a7) : "memory");
     return r_a0;
 }
 
-static void uputc(char c) {
+static void uputc(char c)
+{
     u_ecall3(V2_PUTC, (long)(unsigned char)c, 0, 0);
 }
 
-static void upark(void) {
+static void upark(void)
+{
     u_ecall3(V2_PARK, 0, 0, 0);
     for (;;)
         u_ecall3(V2_YIELD, 0, 0, 0); /* unreachable: park never returns */
 }
 
-static long usend(unsigned long ep, const uint64_t *p, unsigned long n) {
+/* Terminate self: V2_PARK with a0==1 frees our slot (T_DEAD) for reuse
+ * by SPAWN/FORK/QCREATE. Use ONLY at a thread's true end (demo done):
+ * exiting drops schedulability, and the reusing spawn reclaims frames.
+ * Failure branches below keep upark() (a failed demo parks loudly). */
+static void udie(void)
+{
+    u_ecall3(V2_PARK, 1, 0, 0);
+    for (;;)
+        u_ecall3(V2_YIELD, 0, 0, 0); /* unreachable: exit never returns */
+}
+
+static long usend(unsigned long ep, const uint64_t *p, unsigned long n)
+{
     return u_ecall3(V2_SEND, (long)ep, (long)p, (long)n);
 }
 
 /* RECV returns words-written in a0, kernel-stamped sender in a1,
  * sender qube in a2, truncation flag in a3 (explicit, never silent). */
-static long urecv(unsigned long ep, uint64_t *buf, unsigned long cap,
-                  unsigned long *sender, unsigned long *qube,
-                  unsigned long *ovf) {
+static long urecv(unsigned long ep, uint64_t *buf, unsigned long cap, unsigned long *sender, unsigned long *qube,
+                  unsigned long *ovf)
+{
     register long r_a0 asm("a0") = (long)ep;
     register long r_a1 asm("a1") = (long)buf;
     register long r_a2 asm("a2") = (long)cap;
     register long r_a3 asm("a3") = 0;
     register long r_a7 asm("a7") = V2_RECV;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
-                 : "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3) : "r"(r_a7) : "memory");
     *sender = (unsigned long)r_a1;
     *qube = (unsigned long)r_a2;
     *ovf = (unsigned long)r_a3;
     return r_a0;
 }
 
-static long unotify(unsigned long t, unsigned long bits) {
+static long unotify(unsigned long t, unsigned long bits)
+{
     return u_ecall3(V2_NOTIFY, (long)t, (long)bits, 0);
 }
 
-static long uwait(void) {
+static long uwait(void)
+{
     return u_ecall3(V2_WAIT, 0, 0, 0);
 }
 
 /* Single invoke path: all four args forwarded (a3 reaches the kernel;
  * MINT/GRANT/ELF_CHECK-style dst args are no longer dropped). */
-static long u_invoke(long op, long a1, long a2, long a3) {
+static long u_invoke(long op, long a1, long a2, long a3)
+{
     return u_ecall4(V2_INVOKE, op, a1, a2, a3);
 }
 
 /* Print low bytes of w[0..n): immediates only, no literals. */
-static void uputs_n(const uint64_t *w, long n) {
+static void uputs_n(const uint64_t *w, long n)
+{
     for (long i = 0; i < n; i++)
         uputc((char)(w[i] & 0xFF));
     uputc('\n');
 }
 
 /* Decimal print (immediates only, no literals). */
-__attribute__((section(".utext"), noinline)) static void uputdec(long v) {
-    if (v < 0) {
+__attribute__((section(".utext"), noinline)) static void uputdec(long v)
+{
+    if (v < 0)
+    {
         uputc('-');
         v = -v;
     }
@@ -139,7 +152,8 @@ __attribute__((section(".utext"), noinline)) static void uputdec(long v) {
 }
 
 /* Thread A: ping -> recv pong -> wait notify -> park. */
-__attribute__((section(".utext"), noinline)) void user_a_main(void) {
+__attribute__((section(".utext"), noinline)) void user_a_main(void)
+{
     uint64_t ping[2];
     uint64_t out[4];
     unsigned long snd;
@@ -257,13 +271,19 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
         uint64_t rep[4];
         unsigned long s = 0, q = 0, o = 0;
         long n;
-        m[0] = 7; m[1] = 0; m[2] = (40u<<16)|30u; m[3] = 0;
+        m[0] = 7;
+        m[1] = 0;
+        m[2] = (40u << 16) | 30u;
+        m[3] = 0;
         if (usend(10, m, 4) != 0)
             upark();
         n = urecv(0, rep, 4, &s, &q, &o);
         if (n < 1 || rep[0] != 0)
             upark();
-        m[0] = 6; m[1] = (5u<<16)|5u; m[2] = (20u<<16)|10u; m[3] = 0xFFFFFFFFu;
+        m[0] = 6;
+        m[1] = (5u << 16) | 5u;
+        m[2] = (20u << 16) | 10u;
+        m[3] = 0xFFFFFFFFu;
         if (usend(10, m, 4) != 0)
             upark();
         n = urecv(0, rep, 4, &s, &q, &o);
@@ -280,7 +300,8 @@ __attribute__((section(".utext"), noinline)) void user_a_main(void) {
 }
 
 /* Thread B: recv ping -> notify A -> reply pong -> park. */
-__attribute__((section(".utext"), noinline)) void user_b_main(void) {
+__attribute__((section(".utext"), noinline)) void user_b_main(void)
+{
     uint64_t buf[4];
     uint64_t pong[2];
     unsigned long snd;
@@ -301,21 +322,27 @@ __attribute__((section(".utext"), noinline)) void user_b_main(void) {
 
 /* mem_server_main: receives root caps at boot, handles frame allocation
  * IPC. Main loop: wait for requests, handle them, reply. */
-__attribute__((section(".utext"), noinline)) void mem_server_main(void) {
+__attribute__((section(".utext"), noinline)) void mem_server_main(void)
+{
     uint64_t buf[4];
     unsigned long snd;
     unsigned long qb;
     unsigned long ovf;
     long n;
 
-    uputc('M'); uputc('E'); uputc('M'); uputc('\n');
+    uputc('M');
+    uputc('E');
+    uputc('M');
+    uputc('\n');
 
     /* Main loop: wait for requests, handle them, reply */
-    for (;;) { /* bound: ∞ — service loop */
-    n = urecv(2, buf, 4, &snd, &qb, &ovf);
-        if (n < 1) {
+    for (;;)
+    { /* bound: ∞ — service loop */
+        n = urecv(2, buf, 4, &snd, &qb, &ovf);
+        if (n < 1)
+        {
             /* Empty or invalid: reply error */
-            uint64_t resp[1] = { (uint64_t)RESP_ERR };
+            uint64_t resp[1] = {(uint64_t)RESP_ERR};
             usend(snd, resp, 1);
             continue;
         }
@@ -323,7 +350,8 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
         long req = (long)buf[0];
         long rc = RESP_ERR;
 
-        switch (req) {
+        switch (req)
+        {
         case REQ_ALLOC: {
             /* Allocate a frame: kernel V2_INV_PT_ALLOC does the work */
             rc = (long)u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
@@ -331,14 +359,16 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
         }
         case REQ_MAP: {
             /* Map: args = cap_slot, vpn */
-            if (n >= 3) {
+            if (n >= 3)
+            {
                 rc = (long)u_invoke(V2_INV_MAP, buf[1], buf[2], 0);
             }
             break;
         }
         case REQ_UNMAP: {
             /* Unmap: args = vpn */
-            if (n >= 2) {
+            if (n >= 2)
+            {
                 rc = (long)u_invoke(V2_INV_UNMAP, buf[1], 0, 0);
             }
             break;
@@ -348,7 +378,7 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
             break;
         }
 
-        uint64_t resp[1] = { (uint64_t)rc };
+        uint64_t resp[1] = {(uint64_t)rc};
         usend(snd, resp, 1);
     }
 }
@@ -359,23 +389,35 @@ __attribute__((section(".utext"), noinline)) void mem_server_main(void) {
  * frame window base, kernel/ipc.h V2_U_FRAME_BASE). Pattern bytes are
  * built from a runtime variable: a 64-bit literal loaded by U-mode code
  * would pull a literal pool into kernel .rodata (U=0) and fault. */
-__attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
+__attribute__((section(".utext"), noinline)) void test_cap_thread(void)
+{
     long i;
     int n_ok;
-    uputc('C'); uputc('A'); uputc('P'); uputc('\n');
+    uputc('C');
+    uputc('A');
+    uputc('P');
+    uputc('\n');
 
     /* Step 1: PT_ALLOC — allocate a frame, get a cap in our table */
     long rc = u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
-    if (rc != 0) {
-        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+    if (rc != 0)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
         upark();
     }
 
     /* Step 2: MAP — map the frame at VPN 0. (vpn 0x200 >= V2_VPN_SLOTS
      * is now correctly rejected by the kernel since Task 3.) */
     rc = u_invoke(V2_INV_MAP, 0, 0, 0);
-    if (rc != 0) {
-        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+    if (rc != 0)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
         upark();
     }
 
@@ -392,8 +434,12 @@ __attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
     for (i = 0; i < 8; i++) /* bound: 8 (pattern bytes) */
         pb[i] = (uint8_t)(x >> (((uint32_t)i & 3) * 8));
     rc = u_invoke(V2_INV_WRITE, 0, (long)&pat, 0);
-    if (rc != 0) {
-        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+    if (rc != 0)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
         upark();
     }
 
@@ -405,69 +451,136 @@ __attribute__((section(".utext"), noinline)) void test_cap_thread(void) {
     for (i = 0; i < 2; i++) /* bound: 2 (pattern uint32 lanes) */
         if (va[i] == x)
             n_ok++;
-    if (n_ok != 2) {
-        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+    if (n_ok != 2)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
         upark();
     }
     /* DU marker: every word matched through the real leaf PTE */
-    uputc('D'); uputc('U'); uputc(':'); uputc(' ');
-    uputc('v'); uputc('p'); uputc('n'); uputc('0');
-    uputc(' '); uputc('m'); uputc('i'); uputc('r'); uputc('r');
-    uputc('o'); uputc('r'); uputc('e'); uputc('d');
+    uputc('D');
+    uputc('U');
+    uputc(':');
+    uputc(' ');
+    uputc('v');
+    uputc('p');
+    uputc('n');
+    uputc('0');
+    uputc(' ');
+    uputc('m');
+    uputc('i');
+    uputc('r');
+    uputc('r');
+    uputc('o');
+    uputc('r');
+    uputc('e');
+    uputc('d');
     uputc(' ');
     uputdec(n_ok);
-    uputc('/'); uputc('2');
+    uputc('/');
+    uputc('2');
     uputc('\n');
 
     /* Step 5: READ — the invoke copies the 8-byte word back from the real
      * frame into the user buffer; the pattern bytes must still match. */
     uint64_t rb = 0;
     rc = u_invoke(V2_INV_READ, 0, (long)&rb, 0);
-    if (rc != 0) {
-        uputc('F'); uputc('A'); uputc('I'); uputc('L');
+    if (rc != 0)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
         upark();
     }
     {
         const volatile uint8_t *rbb = (const volatile uint8_t *)&rb;
         for (i = 0; i < 8; i++) /* bound: 8 (read-back bytes) */
-            if (rbb[i] != (uint8_t)(x >> (((uint32_t)i & 3) * 8))) {
-                uputc('F'); uputc('A'); uputc('I'); uputc('L');
+            if (rbb[i] != (uint8_t)(x >> (((uint32_t)i & 3) * 8)))
+            {
+                uputc('F');
+                uputc('A');
+                uputc('I');
+                uputc('L');
                 upark();
             }
     }
 
-    uputc('O'); uputc('K'); uputc('\n');
+    uputc('O');
+    uputc('K');
+    uputc('\n');
 
     /* ---- Negative tests: prove fail-closed behavior (Task 8) ----
      * Each test expects rc<0. A 'P' is printed on each success. */
 
     /* 1. MAP bad slot: slot V2_CAP_SLOTS (out of bounds) must be rejected. */
     rc = u_invoke(V2_INV_MAP, 0, 0, 0x200);
-    if (rc >= 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    if (rc >= 0)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
+        upark();
+    }
     uputc('P');
 
     /* 2. READ to a pointer inside the text region (0x80400000..0x80600000)
      *    must fail the data-range check (hardening proof). */
     volatile uint64_t *text_ptr = (volatile uint64_t *)0x80400000UL;
     rc = u_invoke(V2_INV_READ, 0, (long)text_ptr, 0);
-    if (rc >= 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    if (rc >= 0)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
+        upark();
+    }
     uputc('P');
 
     /* 3. UNMAP vpn 0, then READ must fail (mapping gone). */
     rc = u_invoke(V2_INV_UNMAP, 0, 0, 0);
-    if (rc != 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    if (rc != 0)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
+        upark();
+    }
     rc = u_invoke(V2_INV_READ, 0, (long)&rb, 0);
-    if (rc >= 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    if (rc >= 0)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
+        upark();
+    }
     uputc('P');
 
     /* 4. READ to a pointer past the data region (0x80800000+) must fail. */
     volatile uint64_t *oob_ptr = (volatile uint64_t *)0x80800000UL;
     rc = u_invoke(V2_INV_READ, 0, (long)oob_ptr, 0);
-    if (rc >= 0) { uputc('F'); uputc('A'); uputc('I'); uputc('L'); upark(); }
+    if (rc >= 0)
+    {
+        uputc('F');
+        uputc('A');
+        uputc('I');
+        uputc('L');
+        upark();
+    }
     uputc('P');
 
-    uputc('N'); uputc('P'); uputc('\n'); /* negative-passed */
-    upark();
+    uputc('N');
+    uputc('P');
+    uputc('\n'); /* negative-passed */
+    /* Demo complete (CAP/OK/DU/NP all printed): exit so tid 7 becomes a
+     * reusable spawn slot instead of a parked squatter. */
+    udie();
 }
 
 static uint8_t ustack_a[4096] __attribute__((section(".ustack"), aligned(16)));
@@ -495,16 +608,12 @@ static uint8_t ustack_gui[8192] __attribute__((section(".ustack"), aligned(16)))
 /* Boot assertion (Task 4 follow-up b): the qrexec U-stack window must fit
  * the policy frame with headroom; a short window fails the build, never
  * boots into a stack overflow. */
-_Static_assert(sizeof(ustack_qrexec) >= 8192,
-               "qrexec U-stack must be >= 8KB (v2_qpolicy_t ~4.1KB)");
+_Static_assert(sizeof(ustack_qrexec) >= 8192, "qrexec U-stack must be >= 8KB (v2_qpolicy_t ~4.1KB)");
 /* FDE boot assertions (Task 3): vault frame + cryptblk staging minima. */
-_Static_assert(sizeof(ustack_vault) >= 4096,
-               "vault U-stack must be >= 4KB (KEK table + VMK slot)");
-_Static_assert(sizeof(ustack_crypt) >= 8192,
-               "cryptblk U-stack must be >= 8KB (FS + DMA staging)");
+_Static_assert(sizeof(ustack_vault) >= 4096, "vault U-stack must be >= 4KB (KEK table + VMK slot)");
+_Static_assert(sizeof(ustack_crypt) >= 8192, "cryptblk U-stack must be >= 8KB (FS + DMA staging)");
 /* S4a boot assertion: gui service-frame minimum (qrexec 8K precedent). */
-_Static_assert(sizeof(ustack_gui) >= 8192,
-               "gui U-stack must be >= 8KB (FILL service frame)");
+_Static_assert(sizeof(ustack_gui) >= 8192, "gui U-stack must be >= 8KB (FILL service frame)");
 
 uintptr_t ustack_a_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_b_top __attribute__((section(".udata"))) = 0;
@@ -518,7 +627,8 @@ uintptr_t ustack_vault_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_crypt_top __attribute__((section(".udata"))) = 0;
 uintptr_t ustack_gui_top __attribute__((section(".udata"))) = 0;
 
-__attribute__((section(".utext"))) void user_stacks_init(void) {
+__attribute__((section(".utext"))) void user_stacks_init(void)
+{
     ustack_a_top = (uintptr_t)(ustack_a + sizeof(ustack_a));
     ustack_b_top = (uintptr_t)(ustack_b + sizeof(ustack_b));
     ustack_m_top = (uintptr_t)(ustack_m + sizeof(ustack_m));

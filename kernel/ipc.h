@@ -18,10 +18,13 @@
 #include <stdint.h>
 
 #define V2_MSG_MAX 4
-#define V2_IPC_Q 16
+#define V2_IPC_Q 32  /* Increased from 16 to 32 for better burst tolerance */
 #define V2_EP0 0
 #define V2_NEP 11 /* one endpoint per thread (EP i owned by tid i); rides V2_CAP_THREADS (S4a: 10 -> 11 for gui EP10) */
 #define V2_THREADS_MAX 11 /* S4a: rides V2_CAP_THREADS (was stale 8, Task-3 review minor; no in-tree users, kept as documentation) */
+
+/* Flow control: notify sender when queue exceeds this threshold */
+#define V2_FLOW_CONTROL_THRESHOLD (V2_IPC_Q / 2)  /* Notify at 50% capacity */
 
 #define V2_OK 0
 #define V2_ERR_INVALID (-1)
@@ -31,6 +34,9 @@
 #define V2_U_TEXT_BASE 0x80400000UL
 #define V2_U_DATA_BASE 0x80600000UL
 #define V2_U_END 0x80800000UL
+
+/* Range validation limits for overflow-safe checks */
+#define V2_MAX_RANGE_WORDS 262144UL /* 2MB max span (safety limit for u_copy) */
 
 /* Wait kinds (mirror V2_C wk): 0 none, 1 send, 2 recv, 3 wait. */
 #define V2_WK_NONE 0
@@ -61,35 +67,38 @@ static inline int v2_len_ok(unsigned long len) { return len <= (unsigned long)V2
 static inline int v2_range_ok(uintptr_t ua, unsigned long nwords, uintptr_t lo, uintptr_t hi)
 {
     uint64_t nbytes;
-    if (nwords > 262144UL)
+    if (nwords > V2_MAX_RANGE_WORDS) /* Guard against overflow in multiplication */
         return 0;
-    if ((ua & 7UL) != 0)
+    if ((ua & 7UL) != 0) /* Enforce 8-byte alignment */
         return 0;
     nbytes = (uint64_t)nwords * 8u;
     if (ua < lo)
         return 0;
     if (ua > hi)
         return 0;
-    if (nbytes > (uint64_t)(hi - ua))
+    if (nbytes > (uint64_t)(hi - ua)) /* Overflow-safe span check */
         return 0;
     return 1;
 }
 
-/* SEND buffer: readable (whole U range). */
+/* SEND buffer: readable (whole U range). Supports legacy [TEXT, END) and
+ * userspace ELF per-thread frame window [0x80800000, 0x82000000). */
 static inline int v2_send_range_ok(uintptr_t ua, unsigned long nwords)
 {
     if (!v2_len_ok(nwords))
         return 0;
-    return v2_range_ok(ua, nwords, (uintptr_t)V2_U_TEXT_BASE, (uintptr_t)V2_U_END);
+    return v2_range_ok(ua, nwords, (uintptr_t)V2_U_TEXT_BASE, (uintptr_t)V2_U_END) ||
+           v2_range_ok(ua, nwords, (uintptr_t)0x80800000UL, (uintptr_t)0x82000000UL);
 }
 
 /* RECV buffer: writable (data region only; text is RX). Capacity is NOT
  * capped at V2_MSG_MAX here: the copy loop is bounded by the stored
  * message length (<= V2_MSG_MAX), and oversized spans fail the range
- * check anyway. */
+ * check anyway. Supports legacy [DATA, END) and userspace ELF window. */
 static inline int v2_recv_range_ok(uintptr_t ua, unsigned long nwords)
 {
-    return v2_range_ok(ua, nwords, (uintptr_t)V2_U_DATA_BASE, (uintptr_t)V2_U_END);
+    return v2_range_ok(ua, nwords, (uintptr_t)V2_U_DATA_BASE, (uintptr_t)V2_U_END) ||
+           v2_range_ok(ua, nwords, (uintptr_t)0x80800000UL, (uintptr_t)0x82000000UL);
 }
 
 static inline void v2_ep_init(v2_ep_t *ep)

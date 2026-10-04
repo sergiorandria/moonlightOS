@@ -79,7 +79,9 @@ static inline void u_wr(uint32_t off, uint8_t v) {
 }
 
 bool uart_driver_init(uart_caps_t c) {
-    u_caps = c;
+    u_regs = NULL;
+    u_irq_enabled = false;
+    memset(&u_caps, 0, sizeof(u_caps));
     if (c.mmio_len < 8u || c.mmio_base == 0) return false;
 #ifdef __CHERI_PURE_CAPABILITY__
     __capability void *cap = (void *)c.mmio_base;
@@ -88,7 +90,8 @@ bool uart_driver_init(uart_caps_t c) {
     u_regs = (__capability volatile uint8_t *)cap;
 #else
     /* Hybrid/target range check: UART lives in the MMIO window. */
-    if (c.mmio_base < 0x10000000u || c.mmio_base + c.mmio_len > 0x20000000u)
+    if (c.mmio_base < 0x10000000u || c.mmio_base >= 0x20000000u ||
+        c.mmio_len > 0x20000000u - c.mmio_base)
         return false;
 #if defined(__riscv)
     u_regs = (volatile uint8_t *)c.mmio_base;
@@ -98,6 +101,7 @@ bool uart_driver_init(uart_caps_t c) {
     u_regs = (volatile uint8_t *)host_uart_regs;
 #endif
 #endif
+    u_caps = c;
     memset(u_txfifo, 0, sizeof(u_txfifo));
     memset(u_rxfifo, 0, sizeof(u_rxfifo));
     u_tx_head = u_tx_tail = u_tx_used = 0;

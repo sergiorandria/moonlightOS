@@ -86,6 +86,13 @@ int main(void) {
     assert(st.tx_used == 0 && st.rx_used == 0);
     printf("PASS: reboot clears FIFOs + stats\n");
 
+    /* A failed reinit drops both the old mapping and its reboot snapshot. */
+    assert(uart_driver_init(bad) == false);
+    assert(uart_driver_putc('x') == -1);
+    uart_driver_reboot();
+    assert(uart_driver_putc('x') == -1);
+    printf("PASS: failed reinit leaves driver unbound\n");
+
     printf("ALL UART TESTS PASS\n");
     return 0;
 }

@@ -15,6 +15,12 @@ typedef struct {
     int shift;  /* Left or right Shift pressed */
     int ctrl;   /* Left or right Ctrl pressed */
     int alt;    /* Left or right Alt pressed */
+    int left_shift;
+    int right_shift;
+    int left_ctrl;
+    int right_ctrl;
+    int left_alt;
+    int right_alt;
 } kbd_modifiers_t;
 
 /* Mouse state: position (x,y) and button press status (left/right/middle).
@@ -189,16 +195,28 @@ static inline char keycode_to_ascii(uint16_t keycode, const kbd_modifiers_t *mod
 static inline void update_modifiers(kbd_modifiers_t *mods, uint16_t keycode, int pressed) {
     switch (keycode) {
     case KEY_LEFTSHIFT:
+        mods->left_shift = pressed != 0;
+        mods->shift = mods->left_shift || mods->right_shift;
+        break;
     case KEY_RIGHTSHIFT:
-        mods->shift = pressed;
+        mods->right_shift = pressed != 0;
+        mods->shift = mods->left_shift || mods->right_shift;
         break;
     case KEY_LEFTCTRL:
+        mods->left_ctrl = pressed != 0;
+        mods->ctrl = mods->left_ctrl || mods->right_ctrl;
+        break;
     case KEY_RIGHTCTRL:
-        mods->ctrl = pressed;
+        mods->right_ctrl = pressed != 0;
+        mods->ctrl = mods->left_ctrl || mods->right_ctrl;
         break;
     case KEY_LEFTALT:
+        mods->left_alt = pressed != 0;
+        mods->alt = mods->left_alt || mods->right_alt;
+        break;
     case KEY_RIGHTALT:
-        mods->alt = pressed;
+        mods->right_alt = pressed != 0;
+        mods->alt = mods->left_alt || mods->right_alt;
         break;
     }
 }
@@ -206,15 +224,21 @@ static inline void update_modifiers(kbd_modifiers_t *mods, uint16_t keycode, int
 /* Update mouse position based on relative motion event (REL_X, REL_Y).
  * Delta values are signed (positive=right/down, negative=left/up).
  * Position clamped to framebuffer bounds (0..799, 0..599). */
-static inline void mouse_move(mouse_state_t *mouse, int dx, int dy) {
-    mouse->x += dx;
-    mouse->y += dy;
-
-    /* Clamp to framebuffer bounds */
-    if (mouse->x < 0) mouse->x = 0;
-    if (mouse->x > 799) mouse->x = 799;
-    if (mouse->y < 0) mouse->y = 0;
-    if (mouse->y > 599) mouse->y = 599;
+static inline void mouse_move(mouse_state_t *mouse, int32_t dx, int32_t dy) {
+    int32_t x = mouse->x;
+    int32_t y = mouse->y;
+    if (x < 0) x = 0;
+    if (x > 799) x = 799;
+    if (y < 0) y = 0;
+    if (y > 599) y = 599;
+    if (dx < -x) x = 0;
+    else if (dx > 799 - x) x = 799;
+    else x += dx;
+    if (dy < -y) y = 0;
+    else if (dy > 599 - y) y = 599;
+    else y += dy;
+    mouse->x = x;
+    mouse->y = y;
 }
 
 /* Update mouse button state based on button press/release event. */
@@ -333,6 +357,12 @@ static inline void kbd_modifiers_init(kbd_modifiers_t *mods) {
     mods->shift = 0;
     mods->ctrl = 0;
     mods->alt = 0;
+    mods->left_shift = 0;
+    mods->right_shift = 0;
+    mods->left_ctrl = 0;
+    mods->right_ctrl = 0;
+    mods->left_alt = 0;
+    mods->right_alt = 0;
 }
 
 #endif /* INPUT_H */
