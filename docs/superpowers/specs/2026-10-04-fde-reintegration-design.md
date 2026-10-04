@@ -45,6 +45,10 @@ stays dormant (physically impossible headless — no GETC, no RNG).
   Free tids today are exactly 5, 6, 8, 9 (`NTHREADS 11`, rest parked).
 - **Grants + labels:** restore the old QX-grant hunk for {5,6,8,9} only
   (slot-9 root-holder pattern, from the HEAD diff; no firewall/net grants).
+  Rule the restored set must satisfy: cryptblk (qube7) can SEND EP0 (qube0)
+  and GRANT vault slots; qrexec can SEND delivers to EPs 8/9; exact lines
+  recovered from the HEAD diff at implementation, verified by the
+  provision→UNWRAP rendezvous succeeding in smoke.
   `qube_of[5]=2, [6]=3, [8]=6, [9]=7`, `qube_next=8` (under `V2_QUBES_MAX 9`).
   cryptblk's EP0-readiness SEND ( §2) is covered by the restored crypt grant
   subset; verify at implementation.
@@ -60,11 +64,17 @@ stays dormant (physically impossible headless — no GETC, no RNG).
   clipboard DENY (rpc2) driven by `user_a` as today.
 - **Provision leg (new, TEST-only):** after boot-demo unlock, cryptblk
   PT_ALLOCs a frame, WRITEs KEK_live||VMK_live (8 words), GRANTs it to vault
-  `PROVISION_SLOT 21` (distinct from the `CRYPT_KEY_SLOT 20` T_KEY contract),
-  and SENDs readiness to EP0. `user_a` RECVs readiness, then T_CALLs the new
-  TEST provision rpc through qrexec (TEST policy-table row pinning src==7 —
-  production rows keep pinning src==3/AdminVM; mechanism identical).
-  Vault's provision handler MAPs slot 21, READs 8 words, stores
+  slot 20 (reuses the `CRYPT_KEY_SLOT 20` contract — phases provably do not
+  overlap: provision completes before any T_KEY; mappings never linger past
+  the READ), and SENDs readiness to EP0. `user_a` RECVs readiness, then
+  T_CALLs the new TEST provision rpc (`VAULT_PROVISION 6` — rpc 6 is
+  currently invalid in qrexec's `rpc_svc` table, so no renumbering; table
+  gains `[6]=6/vault`) through qrexec (TEST policy-table row pinning
+  src==7 — production rows keep pinning src==3/AdminVM; mechanism
+  identical). Demo policy (compiled-in table + auto-approve approver) is
+  dev-only by construction; production swaps the table and the approver, no
+  protocol change.
+  Vault's provision handler MAPs slot 20, READs 8 words, stores
   `keks[slot]` + `vmk`, sets `valid`/`vmk_valid` (+ label), wipes, UNMAPs,
   replies OK. This is the ONLY writer of vault key validity in-tree.
 - **UNWRAP leg (new):** `user_a` T_CALLs rpc7 → ASK → auto-approve →
@@ -102,11 +112,13 @@ stays dormant (physically impossible headless — no GETC, no RNG).
   `u_puthex` helper (AdminVM `u_puthex64` precedent). `key_consume` stays
   print-free.
 - Gates to restore (from the HEAD-diff gate list): `QREXEC: up`,
-  `admin registered`, ask/allow/deny legs, `VAULT: up`, `CRYPT:
-  up/locked/unlock ok/rw ok/wrong-key denied/leak denied/no volume`,
-  `formatted|volume ok` union, `RNG: up`. New gates: `AUD: rng …`,
-  `AUD: release slot=`, `ADMIN: ask/decided`, vault `rewrap`-dormant note
-  (no gate), cryptblk provision-ready marker.
+  `QREXEC: admin registered`, `QREXEC: ask`, `AUD: allow rpc=`,
+  `QREXEC: deny`, `VAULT: up`, `VAULT: live ok`, `CRYPT:
+  up|locked|unlock ok|rw ok|wrong-key denied|leak denied|no volume`,
+  `CRYPT: formatted|CRYPT: volume ok` union, `RNG: up`, `VAULTQ: labels
+  ok`, `CRYPTQ: labels ok`. New gates: `CRYPT: provision ready`,
+  `VAULT: provision ok`, `AUD: rng `, `AUD: release slot=`,
+  `ADMIN: ask idx=`, `ADMIN: decided idx=`.
 - `timeout 10` cannot survive 2×600K KDFs under emulation: measure
   fresh-boot format+unlock cost first, set budget = measured × 3 (floor
   120s). Pathological (>5 min) → stop and re-scope (e.g. gate on the
