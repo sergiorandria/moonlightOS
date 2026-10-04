@@ -131,8 +131,8 @@ _Static_assert(NTHREADS <= V2_CAP_THREADS,
 #define VIRTIO_IRQ_NOT_FOUND 0xFFFFFFFFUL
 static uint32_t net_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
 static uint32_t blk_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
-/* S4c input IRQs: Task 3 discovery fills these (first dev-18 = kbd, second
- * = mouse); the Task 3 handler + PLIC setup are the real consumers. */
+/* S4c input IRQs: Task 3 discovery fills these (first dev-18 = mouse, second
+ * = kbd); the Task 3 handler + PLIC setup are the real consumers. */
 static uint32_t kbd_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
 static uint32_t mouse_virtio_irq = VIRTIO_IRQ_NOT_FOUND;
 

@@ -1193,7 +1193,7 @@ lemma rng_mutant_leak_rejected: "rng_leaf 6 = False"
    tid 10's tables (l1_t[10][9] kbd, l1_t[10][10] mouse, boot-asserted
    "GUIMMIO: tid=10 only"): input_leaf pins the owner, and the tid-9
    mutant pin rejects the BLK-neighbor alias. Discovery takes the
-   first dev-18 as kbd and the second as mouse (cmdline order).
+   first dev-18 as mouse and the second as kbd (cmdline order).
    Zero axioms. *)
 
 definition input_scan :: "nat \<Rightarrow> nat" where

@@ -78,7 +78,7 @@ if [ "$DISP" != "-nographic" ]; then
   # The graphical window feeds these devices; kbd.c merges kbd with the
   # UART. Absent headless: the driver logs UART-only fallback and the
   # shell stays on serial. S4c input needs both dev-18 transports for
-  # kernel discovery (first=kbd, second=mouse).
+  # kernel discovery (first=mouse, second=kbd).
   if $QEMU -device help 2>&1 | grep -q "virtio-keyboard-device"; then
     KBD_ARGS="-device virtio-keyboard-device"
   fi
