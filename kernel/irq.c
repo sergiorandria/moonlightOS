@@ -6,6 +6,29 @@
 #include "platform.h"
 #include "kinternal.h"
 
+/* Critical-section fence around route-table wake transitions. Interrupt
+ * gating is RISC-V-only (blk_hal.h precedent): host unit tests compile
+ * this TU for x86 (test_irq.c) and take the no-op fallback. */
+#ifdef __riscv
+static inline void irq_fence_off(void)
+{
+    asm volatile("csrc sie, %0" ::"r"(3UL << 4) : "memory"); /* Disable STIE+SEIE */
+}
+
+static inline void irq_fence_on(void)
+{
+    asm volatile("csrs sie, %0" ::"r"(3UL << 4) : "memory"); /* Re-enable STIE+SEIE */
+}
+#else
+static inline void irq_fence_off(void)
+{
+}
+
+static inline void irq_fence_on(void)
+{
+}
+#endif
+
 static irq_route_t irq_routes[IRQ_ROUTES_MAX];
 
 void irq_init(void)
@@ -89,6 +112,7 @@ void irq_plic_enable(uint32_t irq)
 }
 
 
+#ifdef __riscv /* target-only: PLIC MMIO + thread table (host test covers the route table above) */
 /* irq_trap: S-mode external IRQ via PLIC claim (S-mode external: virtio
  * IRQ via PLIC claim). Either context may carry the delivery (measured:
  * S does); net and blk are served independently so one trap can serve
@@ -116,10 +140,10 @@ void irq_trap(void)
          * Disable interrupts during state transition to prevent race. */
         if (threads[6].state == T_BLOCKED && threads[6].wait_kind == V2_WK_WAIT)
         {
-            asm volatile("csrc sie, %0" ::"r"(3UL << 4) : "memory");  /* Disable STIE+SEIE */
+            irq_fence_off();
             threads[6].state = T_RUNNABLE;
             threads[6].wait_kind = V2_WK_NONE;
-            asm volatile("csrs sie, %0" ::"r"(3UL << 4) : "memory");  /* Re-enable STIE+SEIE */
+            irq_fence_on();
         }
         kputs("NET: irq ok\n");
     }
@@ -132,10 +156,10 @@ void irq_trap(void)
         /* Disable interrupts during state transition to prevent race. */
         if (threads[9].state == T_BLOCKED && threads[9].wait_kind == V2_WK_WAIT)
         {
-            asm volatile("csrc sie, %0" ::"r"(3UL << 4) : "memory");  /* Disable STIE+SEIE */
+            irq_fence_off();
             threads[9].state = T_RUNNABLE;
             threads[9].wait_kind = V2_WK_NONE;
-            asm volatile("csrs sie, %0" ::"r"(3UL << 4) : "memory");  /* Re-enable STIE+SEIE */
+            irq_fence_on();
         }
     }
     /* S4c VirtIO input IRQs: keyboard and mouse for GUI qube (tid 10).
@@ -161,7 +185,7 @@ void irq_trap(void)
         /* Disable interrupts during state transition to prevent race. */
         if (threads[10].state == T_BLOCKED && threads[10].wait_kind == V2_WK_WAIT)
         {
-            asm volatile("csrc sie, %0" ::"r"(3UL << 4) : "memory");  /* Disable STIE+SEIE */
+            irq_fence_off();
             threads[10].state = T_RUNNABLE;
             threads[10].wait_kind = V2_WK_NONE;
             /* Wake-delivery (NOTIFY precedent): a thread woken
@@ -169,7 +193,7 @@ void irq_trap(void)
              * pre-deliver the pending bits as its WAIT return;
              * pending stays set, so a re-WAIT still collects. */
             threads[10].regs[10] = threads[10].notify;
-            asm volatile("csrs sie, %0" ::"r"(3UL << 4) : "memory");  /* Re-enable STIE+SEIE */
+            irq_fence_on();
             input_woke = 1;
         }
     }
@@ -216,3 +240,5 @@ void irq_trap(void)
     }
     return;
 }
+
+#endif /* __riscv: irq_trap */

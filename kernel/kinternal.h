@@ -219,8 +219,8 @@ void frame_teardown_owned(unsigned long owner, unsigned long frame);
 
 /* ---- Scheduler (sched.c) ---- */
 int pick_next(void);
-void enter_thread(int id);
-void halt_no_runnable(void);
+__attribute__((noreturn)) void enter_thread(int id);
+__attribute__((noreturn)) void halt_no_runnable(void);
 __attribute__((noreturn)) void u_enter(uctx_t *ctx); /* trap.S */
 
 /* ---- Syscalls (syscall.c) ---- */

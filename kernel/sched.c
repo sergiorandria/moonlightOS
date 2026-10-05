@@ -47,7 +47,7 @@ int pick_next(void)
     return -1;
 }
 
-void enter_thread(int id)
+__attribute__((noreturn)) void enter_thread(int id)
 {
     uint64_t active_satp;
     uint64_t target_satp = threads[id].vspace_root_ppn;
@@ -68,7 +68,7 @@ void enter_thread(int id)
 /* Terminal park: nothing runnable and nothing can make progress: parked
  * threads never wake; blocked threads wake only via a matching IPC op,
  * which requires a runnable peer. (No timeout yet: Stage 4 time.) */
-void halt_no_runnable(void)
+__attribute__((noreturn)) void halt_no_runnable(void)
 {
     kputs("no runnable left; parking cpu\n");
     for (int t = 0; t < NTHREADS; t++) {

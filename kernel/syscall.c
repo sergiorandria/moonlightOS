@@ -80,10 +80,25 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx)
         if (code == 5)
             sched_tick();
         if (code == 9)
+        {
             irq_trap();
-        kputs("[trap] unexpected interrupt\n");
-        for (;;)
-            asm volatile("wfi");
+            return; /* routed (possibly spuriously); resume interrupted thread */
+        }
+        /* Stray interrupt: fail soft, never wedge. The only plausible
+         * S-mode codes here are software (1, e.g. a stale firmware IPI —
+         * the kernel never uses SSIP) or spurious arrivals; both are
+         * transient, so clear-and-resume keeps the system alive. A
+         * level-stuck source re-traps and re-prints here instead of
+         * silently parking — diagnosable, and no worse than a wedge.
+         * The code rides along so the next hunt starts with evidence. */
+        if (code == 1)
+            asm volatile("csrc sip, %0" ::"r"(2UL) : "memory"); /* clear SSIP */
+        kputs("[trap] stray interrupt code=");
+        kputhex(code);
+        kputs(" sepc=");
+        kputhex(threads[cur].sepc);
+        kputs(" resumed\n");
+        return;
     }
     switch (code)
     {
