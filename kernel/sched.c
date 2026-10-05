@@ -126,4 +126,5 @@ void sched_tick(void)
     int n = pick_next();
     if (n < 0)
         halt_no_runnable();
+    enter_thread(n);
 }
