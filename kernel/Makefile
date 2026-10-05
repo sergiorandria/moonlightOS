@@ -23,7 +23,7 @@ CFLAGS_K = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
 # -fno-strict-overflow: Don't optimize on signed overflow assumptions
 LDFLAGS_K = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib -T linker.ld
 
-SRC_C = kboot.c user.c elf.c initrd.c initrd_data.c irq.c
+SRC_C = kboot.c user.c elf.c initrd.c initrd_data.c irq.c device.c sched.c syscall.c elf_loader.c
 SRC_S = start.S trap.S
 
 all: build/moonlight.elf

@@ -78,7 +78,16 @@ This roadmap outlines the strategic direction for MoonlightOS development over t
 - Gather feedback from service developers
 
 ### Week 3-4: SOLID Sprint 1 - Kernel Modularization
-**Status**: 📋 Planned
+**Status**: ✅ Landed (branch `feature/solid-sprint1-kernel-modularization`)
+
+**Result:** kboot.c split 2720 → ~695 lines, orchestration only; new
+`kernel/kinternal.h` (shared decls) + `device.c` (virtio/GUI discovery) +
+`sched.c` (thread table/policy) + `syscall.c` (trap dispatch) +
+`elf_loader.c` (spawn factor). Kernel rebuilds `-Werror`-clean, no
+duplicate symbols, QEMU transcript identical except the shell `sp=` debug
+detail (dropped; layout-dependent, no gate). Two verify.sh smoke gates
+(`Services: mem+console+tty+gui up`, `[sched] exited 7`) are stale
+pre-existing drift, fail identically before/after.
 
 **Objective:** Split kboot.c into focused modules
 
