@@ -64,6 +64,34 @@ typedef struct
 
 #define TICK_DELTA 1000000UL /* 100ms @ 10MHz timebase */
 
+/* ---- User ABI: syscall numbers (a7) and INVOKE sub-ops (a0).
+ * Single home (moved out of syscall.c, Sprint 1b); userspace mirrors
+ * these numbers in its own ABI headers. */
+#define V2_YIELD 0
+#define V2_PUTC 1
+#define V2_PARK 2
+/* V2_GET_KBOOT_BUF removed - violates microkernel principles */
+#define V2_SEND 3 /* (ep, u_ptr, len): copy IN, block unless waiter; a0 = 0 / -ERR */
+#define V2_RECV                                                                                                        \
+    4 /* (ep, u_buf, cap): copy OUT, block unless queued; a0 = words, a1 = sender, a2 = sender_qube, a3 = ovf */
+#define V2_NOTIFY 5 /* (target, bits): OR-accumulate + wake waiters only; a0 = 0 / -ERR */
+#define V2_WAIT 6   /* (): take pending bits (a0) or block; a0 = bits */
+#define V2_INVOKE 7
+#define V2_INV_MINT 1
+#define V2_INV_GRANT 2
+#define V2_INV_MAP 3
+#define V2_INV_UNMAP 4
+#define V2_INV_REVOKE 5
+#define V2_INV_PT_ALLOC 6
+#define V2_INV_ELF_CHECK 7
+#define V2_INV_ELF_MAP 8
+#define V2_INV_SPAWN 9
+#define V2_INV_FORK 10
+#define V2_INV_EXEC 11
+#define V2_INV_WRITE 12
+#define V2_INV_READ 13
+#define V2_INV_FRAME_PA 16 /* (vpn,0,0,0): PA of the frame mapped at vpn; reserved!=0 -> INVALID */
+
 /* Pool window: 32x4K, inside the l0_frames identity map (512 pages). */
 #define V2_FRAME_TOTAL (V2_FRAMES_MAX)
 
@@ -159,7 +187,25 @@ void klog_hex(uint64_t v);
 uint64_t rdtime(void);
 
 /* ---- VM helpers (kboot.c) ---- */
-uint64_t pte_table(uint64_t *tab);
+void pagetable_init(void);
+void frame_pool_init(void);
+void sched_tick(void);
+void irq_trap(void);
+void sys_yield(void);
+void sys_putc(void);
+void sys_park(void);
+void sys_send(void);
+void sys_recv(void);
+void sys_notify(void);
+void sys_wait(void);
+int syscall_cap_handles(uint64_t op);
+long syscall_cap_invoke(uint64_t op, uint64_t a1, uint64_t a2, uint64_t a3);
+int syscall_mem_handles(uint64_t op);
+long syscall_mem_invoke(uint64_t op, uint64_t a1, uint64_t a2, uint64_t a3);
+int syscall_proc_handles(uint64_t op);
+long syscall_proc_invoke(uint64_t op, uint64_t a1, uint64_t a2, uint64_t a3);
+int syscall_qube_handles(uint64_t op);
+long syscall_qube_invoke(uint64_t op, uint64_t a1, uint64_t a2, uint64_t a3);
 int frame_alloc(void);
 void frame_free(int f);
 void v2_pte_install(unsigned long t, unsigned long vpn,

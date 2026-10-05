@@ -57,6 +57,14 @@ gcc -Wall -Wextra -Werror -o /tmp/test_abi_sync tests/test_abi_sync.c 2>&1 && /t
 gcc -Wall -Wextra -Werror -o /tmp/test_shell_programs tests/test_shell_programs.c 2>&1 && /tmp/test_shell_programs || echo "FAIL: test_shell_programs"
 if command -v clang &>/dev/null; then
   make -C kernel 2>&1 | tail -n 1 || echo "FAIL: kernel build"
+  # SOLID module budget (production-ready): every S-mode kernel TU <= 500
+  # lines, kboot (orchestration only) <= 200. seL4-style file-per-concern.
+  # Scope is the kernel proper: initrd_data.c is a generated blob and
+  # user.c is the U-mode payload, neither is a kernel module.
+  over=$(wc -l kernel/kboot.c kernel/console.c kernel/vm.c kernel/device.c kernel/sched.c kernel/irq.c kernel/elf.c kernel/initrd.c kernel/elf_loader.c kernel/syscall.c kernel/syscall_ipc.c kernel/syscall_cap.c kernel/syscall_mem.c kernel/syscall_proc.c kernel/syscall_qube.c | awk '$2 != "total" && $1 > 500 {print}') || true
+  kboot_n=$(wc -l < kernel/kboot.c)
+  if [ -n "$over" ]; then echo "FAIL: kernel module budget (>500): $over"; else echo "PASS: kernel module budget (all <= 500)"; fi
+  if [ "$kboot_n" -gt 200 ]; then echo "FAIL: kboot budget ($kboot_n > 200)"; else echo "PASS: kboot budget ($kboot_n <= 200)"; fi
 else
   echo "SKIP: kernel (clang not found)"
 fi
@@ -178,11 +186,13 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "\[spawn\] console ELF ok" && echo "v2 smoke: console spawn" || { echo "v2 smoke: FAIL (no console spawn)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "\[spawn\] tty ELF ok" && echo "v2 smoke: tty spawn" || { echo "v2 smoke: FAIL (no tty spawn)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "\[spawn\] gui ELF ok" && echo "v2 smoke: gui spawn" || { echo "v2 smoke: FAIL (no gui spawn)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "Services: mem+console+tty+gui up" && echo "v2 smoke: services up" || { echo "v2 smoke: FAIL (no services up)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "Services: mem+console+tty+vault+cryptblk+gui up" && echo "v2 smoke: services up" || { echo "v2 smoke: FAIL (no services up)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "MEM-SRV" && echo "v2 smoke: MEM-SRV userspace" || { echo "v2 smoke: FAIL (no MEM-SRV)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "DU: vpn0 mirrored" && echo "v2 smoke: DU real-frame proof" || { echo "v2 smoke: FAIL (no DU)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "NP" && echo "v2 smoke: NP negative-passed" || { echo "v2 smoke: FAIL (no NP)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "\[sched\] exited 7" && echo "v2 smoke: demo exited (spawn slot)" || { echo "v2 smoke: FAIL (no demo exit)"; QEMU_FAIL=1; }
+    # Retired: "[sched] exited 7" can no longer print (klog is silenced at
+    # boot-complete and no production path exits thread 7). Gating it
+    # would fail forever; the liveness gate below covers scheduler health.
     echo "$V2LOG" | grep -q "GUI: Bochs VGA found" && echo "v2 smoke: vga bind" || { echo "v2 smoke: FAIL (no vga bind)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUI: framebuffer initialised" && echo "v2 smoke: fb init" || { echo "v2 smoke: FAIL (no fb init)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUI: keyboard ready" && echo "v2 smoke: kbd ready" || { echo "v2 smoke: FAIL (no kbd ready)"; QEMU_FAIL=1; }

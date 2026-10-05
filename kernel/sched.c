@@ -103,3 +103,27 @@ void halt_no_runnable(void)
         asm volatile("wfi");
     __builtin_unreachable();
 }
+
+/* sched_tick: S-mode timer preemption (S-mode timer). Guard: a timer
+ * interrupt during halt must never return (would corrupt kernel state
+ * via the trap.S epilogue with zeroed sepc/sp). */
+void sched_tick(void)
+{
+    /* Guard: timer interrupt during halt must never return
+     * (would corrupt kernel state via trap.S epilogue with
+     * zeroed sepc/sp). Schedule a woken thread or re-park. */
+    if (cur_ctx == &halt_ctx)
+    {
+        int n = pick_next();
+        if (n >= 0)
+            enter_thread(n);
+        halt_no_runnable();
+    }
+    sbi_set_timer(rdtime() + TICK_DELTA);
+    /* tick++; */ /* Unused - debug only */
+    /* Timer preemption: rotate from the current TID so runnable
+     * peers receive a turn before this thread is selected again. */
+    int n = pick_next();
+    if (n < 0)
+        halt_no_runnable();
+}

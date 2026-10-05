@@ -89,6 +89,16 @@ detail (dropped; layout-dependent, no gate). Two verify.sh smoke gates
 (`Services: mem+console+tty+gui up`, `[sched] exited 7`) are stale
 pre-existing drift, fail identically before/after.
 
+**Sprint 1b follow-up (production-ready, landed same branch):** finished
+the module map per `kernel/kernel.h` + seL4 `src/object` precedent —
+`console.c` (SBI/log/timer), `vm.c` (tables/pool/PTE-sync/COW), `sched_tick`
+→ `sched.c`, `irq_trap` → `irq.c`, trap dispatch split by operation class
+into `syscall_ipc/cap/mem/proc/qube.c`, V2 ABI block → `kinternal.h`.
+Final: kboot.c 141, all 16 S-mode TUs ≤ 500 lines; `verify.sh` gains a
+module-budget gate and the two vacuous smoke gates were fixed/retired
+(Services string updated to the actual boot message; `exited 7` removed —
+klog is silenced at boot-complete so it can never print).
+
 **Objective:** Split kboot.c into focused modules
 
 **Tasks:**
