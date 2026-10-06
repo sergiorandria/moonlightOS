@@ -54,6 +54,37 @@ Out of scope: permission/ownership/time semantics beyond display strings, `chmod
 - ELF applet ABI draft: `main(argc, argv)` over spawn, stdin/stdout as IPC byte streams, exit code returned via IPC reply, VFS client syscalls (`SEND/RECV` on VFS ep). Shell keeps builtin fallback until server lands.
 
 ## 7. Risks
-- BusyBox version drift in flag details — pin to BusyBox 1.36 applet help text, note deviations in code comments.
+- BusyBox version drift in flag details — pin to BusyBox 1_36_stable applet help text, note deviations in code comments.
 - ramfs limits (`VFS_FILE_MAX`, `VFS_MAX_NODES`) cap `-R`/large-file fidelity — tests use small trees.
 - `cp -i`/`rm -i` interactivity has no tty prompt plumbing yet — define as “decline without tty, override with `-f`” and test that.
+
+## 8. Real-implementation grounding (BusyBox 1_36_stable, mandatory per applet)
+- Source of truth per applet (mirror/busybox @1_36_stable):
+  `coreutils/ls.c`, `coreutils/cat.c`, `coreutils/head.c`, `coreutils/tail.c`,
+  `coreutils/wc.c`, `coreutils/cp.c`, `coreutils/mv.c`, `coreutils/rm.c`,
+  `coreutils/mkdir.c`, `coreutils/touch.c`, `coreutils/stat.c`,
+  `findutils/find.c`, `coreutils/tee.c`, plus `libbb/` helpers
+  (`getopt32long`, `bb_cat`, `print_numbered_lines`, `open_or_warn_stdin`,
+  `bb_simple_perror_msg`, `make_human_readable_str`).
+- Checked 2026-10-06 (ls, cat — rest must be checked the same way during plan):
+  `ls.c` usage `[-1AaCxdLH R Fp lins h rSXv ctu]` with option-bitmask +
+  precedence rules (`:t-S:S-t`, `:C-xl:x-Cl:l-xC`, `:C-1:1-C`, `:c-u:u-c`,
+  `-d` cancels `-R`, `-n`/`-g` imply `-l`); `cat.c` usage `[-nbvteA]`
+  with `-A == -vet`, default stdin when no FILE (`*--argv = "-"`),
+  `open_or_warn_stdin` + continue-on-error with `retval` accumulation.
+- Architectural lessons to mimic (adapted to ramfs/builtins, not copied verbatim):
+  - Option parsing as bitmask + explicit precedence resolution, not independent bools
+    (current `cmd_ls` bool flags miss `-d` vs `-R`, `-C/-x/-l/-1` precedence).
+  - Separate scan vs display (`scan_one_dir` / `splitdnarray` / `sort_and_display_files`
+    vs `display_single`); `dnode`-style stat-once struct instead of re-`vfs_find` per print.
+  - Continue-on-error with accumulated exit code (`G.exit_code` pattern):
+    multi-file `cat`/`ls`/`cp` print others and return 1 — current `cmd_cat`
+    already continues, `cmd_ls` must do the same for multi-path.
+  - Numbering via shared helper (`print_numbered_lines` + `number_state`
+    with `width/start/inc/sep/all/nonempty`) instead of per-applet loops;
+    `-b` overrides `-n` for empty lines, `-s` squeezes blanks.
+  - Stdin default (`-` or no args reads pipe/`sh_stdin_data`), `bb_cat` streaming
+    instead of whole-file `VFS_FILE_MAX` buffering where possible.
+- Plan gate: each applet diff must cite the BusyBox function/behavior it mimics
+  (e.g. “`ls` sort precedence per `ls.c: sortcmp`”, “`cat -b` per `catv()` numbering”)
+  and note deliberate deviations (no `lstat`/symlinks, no uid/gid, ramfs-only).
