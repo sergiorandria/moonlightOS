@@ -423,19 +423,18 @@ static inline int cmd_ls(int argc, char **argv)
  * still gets a closing newline (legacy moonsh display old tests rely on).
  */
 /*
- * Pipe-stdin length: shell_exec_single_cmd() restores its entry-time
- * shell_out_t copy on return, which clobbers the pipe OUT_BUFFER buf_pos
- * back to 0, so sh_stdin_len/sh_pipe_len read 0 even though the buffer
- * still holds the NUL-terminated stage-1 output. strlen() the buffer
- * instead (engine fix deferred to keep this diff applet-scoped).
+ * Pipe-stdin length: exact engine count (sh_pipe_len set by the pipe
+ * driver). Former strlen() fallback removed 2026-10-07 after the
+ * shell_exec_single_cmd save/restore-clobber fix: the unconditional
+ * `sh_out_active = old_out` wiped stage-1 buf_pos back to 0, so
+ * sh_stdin_len read 0 with data present. The restore is now guarded
+ * by did_redir, so this is exact; keep the NULL guard only.
  */
 static inline int sh_cat_stdin_len(void)
 {
     if (!sh_stdin_data)
         return 0;
-    if (sh_stdin_len > 0)
-        return sh_stdin_len;
-    return vfs_strlen(sh_stdin_data);
+    return sh_stdin_len;
 }
 
 static inline void sh_cat_print_numbered(unsigned long n)
@@ -1346,9 +1345,8 @@ static inline int cmd_rmdir(int argc, char **argv)
  * single-space (existing exact test locks `"3\n"`, not BusyBox/GNU
  * `%7lu` padding); `-m` (chars) equals `-c` (bytes) on ramfs;
  * `tail -f/-F` follow mode is rejected as an unknown option (no
- * blocking reads on ramfs); pipe-stdin length reuses the Task 4
- * sh_cat_stdin_len() strlen fallback (engine sh_stdin_len bug
- * deferred, NOT fixed here).
+ * blocking reads on ramfs); pipe-stdin length reuses the exact
+ * engine count via sh_cat_stdin_len().
  */
 
 /*
@@ -2317,12 +2315,9 @@ static inline int cmd_find(int argc, char **argv)
  *
  * Mimics tee.c: `-a` appends instead of truncating, `-i` is accepted as
  * a no-op (no signals on ramfs), stdin is echoed to stdout and copied
- * to every FILE operand. Pipe-stdin length uses the Task 4
- * sh_cat_stdin_len() strlen fallback: shell_exec_single_cmd() restores
- * its entry-time shell_out_t copy on return, clobbering the pipe
- * OUT_BUFFER buf_pos back to 0, so raw sh_stdin_len reads 0 even though
- * the buffer still holds the NUL-terminated stage-1 output (no engine
- * change in this phase). Per-file failures continue with an accumulated
+ * to every FILE operand. Pipe-stdin length uses the exact engine
+ * count via sh_cat_stdin_len() (guarded-restore fix, no fallback).
+ * Per-file failures continue with an accumulated
  * exit code; with no operands stdin is echoed and nothing is stored.
  */
 static inline int cmd_tee(int argc, char **argv)
