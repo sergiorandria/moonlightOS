@@ -149,6 +149,17 @@ int main(void)
     shell_exec_line("ls -z /");
     run_check("echo $?", "2");
 
+    /* Task 3: ls busybox compat (coreutils/ls.c) */
+    run_check("ls -A /", "etc/");
+    run_exact("ls -d /etc", "/etc\n");
+    run_check("ls -1 /etc", "os-release");
+    run_check("ls /etc /nope", "os-release");
+    shell_exec_line("ls /etc /nope");
+    run_check("echo $?", "1");
+    run_check("ls -R /", "etc/");
+    run_check("ls -R /", "/etc:");
+    run_exact("ls -dR /etc", "/etc\n");
+
     /* Head & Tail & WC */
     run_check("head -n 2 /etc/os-release", "NAME=\"MoonlightOS\"");
     run_check("tail -n 2 /etc/os-release", "ARCH=\"riscv64\"");

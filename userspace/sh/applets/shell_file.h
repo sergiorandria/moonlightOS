@@ -83,7 +83,7 @@ static inline int sh_unknown_opt(const char *prog, char opt)
     }
     else if (vfs_strcmp(prog, "ls") == 0)
     {
-        sh_puts("usage: ls [-l] [-a] [-h] [FILE]...\n");
+        sh_puts("usage: ls [-1AaCdFhlpRx] [FILE]...\n");
     }
     else if (vfs_strcmp(prog, "cat") == 0)
     {
@@ -150,10 +150,115 @@ static inline int sh_unknown_opt(const char *prog, char opt)
     return 2;
 }
 
+/*
+ * cmd_ls (BusyBox 1_36_stable coreutils/ls.c compat).
+ *
+ * Mimics ls.c option handling: combined shorts parsed into an option
+ * bitmask (getopt32-style), then precedence resolved explicitly: `-d`
+ * cancels `-R`, and `-C`/`-x`/`-l`/`-1` are last-wins (ls.c `:C-xl:x-Cl`,
+ * `:C-1:1-C`); `-n`/`-g` imply `-l` upstream but ramfs has no uid/gid so
+ * they stay rejected here. Display follows the splitdnarray/scan_one_dir
+ * split: each operand is stated once (single vfs_find per entry,
+ * my_stat-style), files print before directories, per-path errors
+ * continue with an accumulated exit code (G.exit_code pattern), and
+ * recursion never descends into "." / ".." (SPLIT_SUBDIR).
+ *
+ * Deliberate deviations: one entry per line only (no column layout, so
+ * -C/-x/-1 render identically); directory names always carry trailing
+ * '/' (legacy moonsh display old tests rely on), so -F/-p are accepted
+ * but change nothing (ramfs has no executables to mark with '*');
+ * -A == -a because ramfs stores no "." / ".." entries (spec Sec 3).
+ */
+enum
+{
+    LS_OPT_ALL = 1u << 0,      /* -a: show dotfiles */
+    LS_OPT_ALMOST = 1u << 1,   /* -A: dotfiles minus . / .. */
+    LS_OPT_HUMAN = 1u << 2,    /* -h: human sizes (with -l) */
+    LS_OPT_RECUR = 1u << 3,    /* -R: recursive */
+    LS_OPT_DIR = 1u << 4,      /* -d: list dirs themselves */
+    LS_OPT_CLASSIFY = 1u << 5, /* -F: accepted, '/' always shown */
+    LS_OPT_SLASH = 1u << 6,    /* -p: accepted, '/' always shown */
+};
+
+static inline int sh_ls_show(const char *name, int show_hidden)
+{
+    if (!show_hidden && name[0] == '.')
+        return 0;
+    return 1;
+}
+
+static inline void sh_ls_print(int idx, int opt_l, int opt_h)
+{
+    if (opt_l)
+    {
+        sh_puts(vfs_nodes[idx].is_dir ? "drwxr-xr-x " : "-rw-r--r-- ");
+        sh_puts("1 root root ");
+        if (opt_h)
+            sh_print_size(vfs_nodes[idx].size);
+        else
+            sh_print_ulong(vfs_nodes[idx].size);
+        sh_puts(" ");
+    }
+    sh_puts(vfs_nodes[idx].name);
+    if (vfs_nodes[idx].is_dir)
+        sh_putc('/');
+    sh_putc('\n');
+}
+
+static inline void sh_ls_list_dir(int pidx, int show_hidden, int opt_l, int opt_h)
+{
+    int count = 0;
+    for (int i = 0; i < VFS_MAX_NODES; i++)
+    {
+        if (!vfs_nodes[i].in_use)
+            continue;
+        if (vfs_nodes[i].parent_idx == (uint16_t)pidx && i != pidx)
+        {
+            if (!sh_ls_show(vfs_nodes[i].name, show_hidden))
+                continue;
+            sh_ls_print(i, opt_l, opt_h);
+            count++;
+        }
+    }
+    if (count == 0 && opt_l)
+    {
+        sh_puts("(empty)\n");
+    }
+}
+
+static inline void sh_ls_recurse(const char *disp, int pidx, int show_hidden, int opt_l, int opt_h)
+{
+    for (int i = 0; i < VFS_MAX_NODES; i++)
+    {
+        if (!vfs_nodes[i].in_use)
+            continue;
+        if (vfs_nodes[i].parent_idx != (uint16_t)pidx || i == pidx)
+            continue;
+        if (vfs_strcmp(vfs_nodes[i].name, ".") == 0 || vfs_strcmp(vfs_nodes[i].name, "..") == 0)
+            continue; /* SPLIT_SUBDIR: never descend into . / .. */
+        if (!vfs_nodes[i].is_dir)
+            continue;
+        if (!sh_ls_show(vfs_nodes[i].name, show_hidden))
+            continue;
+        char child[VFS_PATH_MAX];
+        vfs_strcpy(child, disp, sizeof(child));
+        if (child[vfs_strlen(child) - 1] != '/')
+            vfs_strcat(child, "/", sizeof(child));
+        vfs_strcat(child, vfs_nodes[i].name, sizeof(child));
+        sh_putc('\n');
+        sh_puts(child);
+        sh_puts(":\n");
+        sh_ls_list_dir(i, show_hidden, opt_l, opt_h);
+        sh_ls_recurse(child, i, show_hidden, opt_l, opt_h);
+    }
+}
+
 static inline int cmd_ls(int argc, char **argv)
 {
-    int opt_l = 0, opt_a = 0, opt_h = 0;
-    const char *path = NULL;
+    unsigned opts = 0;
+    char fmt = '1'; /* last-wins display selector: 'C', 'x', 'l', '1' */
+    const char *paths[VFS_MAX_NODES];
+    int npaths = 0;
     int opts_done = 0;
 
     for (int i = 1; i < argc; i++)
@@ -162,86 +267,134 @@ static inline int cmd_ls(int argc, char **argv)
         {
             for (int k = 1; argv[i][k]; k++)
             {
-                if (argv[i][k] == 'l')
-                    opt_l = 1;
-                else if (argv[i][k] == 'a')
-                    opt_a = 1;
-                else if (argv[i][k] == 'h')
-                    opt_h = 1;
-                else
+                switch (argv[i][k])
+                {
+                case 'l':
+                    fmt = 'l';
+                    break;
+                case 'C':
+                    fmt = 'C';
+                    break;
+                case 'x':
+                    fmt = 'x';
+                    break;
+                case '1':
+                    fmt = '1';
+                    break;
+                case 'a':
+                    opts |= LS_OPT_ALL;
+                    break;
+                case 'A':
+                    opts |= LS_OPT_ALMOST;
+                    break;
+                case 'h':
+                    opts |= LS_OPT_HUMAN;
+                    break;
+                case 'R':
+                    opts |= LS_OPT_RECUR;
+                    break;
+                case 'd':
+                    opts |= LS_OPT_DIR;
+                    break;
+                case 'F':
+                    opts |= LS_OPT_CLASSIFY;
+                    break;
+                case 'p':
+                    opts |= LS_OPT_SLASH;
+                    break;
+                default:
                     return sh_unknown_opt("ls", argv[i][k]);
+                }
             }
         }
         else if (!opts_done && vfs_strcmp(argv[i], "--") == 0)
         {
             opts_done = 1;
         }
+        else if (npaths < VFS_MAX_NODES)
+        {
+            paths[npaths++] = argv[i];
+        }
+    }
+
+    if (opts & LS_OPT_DIR)
+        opts &= ~LS_OPT_RECUR; /* -d cancels -R (ls.c) */
+
+    int show_hidden = (opts & (LS_OPT_ALL | LS_OPT_ALMOST)) != 0;
+    int opt_l = (fmt == 'l');
+    int opt_h = (opts & LS_OPT_HUMAN) != 0;
+    /* -F/-p need no further action: dirs always show '/' (see sh_ls_print),
+       ramfs has no executables to mark. */
+
+    if (npaths == 0)
+    {
+        paths[npaths++] = ".";
+    }
+
+    /* my_stat-style: state each operand exactly once. */
+    int pidx[VFS_MAX_NODES];
+    char resolved[VFS_PATH_MAX];
+    for (int n = 0; n < npaths; n++)
+    {
+        vfs_resolve_path(sh_cwd, paths[n], resolved, sizeof(resolved));
+        pidx[n] = vfs_find(resolved);
+    }
+
+    /* splitdnarray-style: count files vs dirs; errors fail this pass. */
+    int rc = 0, nfiles = 0, ndirs = 0;
+    for (int n = 0; n < npaths; n++)
+    {
+        if (pidx[n] < 0)
+        {
+            sh_file_error("ls", paths[n], "No such file or directory");
+            rc = 1;
+        }
+        else if (!vfs_nodes[pidx[n]].is_dir || (opts & LS_OPT_DIR))
+        {
+            nfiles++;
+        }
         else
         {
-            path = argv[i];
+            ndirs++;
         }
     }
 
-    char resolved[VFS_PATH_MAX];
-    vfs_resolve_path(sh_cwd, path ? path : ".", resolved, sizeof(resolved));
-
-    int pidx = vfs_find(resolved);
-    if (pidx < 0)
+    /* Files first, no headers (splitdnarray display order). */
+    for (int n = 0; n < npaths; n++)
     {
-        sh_file_error("ls", path ? path : ".", "No such file or directory");
-        return 1;
-    }
-
-    if (!vfs_nodes[pidx].is_dir)
-    {
-        /* Single file */
-        if (opt_l)
-        {
-            sh_puts("-rw-r--r-- 1 root root ");
-            if (opt_h)
-                sh_print_size(vfs_nodes[pidx].size);
-            else
-                sh_print_ulong(vfs_nodes[pidx].size);
-            sh_putc(' ');
-        }
-        sh_puts(vfs_nodes[pidx].name);
-        sh_putc('\n');
-        return 0;
-    }
-
-    /* List directory entries */
-    int count = 0;
-    for (int i = 0; i < VFS_MAX_NODES; i++)
-    {
-        if (!vfs_nodes[i].in_use)
+        if (pidx[n] < 0)
             continue;
-        if (vfs_nodes[i].parent_idx == (uint16_t)pidx && i != pidx)
+        if (vfs_nodes[pidx[n]].is_dir && (opts & LS_OPT_DIR))
         {
-            if (!opt_a && vfs_nodes[i].name[0] == '.')
-                continue;
-
-            if (opt_l)
-            {
-                sh_puts(vfs_nodes[i].is_dir ? "drwxr-xr-x " : "-rw-r--r-- ");
-                sh_puts("1 root root ");
-                if (opt_h)
-                    sh_print_size(vfs_nodes[i].size);
-                else
-                    sh_print_ulong(vfs_nodes[i].size);
-                sh_puts(" ");
-            }
-            sh_puts(vfs_nodes[i].name);
-            if (vfs_nodes[i].is_dir)
-                sh_putc('/');
+            sh_puts(paths[n]); /* -d: list the dir itself as given */
             sh_putc('\n');
-            count++;
+        }
+        else if (!vfs_nodes[pidx[n]].is_dir)
+        {
+            sh_ls_print(pidx[n], opt_l, opt_h);
         }
     }
-    if (count == 0 && opt_l)
+
+    /* Then one listing per directory; headers when ambiguous. */
+    int multi = (nfiles + ndirs) > 1;
+    int first = (nfiles == 0);
+    for (int n = 0; n < npaths; n++)
     {
-        sh_puts("(empty)\n");
+        if (pidx[n] < 0 || !vfs_nodes[pidx[n]].is_dir || (opts & LS_OPT_DIR))
+            continue;
+        if (multi || (opts & LS_OPT_RECUR))
+        {
+            if (!first)
+                sh_putc('\n');
+            sh_puts(paths[n]);
+            sh_puts(":\n");
+        }
+        first = 0;
+        sh_ls_list_dir(pidx[n], show_hidden, opt_l, opt_h);
+        if (opts & LS_OPT_RECUR)
+            sh_ls_recurse(paths[n], pidx[n], show_hidden, opt_l, opt_h);
     }
-    return 0;
+    return rc;
 }
 
 static inline int cmd_cat(int argc, char **argv)
