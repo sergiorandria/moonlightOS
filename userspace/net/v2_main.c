@@ -45,6 +45,12 @@
  * payload under the same MAP/verify discipline. S_TRYRECV stages
  * dequeued bytes into a PT_ALLOC'd reply frame granted to the client's
  * RSVP slot. No new threads/endpoints; all state stays stack-local.
+ *
+ * Boot DNS self-query (net-sockets Task 4): after "NET: tx ok" the
+ * server resolves example.com via the gateway once (ephemeral socket,
+ * rdtime TXID, ~2s self-polled wait with a wire-RX pump, TXID compared
+ * before parsing) and prints "NET: dns <ip>" or "NET: dns err=<code>";
+ * any failure falls through to the service loop, never parks.
  */
 #include <stdint.h>
 
@@ -57,6 +63,9 @@
  * below use byte loops only, safe for the freestanding U-mode ELF. */
 #include "arp_cache.c"
 #include "stack.c"
+/* Task 3 DNS codec, same single-TU pattern: query builder + first-A
+ * parser, libc-free, safe for the freestanding U-mode ELF. */
+#include "dns.c"
 /* Task 1 socket table, same single-TU pattern as the host suite
  * (tests/test_net_stack.c includes sock.c beside stack.c): owner is the
  * kernel-stamped sender tid, unforgable by clients. */
@@ -296,6 +305,39 @@ static void u_puts(const char *s)
         u_putc(*s++);
 }
 
+static void u_putu(unsigned long v)
+{
+    char b[20];
+    int n = 0;
+    if (v == 0)
+    {
+        u_putc('0');
+        return;
+    }
+    while (v > 0 && n < 20) /* bound: 20 digits max */
+    {
+        b[n++] = (char)('0' + (v % 10u));
+        v /= 10u;
+    }
+    while (n > 0)
+    {
+        n--;
+        u_putc(b[n]);
+    }
+}
+
+/* Dotted-decimal print of an MSB-first uint32 (cksum.h convention). */
+static void net_put_ip(uint32_t ip)
+{
+    u_putu((unsigned long)((ip >> 24) & 0xFFu));
+    u_putc('.');
+    u_putu((unsigned long)((ip >> 16) & 0xFFu));
+    u_putc('.');
+    u_putu((unsigned long)((ip >> 8) & 0xFFu));
+    u_putc('.');
+    u_putu((unsigned long)(ip & 0xFFu));
+}
+
 static long u_send(unsigned long ep, const uint64_t *p, unsigned long n)
 {
     return u_ecall3(V2_SEND, (long)ep, (long)p, (long)n);
@@ -505,6 +547,165 @@ static int net_tx_frame(struct net_wire *w, const uint8_t *frame, unsigned long 
         net_w(w->regs, NET_R_IACK, isr);
     net_fence();
     return 0;
+}
+
+/* Bounded drain of the shared datagram queue (boot-query cleanup: stale
+ * or foreign datagrams must not pollute the service loop). Same
+ * depth+terminal-EMPTY bound as the S_CLOSE drain. */
+static void net_queue_drain(uint8_t *tmp, unsigned long tcap)
+{
+    int k;
+    for (k = 0; k <= (int)NET_UDP_QDEPTH; k++) /* bound: 4+1 */
+    {
+        if (net_udp_recv(tmp, tcap, 0, 0, 0) == -(NET_ERR_EMPTY))
+            break;
+    }
+}
+
+/* Task 4 boot DNS self-query (net-sockets Task 4, spec Sec 4). Fires once
+ * after "NET: tx ok": opens an ephemeral UDP socket, builds one
+ * "example.com" A query (rdtime TXID), sends it to the gateway
+ * (10.0.2.2:53, ARP-seeded by net_arp_init), then polls the datagram
+ * queue with an rdtime ~2s deadline + V2_YIELD between polls (self-call
+ * net_udp_recv, no IPC round-trip). Each poll pumps the RX used ring
+ * (level check, same discipline as the service loop) so the response is
+ * observed without blocking the server. The codec does not check TXIDs
+ * (Task 3 review advisory): resp bytes [0..1] are compared to the query
+ * TXID here before parsing; mismatches are dropped and polling
+ * continues. Prints "NET: dns <ip>" or "NET: dns err=<code>" (-1 EMPTY:
+ * matched but no usable A; -2 TRUNC: malformed/TC or local build/send
+ * failure; -3 TIMEOUT: nothing usable within the deadline, a Task-4
+ * log-layer code). Any failure falls through to the service loop: this
+ * never parks. tmp must be >= NET_PKT_MAX (the caller's rxcopy); only
+ * scalars live in this frame. */
+#define NET_DNS_PORT 53u
+static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
+                         int *rx_ok_done)
+{
+    uint16_t txid;
+    uint16_t sport;
+    unsigned long qlen = 0;
+    unsigned long flen = 0;
+    int sid = -1;
+    int rc;
+    uint64_t t0;
+    int p;
+    if (!w || !tmp || tcap < (unsigned long)NET_PKT_MAX || !rx_seen || !rx_ok_done)
+        return; /* defensive: never print, never park */
+    txid = (uint16_t)(u_rdtime() & 0xFFFFu);
+    sport = (uint16_t)(0xC000u | (u_rdtime() & 0x3FFFu)); /* nonzero ephemeral */
+    sid = net_sock_open((unsigned)NET_SOCK_UDP, sport, 0u);
+    if (sid < 0)
+    {
+        u_puts("NET: dns err=-2\n");
+        return;
+    }
+    if (net_dns_build_query("example.com", txid, tmp, &qlen) != 0)
+    {
+        u_puts("NET: dns err=-2\n");
+        net_sock_close(sid);
+        return;
+    }
+    rc = net_stack_udp_send(NET_IP_GW, (uint16_t)NET_DNS_PORT, sport, tmp, qlen,
+                            w->txf + NET_TX_PAY_OFF, &flen);
+    if (rc != 0 || net_tx_frame(w, w->txf + NET_TX_PAY_OFF, flen) != 0)
+    {
+        u_puts("NET: dns err=-2\n");
+        net_sock_close(sid);
+        return;
+    }
+    t0 = u_rdtime();
+    for (p = 0; p < NET_POLL_BOUND; p++)
+    { /* bound: NET_POLL_BOUND */
+        int k;
+        net_arp_tick(u_rdtime());
+        /* Wire RX pump: level-check the used ring every iteration (same
+         * discipline as the service loop below). */
+        if (w->rxu->idx != *rx_seen)
+        {
+            unsigned long wlen = (unsigned long)w->rxu->ring[*rx_seen % 2u].len;
+            uint32_t isr;
+            net_fence();
+            (*rx_seen)++;
+            isr = net_r(w->regs, NET_R_ISTATUS);
+            if (isr)
+                net_w(w->regs, NET_R_IACK, isr);
+            net_fence();
+            if (wlen >= (unsigned long)NET_VIRTIO_HDR + 14u &&
+                wlen <= (unsigned long)NET_VIRTIO_HDR + (unsigned long)NET_PKT_MAX)
+            {
+                unsigned long pktlen = wlen - (unsigned long)NET_VIRTIO_HDR;
+                unsigned long i;
+                int cls;
+                for (i = 0; i < pktlen; i++) /* bound: 1514 */
+                    tmp[i] = w->rxf[NET_RX_PAY_OFF + i];
+                cls = net_stack_rx(tmp, pktlen);
+                if (cls == NET_CLASS_UDP)
+                {
+                    if (!*rx_ok_done)
+                    {
+                        u_puts("NET: rx ok\n");
+                        *rx_ok_done = 1;
+                    }
+                }
+                else if (cls == NET_CLASS_ARP)
+                {
+                    uint32_t rip = 0;
+                    uint8_t rmac[6];
+                    if (net_arp_need_reply(&rip, rmac) &&
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
+                            (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
+                                           (unsigned long)NET_ARP_FRAME_LEN);
+                }
+            }
+            w->rxa->ring[w->rxa->idx % 2u] = 0u;
+            net_fence();
+            w->rxa->idx++;
+            net_fence();
+            net_w(w->regs, NET_R_QNOTIFY, 0u);
+            net_fence();
+        }
+        /* Drain this poll's arrivals; exactly one reply expected. */
+        for (k = 0; k <= (int)NET_UDP_QDEPTH; k++) /* bound: 4+1 */
+        {
+            int trunc = 0;
+            int ngot = net_udp_recv(tmp, tcap, 0, 0, &trunc);
+            uint32_t ip = 0;
+            if (ngot == -(NET_ERR_EMPTY))
+                break;
+            if (ngot < 2 || trunc)
+                continue; /* short/truncated: not ours, keep waiting */
+            if (tmp[0] != (uint8_t)(txid >> 8) || tmp[1] != (uint8_t)(txid & 0xFFu))
+                continue; /* TXID mismatch (Task 3 advisory): not ours */
+            rc = net_dns_parse_a(tmp, (unsigned long)ngot, &ip);
+            if (rc == 0)
+            {
+                u_puts("NET: dns ");
+                net_put_ip(ip);
+                u_putc('\n');
+            }
+            else if (rc == -(NET_ERR_EMPTY))
+            {
+                u_puts("NET: dns err=-1\n");
+            }
+            else
+            {
+                u_puts("NET: dns err=-2\n");
+            }
+            net_queue_drain(tmp, tcap);
+            net_sock_close(sid);
+            return;
+        }
+        u_yield();
+        if (u_rdtime() - t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
+            break;
+    }
+    /* Deadline with nothing usable: report, clean up, fall through to
+     * the service loop (never park). */
+    net_queue_drain(tmp, tcap);
+    net_sock_close(sid);
+    u_puts("NET: dns err=-3\n");
 }
 
 /* Phase-2 bring-up: probe, negotiate, DMA, link, RX post, one gratuitous
@@ -746,14 +947,21 @@ void net_main(void)
     net_stack_init();
     net_phase2(&wire);
 
+    /* Task 4 boot self-query: one example.com A query to the gateway
+     * after "NET: tx ok", rdtime TXID, ~2s self-polled wait. Prints
+     * "NET: dns <ip>" or "NET: dns err=<code>"; never parks (falls
+     * through to the service loop). rxcopy doubles as scratch (query
+     * staging, frame copy, reply buffer, all sequential). */
+    rx_seen = 0;
+    rx_ok_done = 0;
+    net_boot_dns(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
+
     park_valid = 0;
     park_ip = 0;
     park_dport = 0;
     park_sport = 0;
     park_len = 0;
     park_t0 = 0;
-    rx_seen = 0;
-    rx_ok_done = 0;
     pend_valid = 0;
     pend_snd = 0;
     pend_sock = 0;
