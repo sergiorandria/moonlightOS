@@ -264,6 +264,9 @@ int main(void)
     run_check("ls /t6p", "cannot access");
     shell_exec_line("mkdir -p /etc");
     run_check("echo $?", "0");
+    run_exact("mkdir /t_fix", "");
+    run_check("echo $?", "0");
+    shell_exec_line("rmdir /t_fix");
     run_check("find /etc -name os*", "os-release");
     run_check("find /etc -type f -name hostname", "hostname");
     run_check("find / -maxdepth 1 -name etc", "/etc");

@@ -1231,7 +1231,7 @@ static inline int cmd_mkdir(int argc, char **argv)
             continue;
         }
         int r = vfs_create_node(resolved, 1);
-        if (r == 0)
+        if (r >= 0)
             continue;
         sh_file_error("mkdir", argv[i], r == -1 ? "File exists" : "No such file or directory");
         rc = 1;
