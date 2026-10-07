@@ -91,7 +91,7 @@ static inline int sh_unknown_opt(const char *prog, char opt)
     }
     else if (vfs_strcmp(prog, "touch") == 0)
     {
-        sh_puts("usage: touch <file...>\n");
+        sh_puts("usage: touch [-c] FILE...\n");
     }
     else if (vfs_strcmp(prog, "write") == 0)
     {
@@ -99,15 +99,15 @@ static inline int sh_unknown_opt(const char *prog, char opt)
     }
     else if (vfs_strcmp(prog, "rm") == 0)
     {
-        sh_puts("usage: rm [-f] [-r] <file>\n");
+        sh_puts("usage: rm [-fiRr] FILE...\n");
     }
     else if (vfs_strcmp(prog, "cp") == 0)
     {
-        sh_puts("usage: cp <src> <dst>\n");
+        sh_puts("usage: cp [-fiRr] SOURCE... DEST\n");
     }
     else if (vfs_strcmp(prog, "mv") == 0)
     {
-        sh_puts("usage: mv <src> <dst>\n");
+        sh_puts("usage: mv [-fi] SOURCE... DEST\n");
     }
     else if (vfs_strcmp(prog, "mkdir") == 0)
     {
@@ -115,7 +115,7 @@ static inline int sh_unknown_opt(const char *prog, char opt)
     }
     else if (vfs_strcmp(prog, "rmdir") == 0)
     {
-        sh_puts("usage: rmdir <dir...>\n");
+        sh_puts("usage: rmdir [-p] DIR...\n");
     }
     else if (vfs_strcmp(prog, "head") == 0)
     {
@@ -131,15 +131,15 @@ static inline int sh_unknown_opt(const char *prog, char opt)
     }
     else if (vfs_strcmp(prog, "stat") == 0)
     {
-        sh_puts("usage: stat <file...>\n");
+        sh_puts("usage: stat [-c FORMAT] FILE...\n");
     }
     else if (vfs_strcmp(prog, "find") == 0)
     {
-        sh_puts("usage: find [PATH] [-name PAT] [-type f|d]\n");
+        sh_puts("usage: find [PATH] [-name PAT] [-type f|d] [-maxdepth N]\n");
     }
     else if (vfs_strcmp(prog, "tee") == 0)
     {
-        sh_puts("usage: tee [-a] <file>\n");
+        sh_puts("usage: tee [-a] [FILE]...\n");
     }
     else
     {
@@ -578,14 +578,183 @@ static inline int cmd_cat(int argc, char **argv)
     return rc;
 }
 
+/*
+ * Task 6 shared helpers (BusyBox 1_36_stable coreutils/cp.c, mv.c, rm.c,
+ * mkdir.c, touch.c compat).
+ *
+ * - Multi-operand loops continue on error with an accumulated exit code
+ *   (the G.exit_code pattern shared by cp.c/mv.c/rm.c): one bad operand
+ *   still processes the rest and returns 1.
+ * - `-i` interactivity has no tty prompt plumbing on ramfs (spec Sec 7):
+ *   `-i` declines the operation without a tty; `-f` overrides `-i`.
+ *   Host tests have no tty, so `-i` always declines there.
+ * - Deliberate deviations: no uid/gid/mode preservation, no symlinks
+ *   (ramfs has none), whole-file VFS_FILE_MAX buffering instead of
+ *   copy_file_chunk streaming (ramfs bound).
+ */
+
+/* Basename of a resolved absolute path (no allocation, caller buffer). */
+static inline void sh_base_name(const char *res, char *out, int max)
+{
+    int len = vfs_strlen(res);
+    int s = len;
+    while (s > 0 && res[s - 1] != '/')
+        s--;
+    vfs_strcpy(out, res + s, max);
+    if (out[0] == '\0')
+        vfs_strcpy(out, "/", max);
+}
+
+/* Recursive copy of node src_res onto dst_res (cp.c copy_dir/file core).
+ * Files are created-or-truncated at dst; dirs are created-or-merged.
+ * Returns 0 on success, -1 on any failure (nodes exhausted, type clash). */
+static inline int sh_cp_tree(const char *src_res, const char *dst_res)
+{
+    int sidx = vfs_find(src_res);
+    if (sidx < 0)
+        return -1;
+    if (!vfs_nodes[sidx].is_dir)
+    {
+        int didx = vfs_find(dst_res);
+        if (didx < 0)
+        {
+            didx = vfs_create_node(dst_res, 0);
+            if (didx < 0)
+                return -1;
+        }
+        else if (vfs_nodes[didx].is_dir)
+        {
+            return -1;
+        }
+        char buf[VFS_FILE_MAX];
+        int len = vfs_read_file(sidx, buf, sizeof(buf));
+        if (len < 0)
+            return -1;
+        if (vfs_write_file(didx, buf, len, 0) < 0)
+            return -1;
+        return 0;
+    }
+    int didx = vfs_find(dst_res);
+    if (didx < 0)
+    {
+        didx = vfs_create_node(dst_res, 1);
+        if (didx < 0)
+            return -1;
+    }
+    else if (!vfs_nodes[didx].is_dir)
+    {
+        return -1;
+    }
+    /* New nodes parent to didx, never to sidx, so index enumeration is stable. */
+    for (int i = 0; i < VFS_MAX_NODES; i++)
+    {
+        if (!vfs_nodes[i].in_use || vfs_nodes[i].parent_idx != (uint16_t)sidx || i == sidx)
+            continue;
+        char cs[VFS_PATH_MAX], cd[VFS_PATH_MAX];
+        vfs_strcpy(cs, src_res, sizeof(cs));
+        if (cs[vfs_strlen(cs) - 1] != '/')
+            vfs_strcat(cs, "/", sizeof(cs));
+        vfs_strcat(cs, vfs_nodes[i].name, sizeof(cs));
+        vfs_strcpy(cd, dst_res, sizeof(cd));
+        if (cd[vfs_strlen(cd) - 1] != '/')
+            vfs_strcat(cd, "/", sizeof(cd));
+        vfs_strcat(cd, vfs_nodes[i].name, sizeof(cd));
+        if (sh_cp_tree(cs, cd) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+/* Recursive removal by resolved path (rm.c remove_dir / mv.c cleanup core).
+ * Refuses the root node. Returns 0 on success, -1 on any failure. */
+static inline int sh_rm_tree(const char *res)
+{
+    int idx = vfs_find(res);
+    if (idx <= 0)
+        return -1;
+    if (vfs_nodes[idx].is_dir)
+    {
+        for (int i = 0; i < VFS_MAX_NODES; i++)
+        {
+            if (!vfs_nodes[i].in_use || vfs_nodes[i].parent_idx != (uint16_t)idx || i == idx)
+                continue;
+            char child[VFS_PATH_MAX];
+            vfs_strcpy(child, res, sizeof(child));
+            if (child[vfs_strlen(child) - 1] != '/')
+                vfs_strcat(child, "/", sizeof(child));
+            vfs_strcat(child, vfs_nodes[i].name, sizeof(child));
+            if (sh_rm_tree(child) != 0)
+                return -1;
+        }
+    }
+    return vfs_unlink_node(res);
+}
+
+/* mkdir -p core (mkdir.c --parents core): create every missing ancestor in
+ * order. Pre-existing dirs succeed; a pre-existing non-dir fails.
+ * Returns 0 on success, -1 on failure. */
+static inline int sh_mkdir_p(const char *res)
+{
+    int f = vfs_find(res);
+    if (f >= 0)
+        return vfs_nodes[f].is_dir ? 0 : -1;
+    char prefix[VFS_PATH_MAX];
+    int len = vfs_strlen(res);
+    for (int i = 1; i <= len; i++)
+    {
+        if (res[i] != '/' && res[i] != '\0')
+            continue;
+        int k;
+        for (k = 0; k < i && k < VFS_PATH_MAX - 1; k++)
+            prefix[k] = res[k];
+        prefix[k] = '\0';
+        if (prefix[0] == '\0')
+            continue;
+        int pf = vfs_find(prefix);
+        if (pf < 0)
+        {
+            if (vfs_create_node(prefix, 1) < 0)
+                return -1;
+        }
+        else if (!vfs_nodes[pf].is_dir)
+        {
+            return -1;
+        }
+    }
+    return vfs_find(res) >= 0 ? 0 : -1;
+}
+
 static inline int cmd_touch(int argc, char **argv)
 {
-    if (argc < 2)
+    /* touch.c: only -c (do not create) in Phase 1; no-create skips missing
+     * files silently. Unknown options use the getopt32-style path. */
+    int no_create = 0;
+    int start = 1;
+    int opts_done = 0;
+    while (start < argc && !opts_done && argv[start][0] == '-' && argv[start][1] != '\0')
     {
-        sh_puts("usage: touch <file...>\n");
+        if (vfs_strcmp(argv[start], "--") == 0)
+        {
+            opts_done = 1;
+            start++;
+            break;
+        }
+        for (int k = 1; argv[start][k]; k++)
+        {
+            if (argv[start][k] == 'c')
+                no_create = 1;
+            else
+                return sh_unknown_opt("touch", argv[start][k]);
+        }
+        start++;
+    }
+    if (start >= argc)
+    {
+        sh_puts("usage: touch [-c] FILE...\n");
         return 2;
     }
-    for (int i = 1; i < argc; i++)
+    int rc = 0; /* continue-on-error across operands (rm.c/cp.c pattern) */
+    for (int i = start; i < argc; i++)
     {
         char resolved[VFS_PATH_MAX];
         vfs_resolve_path(sh_cwd, argv[i], resolved, sizeof(resolved));
@@ -594,12 +763,16 @@ static inline int cmd_touch(int argc, char **argv)
         {
             vfs_nodes[idx].mtime = vfs_get_time();
         }
-        else
+        else if (!no_create)
         {
-            vfs_create_node(resolved, 0);
+            if (vfs_create_node(resolved, 0) < 0)
+            {
+                sh_file_error("touch", argv[i], "No such file or directory");
+                rc = 1;
+            }
         }
     }
-    return 0;
+    return rc;
 }
 
 static inline int cmd_write(int argc, char **argv)
@@ -647,10 +820,24 @@ static inline int cmd_write(int argc, char **argv)
     return 0;
 }
 
+/*
+ * cmd_rm (BusyBox 1_36_stable coreutils/rm.c compat).
+ *
+ * Mimics rm.c option handling: `-r`/`-R` recursive, `-f` ignores missing
+ * operands and overrides `-i`, `-i` declines every removal without a tty
+ * (no prompt plumbing on ramfs, spec Sec 7). Directories without `-r`
+ * fail with `Is a directory` even under `-f` (upstream behavior).
+ * Multi-operand loop continues on error with an accumulated exit code
+ * (G.exit_code pattern in rm.c).
+ *
+ * Deliberate deviations: the legacy `removed <file>` line is kept on
+ * success (upstream rm is silent without -v); no -d (empty-dir) flag.
+ */
 static inline int cmd_rm(int argc, char **argv)
 {
     int force = 0;
     int recursive = 0;
+    int interactive = 0;
     int start = 1;
     int opts_done = 0;
 
@@ -666,18 +853,19 @@ static inline int cmd_rm(int argc, char **argv)
         {
             if (argv[start][k] == 'f')
                 force = 1;
-            else if (argv[start][k] == 'r')
+            else if (argv[start][k] == 'r' || argv[start][k] == 'R')
                 recursive = 1;
+            else if (argv[start][k] == 'i')
+                interactive = 1;
             else
                 return sh_unknown_opt("rm", argv[start][k]);
         }
         start++;
     }
-    (void)recursive;
 
     if (start >= argc)
     {
-        sh_puts("usage: rm [-f] [-r] <file>\n");
+        sh_puts("usage: rm [-fiRr] FILE...\n");
         return 2;
     }
 
@@ -687,7 +875,25 @@ static inline int cmd_rm(int argc, char **argv)
         char resolved[VFS_PATH_MAX];
         vfs_resolve_path(sh_cwd, argv[i], resolved, sizeof(resolved));
 
-        int r = vfs_unlink_node(resolved);
+        int idx = vfs_find(resolved);
+        if (idx < 0)
+        {
+            if (force)
+                continue; /* rm -f: missing operands are success (rm.c) */
+            sh_file_error("rm", argv[i], "No such file or directory");
+            rc = 1;
+            continue;
+        }
+        if (interactive && !force)
+            continue; /* -i declines without a tty; -f overrides (spec Sec 7) */
+        if (vfs_nodes[idx].is_dir && !recursive)
+        {
+            sh_file_error("rm", argv[i], "Is a directory");
+            rc = 1;
+            continue;
+        }
+        int r =
+            (vfs_nodes[idx].is_dir && recursive) ? sh_rm_tree(resolved) : vfs_unlink_node(resolved);
         if (r != 0 && !force)
         {
             sh_file_error("rm", argv[i], "No such file or directory");
@@ -703,98 +909,286 @@ static inline int cmd_rm(int argc, char **argv)
     return rc;
 }
 
-static inline int cmd_cp(int argc, char **argv)
+/*
+ * cmd_cp (BusyBox 1_36_stable coreutils/cp.c compat).
+ *
+ * Mimics cp.c operand handling: `-r`/`-R` copy directories recursively,
+ * `-f` overwrites and overrides `-i`, `-i` declines overwrites without a
+ * tty (spec Sec 7); a directory source without `-r` is omitted with the
+ * upstream `-r not specified` notice; multiple sources require the last
+ * operand to be a directory; a directory destination takes the source
+ * basename. Each source continues on error with an accumulated exit code
+ * (G.exit_code pattern in cp.c).
+ *
+ * Deliberate deviations: no -a/-d/-p/-L attribute handling (ramfs has no
+ * modes/symlinks); unknown flags rejected (usage error 2).
+ */
+static inline int sh_cp_one(const char *src_given, const char *src_res, const char *dst_given,
+                            const char *dst_res, int opt_f, int opt_i, int opt_r)
 {
-    /* No cp flags in Task 2 (Task 6 adds -f/-i/-r/-R); reject -opts now. */
-    int start = 1;
-    while (start < argc && argv[start][0] == '-' && argv[start][1] != '\0' &&
-           vfs_strcmp(argv[start], "--") != 0)
-    {
-        return sh_unknown_opt("cp", argv[start][1]);
-    }
-    if (start < argc && vfs_strcmp(argv[start], "--") == 0)
-        start++;
-    if (argc - start < 2)
-    {
-        sh_puts("usage: cp <src> <dst>\n");
-        return 2;
-    }
-    char src_res[VFS_PATH_MAX], dst_res[VFS_PATH_MAX];
-    vfs_resolve_path(sh_cwd, argv[start], src_res, sizeof(src_res));
-    vfs_resolve_path(sh_cwd, argv[start + 1], dst_res, sizeof(dst_res));
-
     int sidx = vfs_find(src_res);
-    if (sidx < 0 || vfs_nodes[sidx].is_dir)
+    if (sidx < 0)
     {
-        sh_file_error("cp", argv[start], "No such file or directory");
+        sh_file_error("cp", src_given, "No such file or directory");
         return 1;
     }
-
-    int didx = vfs_find(dst_res);
+    if (vfs_nodes[sidx].is_dir && !opt_r)
+    {
+        sh_puts("cp: -r not specified; omitting directory '");
+        sh_puts(src_given);
+        sh_puts("'\n");
+        return 1;
+    }
+    char target[VFS_PATH_MAX];
+    vfs_strcpy(target, dst_res, sizeof(target));
+    int didx = vfs_find(target);
     if (didx >= 0 && vfs_nodes[didx].is_dir)
     {
-        /* Destination is directory: copy with original filename */
-        vfs_strcat(dst_res, "/", sizeof(dst_res));
-        vfs_strcat(dst_res, vfs_nodes[sidx].name, sizeof(dst_res));
-        didx = vfs_find(dst_res);
+        char base[VFS_NAME_MAX];
+        sh_base_name(src_res, base, sizeof(base));
+        if (target[vfs_strlen(target) - 1] != '/')
+            vfs_strcat(target, "/", sizeof(target));
+        vfs_strcat(target, base, sizeof(target));
     }
-
-    if (didx < 0)
+    if (vfs_strcmp(src_res, target) == 0)
     {
-        didx = vfs_create_node(dst_res, 0);
-        if (didx < 0)
+        sh_puts("cp: '");
+        sh_puts(src_given);
+        sh_puts("' and '");
+        sh_puts(dst_given);
+        sh_puts("' are the same file\n");
+        return 1;
+    }
+    if (vfs_nodes[sidx].is_dir)
+    {
+        int sl = vfs_strlen(src_res);
+        if (vfs_strncmp(target, src_res, sl) == 0 && target[sl] == '/')
         {
-            sh_puts("cp: cannot create destination file\n");
+            sh_puts("cp: cannot copy a directory, '");
+            sh_puts(src_given);
+            sh_puts("', into itself, '");
+            sh_puts(dst_given);
+            sh_puts("'\n");
             return 1;
         }
     }
-
-    char buf[VFS_FILE_MAX];
-    int len = vfs_read_file(sidx, buf, sizeof(buf));
-    if (len >= 0)
+    didx = vfs_find(target);
+    if (didx >= 0 && !vfs_nodes[didx].is_dir && opt_i && !opt_f)
+        return 0; /* -i declines the overwrite without a tty (spec Sec 7) */
+    if (sh_cp_tree(src_res, target) != 0)
     {
-        vfs_write_file(didx, buf, len, 0);
+        sh_puts("cp: cannot create '");
+        sh_puts(dst_given);
+        sh_puts("'\n");
+        return 1;
+    }
+    return 0;
+}
+
+static inline int cmd_cp(int argc, char **argv)
+{
+    int opt_f = 0, opt_i = 0, opt_r = 0;
+    int start = 1;
+    int opts_done = 0;
+    while (start < argc && !opts_done && argv[start][0] == '-' && argv[start][1] != '\0')
+    {
+        if (vfs_strcmp(argv[start], "--") == 0)
+        {
+            opts_done = 1;
+            start++;
+            break;
+        }
+        for (int k = 1; argv[start][k]; k++)
+        {
+            char o = argv[start][k];
+            if (o == 'f')
+                opt_f = 1;
+            else if (o == 'i')
+                opt_i = 1;
+            else if (o == 'r' || o == 'R')
+                opt_r = 1;
+            else
+                return sh_unknown_opt("cp", o);
+        }
+        start++;
+    }
+    int nops = argc - start;
+    if (nops < 2)
+    {
+        sh_puts("usage: cp [-fiRr] SOURCE... DEST\n");
+        return 2;
+    }
+    if (nops > 2)
+    {
+        char dr[VFS_PATH_MAX];
+        vfs_resolve_path(sh_cwd, argv[argc - 1], dr, sizeof(dr));
+        int didx = vfs_find(dr);
+        if (didx < 0 || !vfs_nodes[didx].is_dir)
+        {
+            sh_puts("cp: target '");
+            sh_puts(argv[argc - 1]);
+            sh_puts("': Not a directory\n");
+            return 1;
+        }
+        int rc = 0;
+        for (int i = start; i < argc - 1; i++)
+        {
+            char sr[VFS_PATH_MAX];
+            vfs_resolve_path(sh_cwd, argv[i], sr, sizeof(sr));
+            if (sh_cp_one(argv[i], sr, argv[argc - 1], dr, opt_f, opt_i, opt_r) != 0)
+                rc = 1;
+        }
+        return rc;
+    }
+    char sr[VFS_PATH_MAX], dr[VFS_PATH_MAX];
+    vfs_resolve_path(sh_cwd, argv[start], sr, sizeof(sr));
+    vfs_resolve_path(sh_cwd, argv[start + 1], dr, sizeof(dr));
+    return sh_cp_one(argv[start], sr, argv[start + 1], dr, opt_f, opt_i, opt_r);
+}
+
+/*
+ * cmd_mv (BusyBox 1_36_stable coreutils/mv.c compat).
+ *
+ * Mimics mv.c: `-f` overwrites and overrides `-i`, `-i` declines
+ * overwrites without a tty (spec Sec 7); multiple sources require the
+ * last operand to be a directory; a directory destination takes the
+ * source basename. ramfs has no rename syscall, so move = sh_cp_tree
+ * copy + source removal (rm.c sh_rm_tree for directories). Each source
+ * continues on error with an accumulated exit code (G.exit_code pattern
+ * in mv.c). Missing sources fail upfront under the mv prog name.
+ *
+ * Deliberate deviations: copy+unlink instead of rename() (same VFS, no
+ * cross-device move); no -n (no-clobber) flag in Phase 1.
+ */
+static inline int sh_mv_one(const char *src_given, const char *src_res, const char *dst_given,
+                            const char *dst_res, int opt_f, int opt_i)
+{
+    /* BusyBox mv.c: missing src fails upfront under the mv prog name. */
+    int sidx = vfs_find(src_res);
+    if (sidx < 0)
+    {
+        sh_file_error("mv", src_given, "No such file or directory");
+        return 1;
+    }
+    char target[VFS_PATH_MAX];
+    vfs_strcpy(target, dst_res, sizeof(target));
+    int didx = vfs_find(target);
+    if (didx >= 0 && vfs_nodes[didx].is_dir)
+    {
+        char base[VFS_NAME_MAX];
+        sh_base_name(src_res, base, sizeof(base));
+        if (target[vfs_strlen(target) - 1] != '/')
+            vfs_strcat(target, "/", sizeof(target));
+        vfs_strcat(target, base, sizeof(target));
+    }
+    if (vfs_strcmp(src_res, target) == 0)
+    {
+        sh_puts("mv: '");
+        sh_puts(src_given);
+        sh_puts("' and '");
+        sh_puts(dst_given);
+        sh_puts("' are the same file\n");
+        return 1;
+    }
+    if (vfs_nodes[sidx].is_dir)
+    {
+        int sl = vfs_strlen(src_res);
+        if (vfs_strncmp(target, src_res, sl) == 0 && target[sl] == '/')
+        {
+            sh_puts("mv: cannot move a directory, '");
+            sh_puts(src_given);
+            sh_puts("', into itself, '");
+            sh_puts(dst_given);
+            sh_puts("'\n");
+            return 1;
+        }
+    }
+    didx = vfs_find(target);
+    if (didx >= 0 && !vfs_nodes[didx].is_dir && opt_i && !opt_f)
+        return 0; /* -i declines the overwrite without a tty (spec Sec 7) */
+    if (sh_cp_tree(src_res, target) != 0)
+    {
+        sh_puts("mv: cannot create '");
+        sh_puts(dst_given);
+        sh_puts("'\n");
+        return 1;
+    }
+    int r = vfs_nodes[sidx].is_dir ? sh_rm_tree(src_res) : vfs_unlink_node(src_res);
+    if (r != 0)
+    {
+        sh_file_error("mv", src_given, "Cannot remove source file");
+        return 1;
     }
     return 0;
 }
 
 static inline int cmd_mv(int argc, char **argv)
 {
-    /* No mv flags in Task 2 (Task 6 adds -f/-i); reject -opts now. */
+    int opt_f = 0, opt_i = 0;
     int start = 1;
-    while (start < argc && argv[start][0] == '-' && argv[start][1] != '\0' &&
-           vfs_strcmp(argv[start], "--") != 0)
+    int opts_done = 0;
+    while (start < argc && !opts_done && argv[start][0] == '-' && argv[start][1] != '\0')
     {
-        return sh_unknown_opt("mv", argv[start][1]);
-    }
-    if (start < argc && vfs_strcmp(argv[start], "--") == 0)
+        if (vfs_strcmp(argv[start], "--") == 0)
+        {
+            opts_done = 1;
+            start++;
+            break;
+        }
+        for (int k = 1; argv[start][k]; k++)
+        {
+            char o = argv[start][k];
+            if (o == 'f')
+                opt_f = 1;
+            else if (o == 'i')
+                opt_i = 1;
+            else
+                return sh_unknown_opt("mv", o);
+        }
         start++;
-    if (argc - start < 2)
+    }
+    int nops = argc - start;
+    if (nops < 2)
     {
-        sh_puts("usage: mv <src> <dst>\n");
+        sh_puts("usage: mv [-fi] SOURCE... DEST\n");
         return 2;
     }
-    /* BusyBox mv.c: missing src fails upfront under the mv prog name. */
-    char src_res[VFS_PATH_MAX];
-    vfs_resolve_path(sh_cwd, argv[start], src_res, sizeof(src_res));
-    if (vfs_find(src_res) < 0)
+    if (nops > 2)
     {
-        sh_file_error("mv", argv[start], "No such file or directory");
-        return 1;
+        char dr[VFS_PATH_MAX];
+        vfs_resolve_path(sh_cwd, argv[argc - 1], dr, sizeof(dr));
+        int didx = vfs_find(dr);
+        if (didx < 0 || !vfs_nodes[didx].is_dir)
+        {
+            sh_puts("mv: target '");
+            sh_puts(argv[argc - 1]);
+            sh_puts("': Not a directory\n");
+            return 1;
+        }
+        int rc = 0;
+        for (int i = start; i < argc - 1; i++)
+        {
+            char sr[VFS_PATH_MAX];
+            vfs_resolve_path(sh_cwd, argv[i], sr, sizeof(sr));
+            if (sh_mv_one(argv[i], sr, argv[argc - 1], dr, opt_f, opt_i) != 0)
+                rc = 1;
+        }
+        return rc;
     }
-    char *cp_argv[4];
-    cp_argv[0] = argv[0];
-    cp_argv[1] = argv[start];
-    cp_argv[2] = argv[start + 1];
-    cp_argv[3] = NULL;
-    if (cmd_cp(3, cp_argv) == 0)
-    {
-        vfs_unlink_node(src_res);
-        return 0;
-    }
-    return 1;
+    char sr[VFS_PATH_MAX], dr[VFS_PATH_MAX];
+    vfs_resolve_path(sh_cwd, argv[start], sr, sizeof(sr));
+    vfs_resolve_path(sh_cwd, argv[start + 1], dr, sizeof(dr));
+    return sh_mv_one(argv[start], sr, argv[start + 1], dr, opt_f, opt_i);
 }
 
+/*
+ * cmd_mkdir (BusyBox 1_36_stable coreutils/mkdir.c compat).
+ *
+ * Mimics mkdir.c --parents: `-p` creates every missing ancestor in order
+ * (sh_mkdir_p) and treats pre-existing directories as success; without
+ * `-p` a single vfs_create_node is attempted so a missing parent fails.
+ * Multi-operand loop continues on error with an accumulated exit code.
+ */
 static inline int cmd_mkdir(int argc, char **argv)
 {
     int start = 1;
@@ -827,26 +1221,61 @@ static inline int cmd_mkdir(int argc, char **argv)
     {
         char resolved[VFS_PATH_MAX];
         vfs_resolve_path(sh_cwd, argv[i], resolved, sizeof(resolved));
+        if (p_opt)
+        {
+            if (sh_mkdir_p(resolved) == 0)
+                continue;
+            int e = vfs_find(resolved);
+            sh_file_error("mkdir", argv[i], e >= 0 ? "File exists" : "No such file or directory");
+            rc = 1;
+            continue;
+        }
         int r = vfs_create_node(resolved, 1);
         if (r == 0)
             continue;
-        if (r == -1 && p_opt)
-            continue; /* mkdir -p: pre-existing dir is success (Task 6 adds recursion) */
         sh_file_error("mkdir", argv[i], r == -1 ? "File exists" : "No such file or directory");
         rc = 1;
     }
     return rc;
 }
 
+/*
+ * cmd_rmdir (BusyBox 1_36_stable coreutils/rmdir.c compat).
+ *
+ * `-p` removes the directory then each ancestor while empty, stopping
+ * silently at the first failure (best-effort on ramfs: ancestors shared
+ * with other entries stay put). Multi-operand loop continues on error
+ * with an accumulated exit code.
+ */
 static inline int cmd_rmdir(int argc, char **argv)
 {
-    if (argc < 2)
+    int p_opt = 0;
+    int start = 1;
+    int opts_done = 0;
+    while (start < argc && !opts_done && argv[start][0] == '-' && argv[start][1] != '\0')
     {
-        sh_puts("usage: rmdir <dir...>\n");
+        if (vfs_strcmp(argv[start], "--") == 0)
+        {
+            opts_done = 1;
+            start++;
+            break;
+        }
+        for (int k = 1; argv[start][k]; k++)
+        {
+            if (argv[start][k] == 'p')
+                p_opt = 1;
+            else
+                return sh_unknown_opt("rmdir", argv[start][k]);
+        }
+        start++;
+    }
+    if (start >= argc)
+    {
+        sh_puts("usage: rmdir [-p] DIR...\n");
         return 2;
     }
     int rc = 0;
-    for (int i = 1; i < argc; i++)
+    for (int i = start; i < argc; i++)
     {
         char resolved[VFS_PATH_MAX];
         vfs_resolve_path(sh_cwd, argv[i], resolved, sizeof(resolved));
@@ -866,6 +1295,27 @@ static inline int cmd_rmdir(int argc, char **argv)
             sh_puts(argv[i]);
             sh_puts("': Directory not empty\n");
             rc = 1;
+            continue;
+        }
+        if (p_opt)
+        {
+            /* Best-effort ancestors: stop silently at the first failure. */
+            char tmp[VFS_PATH_MAX];
+            vfs_strcpy(tmp, resolved, sizeof(tmp));
+            for (;;)
+            {
+                int last = -1;
+                for (int q = 0; tmp[q]; q++)
+                {
+                    if (tmp[q] == '/')
+                        last = q;
+                }
+                if (last <= 0)
+                    break; /* never attempt "/" (root has no parent) */
+                tmp[last] = '\0';
+                if (vfs_unlink_node(tmp) != 0)
+                    break;
+            }
         }
     }
     return rc;
@@ -1509,15 +1959,109 @@ static inline int cmd_wc(int argc, char **argv)
     return rc;
 }
 
+/*
+ * cmd_stat (BusyBox 1_36_stable coreutils/stat.c compat, minimal).
+ *
+ * Mimics stat.c `-c FORMAT` with the Phase 1 sequences `%n` (given name),
+ * `%s` (size bytes), `%F` (file type: "directory"/"regular file"), `%%`,
+ * plus `\n`/`\t`/`\\` escapes. Like upstream, no trailing newline is
+ * added unless the format contains one. Without `-c` the legacy
+ * human-readable block is kept. Multi-operand loop continues on error
+ * with an accumulated exit code.
+ *
+ * Deliberate deviations: no %a/%u/%g/%y (ramfs has no modes/owners and
+ * mtime is ticks); no -f/-t filesystem mode.
+ */
+static inline void sh_stat_print_fmt(const char *fmt, const char *name, unsigned long size,
+                                     int is_dir)
+{
+    for (; *fmt; fmt++)
+    {
+        if (*fmt == '%')
+        {
+            fmt++;
+            char c = *fmt;
+            if (c == '\0')
+                break;
+            if (c == 'n')
+                sh_puts(name);
+            else if (c == 's')
+                sh_print_ulong(size);
+            else if (c == 'F')
+                sh_puts(is_dir ? "directory" : "regular file");
+            else if (c == '%')
+                sh_putc('%');
+            else
+            {
+                sh_putc('%');
+                sh_putc(c);
+            }
+        }
+        else if (*fmt == '\\')
+        {
+            fmt++;
+            char c = *fmt;
+            if (c == '\0')
+                break;
+            if (c == 'n')
+                sh_putc('\n');
+            else if (c == 't')
+                sh_putc('\t');
+            else if (c == '\\')
+                sh_putc('\\');
+            else
+            {
+                sh_putc('\\');
+                sh_putc(c);
+            }
+        }
+        else
+        {
+            sh_putc(*fmt);
+        }
+    }
+}
+
 static inline int cmd_stat(int argc, char **argv)
 {
-    if (argc < 2)
+    const char *fmt = NULL;
+    int start = 1;
+    int opts_done = 0;
+    while (start < argc && !opts_done && argv[start][0] == '-' && argv[start][1] != '\0')
     {
-        sh_puts("usage: stat <file...>\n");
+        if (vfs_strcmp(argv[start], "--") == 0)
+        {
+            opts_done = 1;
+            start++;
+            break;
+        }
+        if (argv[start][1] == 'c')
+        {
+            /* -c FORMAT attached (-c%n) or separate (-c %n). */
+            if (argv[start][2] != '\0')
+                fmt = argv[start] + 2;
+            else
+            {
+                if (start + 1 >= argc)
+                {
+                    sh_puts("stat: option requires an argument -- 'c'\n");
+                    sh_puts("usage: stat [-c FORMAT] FILE...\n");
+                    return 2;
+                }
+                fmt = argv[++start];
+            }
+            start++;
+            continue;
+        }
+        return sh_unknown_opt("stat", argv[start][1]);
+    }
+    if (start >= argc)
+    {
+        sh_puts("usage: stat [-c FORMAT] FILE...\n");
         return 2;
     }
     int rc = 0;
-    for (int i = 1; i < argc; i++)
+    for (int i = start; i < argc; i++)
     {
         char resolved[VFS_PATH_MAX];
         vfs_resolve_path(sh_cwd, argv[i], resolved, sizeof(resolved));
@@ -1531,6 +2075,11 @@ static inline int cmd_stat(int argc, char **argv)
             continue;
         }
         vfs_node_t *n = &vfs_nodes[idx];
+        if (fmt)
+        {
+            sh_stat_print_fmt(fmt, argv[i], (unsigned long)n->size, n->is_dir);
+            continue;
+        }
         sh_puts("  File: ");
         sh_puts(argv[i]);
         sh_putc('\n');
@@ -1549,38 +2098,193 @@ static inline int cmd_stat(int argc, char **argv)
     return rc;
 }
 
+/*
+ * cmd_find (BusyBox 1_36_stable findutils/find.c compat, minimal).
+ *
+ * Mimics the upstream primaries `-name PAT` (fnmatch(3)-style `*`/`?`),
+ * `-type f|d`, `-maxdepth N`, and `-print` (default action, accepted
+ * no-op). Operands before the expression are starting points (default
+ * "."); only nodes under a starting point print, at a depth relative
+ * to it (root = depth 0, so -maxdepth 0 prints just the roots).
+ * Bad roots and bad primaries continue/fail with an accumulated exit
+ * code instead of aborting the whole walk.
+ *
+ * Deliberate deviations: absolute-path display (BusyBox echoes the
+ * root-joined spelling); no -mindepth/-exec/-perm/-size (rejected as
+ * unrecognized); no symlink handling (ramfs has none).
+ */
+static inline int sh_fnmatch(const char *pat, const char *str)
+{
+    const char *s_star = NULL;
+    const char *p_star = NULL;
+    while (*str)
+    {
+        if (*pat == '*')
+        {
+            p_star = ++pat;
+            s_star = str;
+        }
+        else if (*pat == '?' || *pat == *str)
+        {
+            pat++;
+            str++;
+        }
+        else if (p_star)
+        {
+            pat = p_star;
+            str = ++s_star;
+        }
+        else
+        {
+            return 0;
+        }
+    }
+    while (*pat == '*')
+        pat++;
+    return *pat == '\0';
+}
+
 static inline int cmd_find(int argc, char **argv)
 {
-    const char *root = (argc > 1 && argv[1][0] != '-') ? argv[1] : ".";
+    const char *roots[8];
+    int nroots = 0;
     const char *name_filter = NULL;
     int type_filter = -1; /* 0=file, 1=dir */
+    int maxdepth = -1;    /* -1: unlimited */
+    int expr_start = 1;
 
-    for (int i = 1; i < argc; i++)
+    if (expr_start < argc && argv[expr_start][0] != '-')
     {
-        if (vfs_strcmp(argv[i], "-name") == 0 && i + 1 < argc)
+        roots[nroots++] = argv[expr_start++];
+    }
+    if (nroots == 0)
+        roots[nroots++] = ".";
+    for (int i = expr_start; i < argc; i++)
+    {
+        if (vfs_strcmp(argv[i], "-name") == 0)
         {
+            if (i + 1 >= argc)
+            {
+                sh_puts("find: -name requires an argument\n");
+                sh_puts("usage: find [PATH] [-name PAT] [-type f|d] [-maxdepth N]\n");
+                return 2;
+            }
             name_filter = argv[++i];
         }
-        else if (vfs_strcmp(argv[i], "-type") == 0 && i + 1 < argc)
+        else if (vfs_strcmp(argv[i], "-type") == 0)
         {
+            if (i + 1 >= argc)
+            {
+                sh_puts("find: -type requires an argument\n");
+                sh_puts("usage: find [PATH] [-name PAT] [-type f|d] [-maxdepth N]\n");
+                return 2;
+            }
             i++;
-            if (argv[i][0] == 'f')
+            if (argv[i][0] == 'f' && argv[i][1] == '\0')
                 type_filter = 0;
-            else if (argv[i][0] == 'd')
+            else if (argv[i][0] == 'd' && argv[i][1] == '\0')
                 type_filter = 1;
+            else
+            {
+                sh_puts("find: unknown type '");
+                sh_puts(argv[i]);
+                sh_puts("'\n");
+                return 1;
+            }
+        }
+        else if (vfs_strcmp(argv[i], "-maxdepth") == 0)
+        {
+            if (i + 1 >= argc)
+            {
+                sh_puts("find: -maxdepth requires an argument\n");
+                sh_puts("usage: find [PATH] [-name PAT] [-type f|d] [-maxdepth N]\n");
+                return 2;
+            }
+            i++;
+            long v = 0;
+            if (argv[i][0] == '\0')
+            {
+                sh_puts("find: invalid number '");
+                sh_puts(argv[i]);
+                sh_puts("'\n");
+                return 1;
+            }
+            for (int k = 0; argv[i][k]; k++)
+            {
+                if (argv[i][k] < '0' || argv[i][k] > '9')
+                {
+                    sh_puts("find: invalid number '");
+                    sh_puts(argv[i]);
+                    sh_puts("'\n");
+                    return 1;
+                }
+                v = v * 10 + (argv[i][k] - '0');
+                if (v > 0x3fffffffL)
+                    v = 0x3fffffffL;
+            }
+            maxdepth = (int)v;
+        }
+        else if (vfs_strcmp(argv[i], "-print") == 0)
+        {
+            continue; /* print is the default action */
+        }
+        else if (argv[i][0] == '-')
+        {
+            sh_puts("find: unrecognized: ");
+            sh_puts(argv[i]);
+            sh_putc('\n');
+            sh_puts("usage: find [PATH] [-name PAT] [-type f|d] [-maxdepth N]\n");
+            return 2;
+        }
+        else if (nroots < 8)
+        {
+            roots[nroots++] = argv[i]; /* extra starting points */
         }
     }
 
-    char resolved[VFS_PATH_MAX];
-    vfs_resolve_path(sh_cwd, root, resolved, sizeof(resolved));
+    int ridx[8];
+    int nridx = 0;
+    int rc = 0;
+    for (int r = 0; r < nroots; r++)
+    {
+        char rr[VFS_PATH_MAX];
+        vfs_resolve_path(sh_cwd, roots[r], rr, sizeof(rr));
+        int f = vfs_find(rr);
+        if (f < 0)
+        {
+            sh_file_error("find", roots[r], "No such file or directory");
+            rc = 1;
+            continue;
+        }
+        ridx[nridx++] = f;
+    }
+    if (nridx == 0)
+        return rc;
 
     for (int i = 0; i < VFS_MAX_NODES; i++)
     {
         if (!vfs_nodes[i].in_use)
             continue;
+        /* Containment + relative depth against any starting point. */
+        int inside = 0;
+        for (int r = 0; r < nridx && !inside; r++)
+        {
+            int d = 0, cur = i;
+            while (cur != ridx[r])
+            {
+                if (cur == 0)
+                    break;
+                cur = vfs_nodes[cur].parent_idx;
+                d++;
+            }
+            if (cur == ridx[r] && (maxdepth < 0 || d <= maxdepth))
+                inside = 1;
+        }
+        if (!inside)
+            continue;
         if (type_filter >= 0 && vfs_nodes[i].is_dir != (uint8_t)type_filter)
             continue;
-        if (name_filter && vfs_strcmp(vfs_nodes[i].name, name_filter) != 0)
+        if (name_filter && !sh_fnmatch(name_filter, vfs_nodes[i].name))
             continue;
 
         /* Print matching path */
@@ -1605,39 +2309,89 @@ static inline int cmd_find(int argc, char **argv)
             sh_putc('\n');
         }
     }
-    return 0;
+    return rc;
 }
 
+/*
+ * cmd_tee (BusyBox 1_36_stable coreutils/tee.c compat).
+ *
+ * Mimics tee.c: `-a` appends instead of truncating, `-i` is accepted as
+ * a no-op (no signals on ramfs), stdin is echoed to stdout and copied
+ * to every FILE operand. Pipe-stdin length uses the Task 4
+ * sh_cat_stdin_len() strlen fallback: shell_exec_single_cmd() restores
+ * its entry-time shell_out_t copy on return, clobbering the pipe
+ * OUT_BUFFER buf_pos back to 0, so raw sh_stdin_len reads 0 even though
+ * the buffer still holds the NUL-terminated stage-1 output (no engine
+ * change in this phase). Per-file failures continue with an accumulated
+ * exit code; with no operands stdin is echoed and nothing is stored.
+ */
 static inline int cmd_tee(int argc, char **argv)
 {
     int append = 0;
     int start = 1;
-    if (start < argc && vfs_strcmp(argv[start], "-a") == 0)
+    int opts_done = 0;
+    while (start < argc && !opts_done && argv[start][0] == '-' && argv[start][1] != '\0')
     {
-        append = 1;
+        if (vfs_strcmp(argv[start], "--") == 0)
+        {
+            opts_done = 1;
+            start++;
+            break;
+        }
+        for (int k = 1; argv[start][k]; k++)
+        {
+            if (argv[start][k] == 'a')
+                append = 1;
+            else if (argv[start][k] == 'i')
+                continue; /* accepted no-op: no signals on ramfs */
+            else
+                return sh_unknown_opt("tee", argv[start][k]);
+        }
         start++;
     }
-    if (start >= argc)
+
+    const char *data = sh_stdin_data;
+    int len = sh_stdin_data ? sh_cat_stdin_len() : 0;
+
+    int fds[SHELL_ARGS_MAX];
+    int nfiles = 0;
+    int rc = 0;
+    for (int i = start; i < argc && nfiles < SHELL_ARGS_MAX; i++)
     {
-        sh_puts("usage: tee [-a] <file>\n");
-        return 2;
+        char resolved[VFS_PATH_MAX];
+        vfs_resolve_path(sh_cwd, argv[i], resolved, sizeof(resolved));
+
+        int idx = vfs_find(resolved);
+        if (idx < 0)
+            idx = vfs_create_node(resolved, 0);
+        if (idx < 0)
+        {
+            sh_file_error("tee", argv[i], "No such file or directory");
+            rc = 1;
+            continue;
+        }
+        if (vfs_nodes[idx].is_dir)
+        {
+            sh_file_error("tee", argv[i], "Is a directory");
+            rc = 1;
+            continue;
+        }
+        if (!append)
+        {
+            vfs_nodes[idx].size = 0;
+            vfs_nodes[idx].data[0] = '\0';
+        }
+        fds[nfiles++] = idx;
     }
 
-    char resolved[VFS_PATH_MAX];
-    vfs_resolve_path(sh_cwd, argv[start], resolved, sizeof(resolved));
-
-    int idx = vfs_find(resolved);
-    if (idx < 0)
-        idx = vfs_create_node(resolved, 0);
-    if (idx < 0)
-        return 1;
-
-    if (sh_stdin_data)
+    if (data && len > 0)
     {
-        sh_puts(sh_stdin_data);
-        vfs_write_file(idx, sh_stdin_data, sh_stdin_len, append);
+        for (int k = 0; k < len; k++)
+            sh_putc(data[k]);
+        for (int f = 0; f < nfiles; f++)
+            vfs_write_file(fds[f], data, len, append);
     }
-    return 0;
+    return rc;
 }
 
 #endif /* SHELL_FILE_H */
