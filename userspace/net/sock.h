@@ -16,10 +16,12 @@ typedef struct
     uint8_t kind;
     uint8_t used;
     uint16_t port;
+    unsigned owner;
 } net_sock_t;
 
-int net_sock_open(unsigned kind, uint16_t port);
+int net_sock_open(unsigned kind, uint16_t port, unsigned owner);
 int net_sock_close(int id);
+int net_sock_demux(uint16_t dport);
 int net_sock_send(int id, const uint8_t *buf, unsigned long len);
 
 #endif /* NET_SOCK_H */

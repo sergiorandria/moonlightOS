@@ -88,7 +88,35 @@ int main(void)
         CHECK(net_stack_init() == 0);
         CHECK(net_stack_rx(tcp, sizeof(tcp)) == NET_CLASS_TCP);
     }
-    CHECK(net_sock_open(NET_SOCK_UDP, 53) < 0);
+    /* ---- Task 1: socket table with port demux ---- */
+    {
+        int id;
+        int ids[4];
+        unsigned i;
+        CHECK(net_sock_open(NET_SOCK_TCP, 80, 5) < 0);
+        id = net_sock_open(NET_SOCK_UDP, 53, 5);
+        CHECK(id >= 0);
+        CHECK(net_sock_open(NET_SOCK_UDP, 53, 6) < 0);
+        CHECK(net_sock_demux(53) == id);
+        CHECK(net_sock_demux(9999) < 0);
+        CHECK(net_sock_close(id) == 0);
+        CHECK(net_sock_close(id) < 0);
+        id = net_sock_open(NET_SOCK_UDP, 53, 5);
+        CHECK(id >= 0);
+        CHECK(net_sock_close(id) == 0);
+        /* 1-slot fair-share: 4 concurrent opens hold all slots. */
+        for (i = 0; i < 4; i++)
+        {
+            ids[i] = net_sock_open(NET_SOCK_UDP, (uint16_t)(1000 + i), 5);
+            CHECK(ids[i] >= 0);
+        }
+        CHECK(net_sock_open(NET_SOCK_UDP, 2000, 5) < 0);
+        for (i = 0; i < 4; i++)
+            CHECK(net_sock_close(ids[i]) == 0);
+        id = net_sock_open(NET_SOCK_UDP, 2000, 5);
+        CHECK(id >= 0);
+        CHECK(net_sock_close(id) == 0);
+    }
     CHECK(net_sock_send(0, ip, 4) < 0);
     /* RFC-style fixed vectors: IPv4 header checksum (field zeroed). */
     {
