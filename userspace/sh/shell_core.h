@@ -619,7 +619,7 @@ static inline int cmd_help(int argc, char **argv)
         }
         else if (vfs_strcmp(t, "ls") == 0)
         {
-            sh_puts("ls [-l] [-a] [-h] [dir]: list files\n");
+            sh_puts("ls [-lart] [-A] [-h] [-R] [-d] [-1] [-F] [-p] [-S] [dir]: list files\n");
         }
         else if (vfs_strcmp(t, "write") == 0)
         {

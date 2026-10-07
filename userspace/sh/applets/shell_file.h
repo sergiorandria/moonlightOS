@@ -178,6 +178,9 @@ enum
     LS_OPT_DIR = 1u << 4,      /* -d: list dirs themselves */
     LS_OPT_CLASSIFY = 1u << 5, /* -F: accepted, '/' always shown */
     LS_OPT_SLASH = 1u << 6,    /* -p: accepted, '/' always shown */
+    LS_OPT_REVERSE = 1u << 7,  /* -r: reverse sort order */
+    LS_OPT_SIZE = 1u << 8,     /* -S: sort by size */
+    LS_OPT_TIME = 1u << 9,     /* -t: sort by mtime */
 };
 
 static inline int sh_ls_show(const char *name, int show_hidden)
@@ -185,6 +188,30 @@ static inline int sh_ls_show(const char *name, int show_hidden)
     if (!show_hidden && name[0] == '.')
         return 0;
     return 1;
+}
+
+/* sortcmp-style comparator over VFS node indices (ls.c: sort by size,
+ * time, or name with -r inversion; ties always break by name). */
+static inline int sh_ls_cmp(int a, int b, unsigned opts)
+{
+    long dif = 0;
+    if (opts & LS_OPT_SIZE)
+    {
+        /* Largest first (ls.c: dif = d2->size - d1->size). */
+        if (vfs_nodes[a].size != vfs_nodes[b].size)
+            dif = (vfs_nodes[a].size < vfs_nodes[b].size) ? 1 : -1;
+    }
+    else if (opts & LS_OPT_TIME)
+    {
+        /* Newest first (ls.c: dif = d2->time - d1->time). */
+        if (vfs_nodes[a].mtime != vfs_nodes[b].mtime)
+            dif = (vfs_nodes[a].mtime < vfs_nodes[b].mtime) ? 1 : -1;
+    }
+    if (dif == 0)
+        dif = (long)vfs_strcmp(vfs_nodes[a].name, vfs_nodes[b].name);
+    if (opts & LS_OPT_REVERSE)
+        dif = -dif;
+    return (dif > 0) ? 1 : (dif < 0) ? -1 : 0;
 }
 
 static inline void sh_ls_print(int idx, int opt_l, int opt_h)
@@ -205,9 +232,10 @@ static inline void sh_ls_print(int idx, int opt_l, int opt_h)
     sh_putc('\n');
 }
 
-static inline void sh_ls_list_dir(int pidx, int show_hidden, int opt_l, int opt_h)
+static inline void sh_ls_list_dir(int pidx, int show_hidden, int opt_l, int opt_h, unsigned opts)
 {
-    int count = 0;
+    int members[VFS_MAX_NODES];
+    int nmem = 0;
     for (int i = 0; i < VFS_MAX_NODES; i++)
     {
         if (!vfs_nodes[i].in_use)
@@ -216,18 +244,34 @@ static inline void sh_ls_list_dir(int pidx, int show_hidden, int opt_l, int opt_
         {
             if (!sh_ls_show(vfs_nodes[i].name, show_hidden))
                 continue;
-            sh_ls_print(i, opt_l, opt_h);
-            count++;
+            members[nmem++] = i;
         }
     }
-    if (count == 0 && opt_l)
+    /* dnsort-style: insertion sort by sortcmp order (tiny N). */
+    for (int i = 1; i < nmem; i++)
+    {
+        int cur = members[i];
+        int j = i - 1;
+        while (j >= 0 && sh_ls_cmp(members[j], cur, opts) > 0)
+        {
+            members[j + 1] = members[j];
+            j--;
+        }
+        members[j + 1] = cur;
+    }
+    for (int i = 0; i < nmem; i++)
+        sh_ls_print(members[i], opt_l, opt_h);
+    if (nmem == 0 && opt_l)
     {
         sh_puts("(empty)\n");
     }
 }
 
-static inline void sh_ls_recurse(const char *disp, int pidx, int show_hidden, int opt_l, int opt_h)
+static inline void sh_ls_recurse(const char *disp, int pidx, int show_hidden, int opt_l, int opt_h,
+                                 unsigned opts)
 {
+    int members[VFS_MAX_NODES];
+    int nmem = 0;
     for (int i = 0; i < VFS_MAX_NODES; i++)
     {
         if (!vfs_nodes[i].in_use)
@@ -240,6 +284,22 @@ static inline void sh_ls_recurse(const char *disp, int pidx, int show_hidden, in
             continue;
         if (!sh_ls_show(vfs_nodes[i].name, show_hidden))
             continue;
+        members[nmem++] = i;
+    }
+    for (int m = 1; m < nmem; m++)
+    {
+        int cur = members[m];
+        int j = m - 1;
+        while (j >= 0 && sh_ls_cmp(members[j], cur, opts) > 0)
+        {
+            members[j + 1] = members[j];
+            j--;
+        }
+        members[j + 1] = cur;
+    }
+    for (int m = 0; m < nmem; m++)
+    {
+        int i = members[m];
         char child[VFS_PATH_MAX];
         vfs_strcpy(child, disp, sizeof(child));
         if (child[vfs_strlen(child) - 1] != '/')
@@ -248,8 +308,8 @@ static inline void sh_ls_recurse(const char *disp, int pidx, int show_hidden, in
         sh_putc('\n');
         sh_puts(child);
         sh_puts(":\n");
-        sh_ls_list_dir(i, show_hidden, opt_l, opt_h);
-        sh_ls_recurse(child, i, show_hidden, opt_l, opt_h);
+        sh_ls_list_dir(i, show_hidden, opt_l, opt_h, opts);
+        sh_ls_recurse(child, i, show_hidden, opt_l, opt_h, opts);
     }
 }
 
@@ -301,6 +361,15 @@ static inline int cmd_ls(int argc, char **argv)
                     break;
                 case 'p':
                     opts |= LS_OPT_SLASH;
+                    break;
+                case 'r':
+                    opts |= LS_OPT_REVERSE;
+                    break;
+                case 'S':
+                    opts |= LS_OPT_SIZE;
+                    break;
+                case 't':
+                    opts |= LS_OPT_TIME;
                     break;
                 default:
                     return sh_unknown_opt("ls", argv[i][k]);
@@ -390,9 +459,9 @@ static inline int cmd_ls(int argc, char **argv)
             sh_puts(":\n");
         }
         first = 0;
-        sh_ls_list_dir(pidx[n], show_hidden, opt_l, opt_h);
+        sh_ls_list_dir(pidx[n], show_hidden, opt_l, opt_h, opts);
         if (opts & LS_OPT_RECUR)
-            sh_ls_recurse(paths[n], pidx[n], show_hidden, opt_l, opt_h);
+            sh_ls_recurse(paths[n], pidx[n], show_hidden, opt_l, opt_h, opts);
     }
     return rc;
 }

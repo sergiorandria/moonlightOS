@@ -160,6 +160,18 @@ int main(void)
     run_check("ls -R /", "/etc:");
     run_exact("ls -dR /etc", "/etc\n");
 
+    /* ls sorting (coreutils/ls.c sortcmp: name default, -r/-S/-t) */
+    shell_exec_line("mkdir /sortt");
+    shell_exec_line("touch /sortt/zebra.txt");
+    shell_exec_line("touch /sortt/apple.txt");
+    shell_exec_line("touch /sortt/mango.txt");
+    run_exact("ls /sortt", "apple.txt\nmango.txt\nzebra.txt\n");
+    run_exact("ls -r /sortt", "zebra.txt\nmango.txt\napple.txt\n");
+    shell_exec_line("write /sortt/zebra.txt 1234567890");
+    shell_exec_line("write /sortt/apple.txt 12");
+    run_exact("ls -S /sortt", "zebra.txt\napple.txt\nmango.txt\n");
+    shell_exec_line("rm -r /sortt");
+
     /* Task 4: cat busybox compat (coreutils/cat.c: catv/numbering/open_or_warn_stdin) */
     run_exact("echo -e \"a\\n\\nb\" | cat -b", "     1\ta\n\n     2\tb\n");
     run_exact("echo -e \"a\\n\\nb\" | cat -n", "     1\ta\n     2\t\n     3\tb\n");
