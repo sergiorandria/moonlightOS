@@ -4,13 +4,13 @@
 #ifndef NET_STACK_H
 #define NET_STACK_H
 
+#include "arp.h"
 #include "eth.h"
+#include "icmp.h"
 #include "ip.h"
+#include "ipv6.h"
 #include "tcp.h"
 #include "udp.h"
-#include "arp.h"
-#include "icmp.h"
-#include "ipv6.h"
 
 #define NET_CLASS_DROP 0
 #define NET_CLASS_ARP 1
@@ -19,6 +19,9 @@
 #define NET_CLASS_TCP 4
 #define NET_CLASS_IPV4 5
 #define NET_CLASS_IPV6 6
+
+#define NET_ERR_EMPTY 1
+#define NET_ERR_TRUNC 2
 
 static inline int net_classify(const uint8_t *f, unsigned long len)
 {
@@ -47,5 +50,9 @@ static inline int net_classify(const uint8_t *f, unsigned long len)
 
 int net_stack_init(void);
 int net_stack_rx(const uint8_t *f, unsigned long len);
+int net_stack_udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port,
+                       const uint8_t *payload, unsigned long len, uint8_t *frame_out,
+                       unsigned long *frame_len);
+int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *src_port, int *trunc);
 
 #endif /* NET_STACK_H */

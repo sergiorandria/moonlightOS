@@ -208,6 +208,96 @@ int main(void)
             CHECK(net_arp_lookup(0x0A000214u, mac) == 0);
         }
     }
+    /* ---- Task 3: UDP send builder + RX queue + dispatch ---- */
+    {
+        static const uint8_t hello[13] = {0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C, 0x20,
+                                          0x77, 0x6F, 0x72, 0x6C, 0x64, 0x21};
+        static const uint8_t expect[55] = {
+            0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0x08, 0x00,
+            0x45, 0x00, 0x00, 0x29, 0x12, 0x34, 0x40, 0x00, 0x40, 0x11, 0x10, 0x80, 0x0A, 0x00,
+            0x02, 0x0F, 0x0A, 0x00, 0x02, 0x02, 0xC0, 0x00, 0x00, 0x35, 0x00, 0x15, 0xE6, 0x31,
+            0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x77, 0x6F, 0x72, 0x6C, 0x64, 0x21};
+        uint8_t frame[1514];
+        uint8_t buf[32];
+        unsigned long flen = 0;
+        uint32_t sip = 0;
+        uint16_t sport = 0;
+        int trunc = -1;
+        int n;
+        unsigned i;
+        net_stack_init();
+        net_arp_init();
+        CHECK(net_stack_udp_send(0x0A000202u, 53, 49152, hello, sizeof(hello), frame, &flen) == 0);
+        CHECK(flen == sizeof(expect));
+        CHECK(memcmp(frame, expect, sizeof(expect)) == 0);
+        CHECK(frame[12] == 0x08 && frame[13] == 0x00);
+        CHECK(frame[14] == 0x45 && frame[22] == 64 && frame[23] == IP_PROTO_UDP);
+        CHECK(frame[34] == 0xC0 && frame[35] == 0x00);
+        CHECK(frame[36] == 0x00 && frame[37] == 0x35);
+        CHECK(frame[38] == 0x00 && frame[39] == 0x15);
+        CHECK(net_stack_udp_send(0x0A000263u, 53, 49152, hello, sizeof(hello), frame, &flen) == -1);
+        {
+            static uint8_t bigpay[1473];
+            memset(bigpay, 0x41, sizeof(bigpay));
+            CHECK(net_stack_udp_send(0x0A000202u, 53, 49152, bigpay, sizeof(bigpay), frame,
+                                     &flen) == -2);
+        }
+        net_stack_init();
+        net_arp_init();
+        CHECK(net_stack_rx(expect, sizeof(expect)) == NET_CLASS_UDP);
+        trunc = -1;
+        sip = 0;
+        sport = 0;
+        n = net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc);
+        CHECK(n == 13);
+        CHECK(trunc == 0);
+        CHECK(sip == 0x0A00020Fu);
+        CHECK(sport == 49152);
+        CHECK(memcmp(buf, hello, sizeof(hello)) == 0);
+        {
+            uint8_t bad[55];
+            memcpy(bad, expect, sizeof(bad));
+            bad[sizeof(bad) - 1] ^= 0xFFu;
+            CHECK(net_stack_rx(bad, sizeof(bad)) == NET_CLASS_DROP);
+            CHECK(net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        }
+        CHECK(net_stack_rx(expect, sizeof(expect)) == NET_CLASS_UDP);
+        trunc = -1;
+        CHECK(net_udp_recv(buf, 4, &sip, &sport, &trunc) == -(NET_ERR_TRUNC));
+        CHECK(trunc == 1);
+        CHECK(memcmp(buf, hello, 4) == 0);
+        CHECK(net_stack_rx(expect, sizeof(expect)) == NET_CLASS_UDP);
+        trunc = -1;
+        CHECK(net_udp_recv(buf, 0, &sip, &sport, &trunc) == -(NET_ERR_TRUNC));
+        CHECK(trunc == 1);
+        CHECK(net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        net_stack_init();
+        net_arp_init();
+        for (i = 0; i < 5; i++)
+        {
+            uint8_t p[1];
+            p[0] = (uint8_t)('0' + i);
+            CHECK(net_stack_udp_send(0x0A000202u, 53, 49152, p, sizeof(p), frame, &flen) == 0);
+            CHECK(net_stack_rx(frame, flen) == NET_CLASS_UDP);
+        }
+        for (i = 0; i < 4; i++)
+        {
+            trunc = -1;
+            n = net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc);
+            CHECK(n == 1);
+            CHECK(trunc == 0);
+            CHECK(buf[0] == (uint8_t)('0' + i));
+        }
+        CHECK(net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        net_stack_init();
+        net_arp_init();
+        {
+            static uint8_t big[1600];
+            memset(big, 0, sizeof(big));
+            CHECK(net_stack_rx(big, sizeof(big)) == NET_CLASS_DROP);
+            CHECK(net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        }
+    }
     puts("PASS: test_net_stack");
     return 0;
 }

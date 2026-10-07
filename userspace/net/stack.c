@@ -1,21 +1,226 @@
-/* userspace/net/stack.c - Net stack stub (no sockets, no kernel MMIO).
- * Classifies frames already delivered by the firewall→net path. */
+/* userspace/net/stack.c - Net stack: UDP send builder + RX queue + dispatch.
+ * Pure C, host-testable, libc-free (stdint.h only, byte loops) so the
+ * freestanding net ELF may share it. Canonical addrs/ARP via arp_cache.h,
+ * checksums via cksum.h. */
 #include "stack.h"
 
+#include "arp_cache.h"
+#include "cksum.h"
+#include "eth.h"
+
+#define NET_UDP_QDEPTH 4u
+#define NET_UDP_MAX_PAYLOAD (ETH_FRAME_MAX - ETH_HDR_LEN - IP_MIN - UDP_HDR_LEN)
+
+struct udp_slot
+{
+    uint32_t src_ip;
+    uint16_t src_port;
+    unsigned long len;
+    uint8_t payload[ETH_FRAME_MAX - ETH_HDR_LEN - IP_MIN - UDP_HDR_LEN];
+};
+
 static int net_stack_up;
+static struct udp_slot s_q[NET_UDP_QDEPTH];
+static unsigned s_qhead;
+static unsigned s_qcount;
 
 int net_stack_init(void)
 {
     net_stack_up = 1;
+    s_qhead = 0;
+    s_qcount = 0;
+    net_arp_init();
+    return 0;
+}
+
+static uint32_t stack_ip_at(const uint8_t *f, unsigned o)
+{
+    return (uint32_t)(((uint32_t)f[o] << 24) | ((uint32_t)f[o + 1] << 16) |
+                      ((uint32_t)f[o + 2] << 8) | (uint32_t)f[o + 3]);
+}
+
+static void stack_ip_put(uint8_t *f, unsigned o, uint32_t ip)
+{
+    f[o] = (uint8_t)(ip >> 24);
+    f[o + 1] = (uint8_t)(ip >> 16);
+    f[o + 2] = (uint8_t)(ip >> 8);
+    f[o + 3] = (uint8_t)ip;
+}
+
+int net_stack_udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port,
+                       const uint8_t *payload, unsigned long len, uint8_t *frame_out,
+                       unsigned long *frame_len)
+{
+    uint8_t dmac[6];
+    unsigned long total;
+    unsigned long ip_len;
+    unsigned ulen;
+    unsigned i;
+    uint16_t ck;
+    uint32_t sip = NET_IP_SELF;
+    if (!frame_out || !frame_len)
+        return -2;
+    if (len > 0 && !payload)
+        return -2;
+    total = (unsigned long)ETH_HDR_LEN + IP_MIN + (unsigned long)UDP_HDR_LEN + len;
+    if (total > (unsigned long)ETH_FRAME_MAX)
+        return -2;
+    if (net_arp_lookup(dst_ip, dmac) != 0)
+        return -1;
+    for (i = 0; i < ETH_ADDR_LEN; i++)
+    {
+        frame_out[i] = dmac[i];
+        frame_out[6 + i] = NET_MAC_SELF[i];
+    }
+    frame_out[12] = 0x08;
+    frame_out[13] = 0x00;
+    ip_len = IP_MIN + (unsigned long)UDP_HDR_LEN + len;
+    frame_out[14] = 0x45;
+    frame_out[15] = 0x00;
+    frame_out[16] = (uint8_t)(ip_len >> 8);
+    frame_out[17] = (uint8_t)(ip_len & 0xFFu);
+    frame_out[18] = 0x12;
+    frame_out[19] = 0x34;
+    frame_out[20] = 0x40;
+    frame_out[21] = 0x00;
+    frame_out[22] = 64;
+    frame_out[23] = IP_PROTO_UDP;
+    frame_out[24] = 0;
+    frame_out[25] = 0;
+    stack_ip_put(frame_out, 26, sip);
+    stack_ip_put(frame_out, 30, dst_ip);
+    ck = net_ip_checksum(frame_out + ETH_HDR_LEN, IP_MIN);
+    frame_out[24] = (uint8_t)(ck >> 8);
+    frame_out[25] = (uint8_t)(ck & 0xFFu);
+    ulen = UDP_HDR_LEN + (unsigned)len;
+    frame_out[34] = (uint8_t)(src_port >> 8);
+    frame_out[35] = (uint8_t)(src_port & 0xFFu);
+    frame_out[36] = (uint8_t)(dst_port >> 8);
+    frame_out[37] = (uint8_t)(dst_port & 0xFFu);
+    frame_out[38] = (uint8_t)(ulen >> 8);
+    frame_out[39] = (uint8_t)(ulen & 0xFFu);
+    frame_out[40] = 0;
+    frame_out[41] = 0;
+    for (i = 0; i < (unsigned)len; i++)
+        frame_out[42 + i] = payload[i];
+    ck = net_udp_checksum(sip, dst_ip, frame_out + ETH_HDR_LEN + IP_MIN, ulen);
+    frame_out[40] = (uint8_t)(ck >> 8);
+    frame_out[41] = (uint8_t)(ck & 0xFFu);
+    *frame_len = total;
     return 0;
 }
 
 int net_stack_rx(const uint8_t *f, unsigned long len)
 {
     int c;
+    unsigned ihl, off;
+    uint16_t tot, ulen;
+    uint32_t sip, dip;
+    unsigned long plen;
+    unsigned idx, i;
     if (!net_stack_up)
         return NET_CLASS_DROP;
+    if (!f)
+        return NET_CLASS_DROP;
+    if (len > (unsigned long)ETH_FRAME_MAX)
+        return NET_CLASS_DROP;
     c = net_classify(f, len);
-    /* Stub: drop everything except well-formed classes. No reply. */
-    return c;
+    if (c == NET_CLASS_ARP)
+    {
+        net_arp_learn(f, len);
+        return c;
+    }
+    if (c != NET_CLASS_UDP)
+        return c;
+    ihl = ip_ihl_bytes(f, len);
+    if (!ihl)
+        return NET_CLASS_DROP;
+    off = ETH_HDR_LEN + ihl;
+    tot = (uint16_t)(((unsigned)f[ETH_HDR_LEN + 2] << 8) | (unsigned)f[ETH_HDR_LEN + 3]);
+    if ((unsigned long)ETH_HDR_LEN + (unsigned long)tot > len)
+        return NET_CLASS_DROP;
+    if (tot < ihl)
+        return NET_CLASS_DROP;
+    ulen = (uint16_t)(((unsigned)f[off + 4] << 8) | (unsigned)f[off + 5]);
+    if (ulen < UDP_HDR_LEN)
+        return NET_CLASS_DROP;
+    if ((unsigned long)off + (unsigned long)ulen > len)
+        return NET_CLASS_DROP;
+    if ((unsigned)tot - ihl < (unsigned)ulen)
+        return NET_CLASS_DROP;
+    if (net_ip_checksum(f + ETH_HDR_LEN, ihl) != 0)
+        return NET_CLASS_DROP;
+    sip = stack_ip_at(f, ETH_HDR_LEN + 12);
+    dip = stack_ip_at(f, ETH_HDR_LEN + 16);
+    if (net_udp_checksum(sip, dip, f + off, ulen) != 0)
+        return NET_CLASS_DROP;
+    plen = (unsigned long)ulen - (unsigned long)UDP_HDR_LEN;
+    if (plen > (unsigned long)NET_UDP_MAX_PAYLOAD)
+        return NET_CLASS_DROP;
+    if (s_qcount >= NET_UDP_QDEPTH)
+        return NET_CLASS_UDP;
+    idx = (s_qhead + s_qcount) % NET_UDP_QDEPTH;
+    s_q[idx].src_ip = sip;
+    s_q[idx].src_port = (uint16_t)(((unsigned)f[off] << 8) | (unsigned)f[off + 1]);
+    s_q[idx].len = plen;
+    for (i = 0; i < (unsigned)plen; i++)
+        s_q[idx].payload[i] = f[off + UDP_HDR_LEN + i];
+    s_qcount++;
+    return NET_CLASS_UDP;
+}
+
+int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *src_port, int *trunc)
+{
+    struct udp_slot *s;
+    unsigned i;
+    unsigned long n;
+    if (s_qcount == 0)
+    {
+        if (trunc)
+            *trunc = 0;
+        return -(NET_ERR_EMPTY);
+    }
+    s = &s_q[s_qhead];
+    if (cap < s->len)
+    {
+        n = cap;
+        if (buf)
+        {
+            for (i = 0; i < (unsigned)n; i++)
+                buf[i] = s->payload[i];
+        }
+        if (src_ip)
+            *src_ip = s->src_ip;
+        if (src_port)
+            *src_port = s->src_port;
+        if (trunc)
+            *trunc = 1;
+        s_qhead = (s_qhead + 1u) % NET_UDP_QDEPTH;
+        s_qcount--;
+        return -(NET_ERR_TRUNC);
+    }
+    if (s->len > 0 && !buf)
+    {
+        if (src_ip)
+            *src_ip = s->src_ip;
+        if (src_port)
+            *src_port = s->src_port;
+        if (trunc)
+            *trunc = 1;
+        s_qhead = (s_qhead + 1u) % NET_UDP_QDEPTH;
+        s_qcount--;
+        return -(NET_ERR_TRUNC);
+    }
+    for (i = 0; i < (unsigned)s->len; i++)
+        buf[i] = s->payload[i];
+    if (src_ip)
+        *src_ip = s->src_ip;
+    if (src_port)
+        *src_port = s->src_port;
+    if (trunc)
+        *trunc = 0;
+    n = s->len;
+    s_qhead = (s_qhead + 1u) % NET_UDP_QDEPTH;
+    s_qcount--;
+    return (int)n;
 }
