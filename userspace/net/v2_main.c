@@ -20,10 +20,32 @@
  * Phase-2 TX/link logic appends here; this loop stays as the fallback when
  * the link is down. All state is stack-local; string literals are private
  * rodata (U-mapped).
+ *
+ * Task 4 (RX + live markers): RX-from-wire reuses the two DMA frames --
+ * queue 0 gets one 2-desc chain mirroring the TX layout (12B virtio-net
+ * header @2048, 1514B packet buffer @2060). The service loop observes the
+ * RX used ring every iteration (level check, not only on IRQ bits: a
+ * completion that landed before the first V2_WAIT must still be seen),
+ * copies the frame, and feeds net_stack_rx (Tasks 1-3 sources are
+ * included single-TU below; they are libc-free). First validated UDP
+ * prints "NET: rx ok" once. A Phase-1 live loopback echoes unicast-to-self
+ * UDP back to its sender (ports swapped); the send resolves via ARP
+ * lookup, else emits ONE request (42B padded to 60B on TX) and parks ONE
+ * datagram until reply (sent) or 2s timeout (dropped) -- exactly once.
+ * The loop waits with V2_WAIT, which wakes on NIC IRQ (bit 0x1) or queued
+ * firewall messages (bit 0x10); the T_FWD audit block itself is unchanged.
  */
 #include <stdint.h>
 
 #include "../../kernel/qube.h"
+
+/* Tasks 1-3 stack shared single-TU: net.elf builds from this file only
+ * (userspace/Makefile build/net.elf), so include the libc-free sources
+ * directly instead of linking. Parse views (eth/ip/udp/arp headers) are
+ * stdint-only per the Task 4 brief's include rule; the two implementations
+ * below use byte loops only, safe for the freestanding U-mode ELF. */
+#include "arp_cache.c"
+#include "stack.c"
 
 #define V2_PUTC 1
 #define V2_SEND 3
@@ -38,7 +60,6 @@
 #define V2_INV_UNMAP 4
 #define V2_INV_PT_ALLOC 6
 #define V2_INV_FRAME_PA 16
-
 #define T_FWD 6
 #define T_DONE 7
 
@@ -123,28 +144,63 @@
 #define NET_IRQ_TIMEOUT_TICKS 20000000UL
 #define NET_POLL_BOUND 2000000
 
-struct net_desc {
+struct net_desc
+{
     uint64_t addr;
     uint32_t len;
     uint16_t flags;
     uint16_t next;
 };
 
-struct net_avail {
+struct net_avail
+{
     uint16_t flags;
     uint16_t idx;
     uint16_t ring[2];
 };
 
-struct net_used_elem {
+struct net_used_elem
+{
     uint32_t id;
     uint32_t len;
 };
 
-struct net_used {
+struct net_used
+{
     uint16_t flags;
     uint16_t idx;
     struct net_used_elem ring[1];
+};
+
+/* ---- Task 4 RX/wire constants ----
+ * RX chain mirrors the TX layout inside the RX DMA frame: 12B virtio-net
+ * header @2048, 1514B packet buffer @2060 (2060 + 1514 = 3574 < 4096).
+ * TX frames shorter than 60B (ARP builds 42B) are zero-padded to the
+ * Ethernet minimum, matching the phase-2 gratuitous ARP.
+ * NET_MSG_BIT is the V2_WAIT return bit for a queued ep-6 message
+ * (kernel/syscall_ipc.c sys_wait/sys_send use 1UL << 4). */
+#define NET_MSG_BIT 0x10L
+#define NET_VIRTIO_HDR 12u
+#define NET_TX_HDR_OFF 2048u
+#define NET_TX_PAY_OFF 2060u
+#define NET_RX_HDR_OFF 2048u
+#define NET_RX_PAY_OFF 2060u
+#define NET_ETH_MIN 60u
+#define NET_UDP_PARK_PAY 1472u /* max UDP payload: 1514 - 14 (eth) - 20 (IP) - 8 (UDP) */
+
+/* Device context filled once by net_phase2; owned by net_main's stack
+ * frame (no .bss state -- the file's stack-local discipline holds). */
+struct net_wire
+{
+    volatile uint32_t *regs;
+    uint64_t pa_tx;
+    uint64_t pa_rx;
+    uint8_t *txf;
+    uint8_t *rxf;
+    struct net_avail *txa;
+    volatile struct net_used *txu;
+    struct net_avail *rxa;
+    volatile struct net_used *rxu;
 };
 
 static long u_ecall3(long sys, long a0, long a1, long a2)
@@ -153,10 +209,7 @@ static long u_ecall3(long sys, long a0, long a1, long a2)
     register long r_a1 asm("a1") = a1;
     register long r_a2 asm("a2") = a2;
     register long r_a7 asm("a7") = sys;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2)
-                 : "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2) : "r"(r_a7) : "memory");
     return r_a0;
 }
 
@@ -167,10 +220,7 @@ static long u_ecall4(long sys, long a0, long a1, long a2, long a3)
     register long r_a2 asm("a2") = a2;
     register long r_a3 asm("a3") = a3;
     register long r_a7 asm("a7") = sys;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
-                 : "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3) : "r"(r_a7) : "memory");
     return r_a0;
 }
 
@@ -192,19 +242,15 @@ static long u_send(unsigned long ep, const uint64_t *p, unsigned long n)
 
 /* RECV returns words-written in a0, kernel-stamped sender in a1,
  * sender qube in a2, truncation flag in a3 (explicit, never silent). */
-static long u_recv(unsigned long ep, uint64_t *buf, unsigned long cap,
-                   unsigned long *sender, unsigned long *qube,
-                   unsigned long *ovf)
+static long u_recv(unsigned long ep, uint64_t *buf, unsigned long cap, unsigned long *sender,
+                   unsigned long *qube, unsigned long *ovf)
 {
     register long r_a0 asm("a0") = (long)ep;
     register long r_a1 asm("a1") = (long)buf;
     register long r_a2 asm("a2") = (long)cap;
     register long r_a3 asm("a3") = 0;
     register long r_a7 asm("a7") = V2_RECV;
-    asm volatile("ecall"
-                 : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3)
-                 : "r"(r_a7)
-                 : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3) : "r"(r_a7) : "memory");
     *sender = (unsigned long)r_a1;
     *qube = (unsigned long)r_a2;
     *ovf = (unsigned long)r_a3;
@@ -264,8 +310,8 @@ static void net_w64(volatile uint32_t *regs, uint32_t lo_off, uint64_t v)
 
 /* Set up one modern split virtqueue (caller-owned memory inside a DMA
  * frame). Returns 1 on success, 0 on any transport refusal. */
-static int net_queue(volatile uint32_t *regs, uint32_t q, uint64_t desc_pa,
-                     uint64_t avail_pa, uint64_t used_pa)
+static int net_queue(volatile uint32_t *regs, uint32_t q, uint64_t desc_pa, uint64_t avail_pa,
+                     uint64_t used_pa)
 {
     uint32_t max;
     net_w(regs, NET_R_QSEL, q);
@@ -294,9 +340,9 @@ static void net_no_link(void)
 static volatile uint32_t *net_find(void)
 {
     unsigned j;
-    for (j = 0; j < 8; j++) { /* bound: 8 */
-        volatile uint32_t *r =
-            (volatile uint32_t *)(NET_UVA + (unsigned long)j * 0x1000UL);
+    for (j = 0; j < 8; j++)
+    { /* bound: 8 */
+        volatile uint32_t *r = (volatile uint32_t *)(NET_UVA + (unsigned long)j * 0x1000UL);
         if (net_r(r, NET_R_MAGIC) != NET_MAGIC_VAL)
             continue;
         if (net_r(r, NET_R_VERSION) != 2u)
@@ -308,10 +354,80 @@ static volatile uint32_t *net_find(void)
     return 0;
 }
 
-/* Phase-2 bring-up: probe, negotiate, DMA, link, one gratuitous ARP.
- * Returns only on success (any failure parks inside net_no_link or the
- * IRQ-timeout branch). Prints "NET: link up" then "NET: tx ok". */
-static void net_phase2(void)
+/* Synchronous wire transmit of one frame via the TX queue (queue 1).
+ * The caller builds the frame bytes; frames shorter than 60B (ARP's 42B)
+ * are zero-padded to the Ethernet minimum, mirroring the phase-2
+ * gratuitous ARP. Returns 0 on used-ring completion, -1 on timeout
+ * (silent: a dead device gets no marker, same as wire-noise discipline).
+ * The device ISR is acked on success; the kernel IRQ notify bit is left
+ * accumulated (no V2_WAIT here: it blocks, and nothing waits on it again).
+ * Single outstanding chain only; callers serialize (one server thread),
+ * so descriptor reuse is race-free. Same rdtime-deadline + V2_YIELD
+ * bounded poll idiom as the phase-2 TX wait. */
+static int net_tx_frame(struct net_wire *w, const uint8_t *frame, unsigned long len)
+{
+    struct net_desc *txd;
+    unsigned long wlen;
+    unsigned long i;
+    uint64_t t0;
+    int done, p;
+    uint16_t want;
+    uint32_t isr;
+    if (!w || !w->regs || !w->txf || !w->txa || !w->txu || !frame)
+        return -1;
+    if (len < 14u || len > (unsigned long)NET_PKT_MAX)
+        return -1;
+    wlen = len < (unsigned long)NET_ETH_MIN ? (unsigned long)NET_ETH_MIN : len;
+    txd = (struct net_desc *)(w->txf + 0);
+    txd[0].addr = w->pa_tx + (uint64_t)NET_TX_HDR_OFF;
+    txd[0].len = (uint32_t)NET_VIRTIO_HDR;
+    txd[0].flags = NET_DESC_F_NEXT;
+    txd[0].next = 1u;
+    txd[1].addr = w->pa_tx + (uint64_t)NET_TX_PAY_OFF;
+    txd[1].len = (uint32_t)wlen;
+    txd[1].flags = 0u;
+    txd[1].next = 0u;
+    for (i = 0; i < len; i++) /* bound: 1514 */
+        w->txf[NET_TX_PAY_OFF + i] = frame[i];
+    for (; i < wlen; i++) /* bound: 60 -- pad to Ethernet minimum */
+        w->txf[NET_TX_PAY_OFF + i] = 0;
+    net_fence();
+    w->txa->ring[w->txa->idx % 2u] = 0u;
+    net_fence();
+    w->txa->idx++;
+    net_fence();
+    net_w(w->regs, NET_R_QNOTIFY, 1u);
+    net_fence();
+    want = (uint16_t)(w->txu->idx + 1u);
+    t0 = u_rdtime();
+    done = 0;
+    for (p = 0; p < NET_POLL_BOUND; p++)
+    { /* bound: NET_POLL_BOUND */
+        if (w->txu->idx == want)
+        {
+            done = 1;
+            break;
+        }
+        u_yield();
+        if (u_rdtime() - t0 > NET_IRQ_TIMEOUT_TICKS)
+            break;
+    }
+    if (!done)
+        return -1;
+    isr = net_r(w->regs, NET_R_ISTATUS);
+    if (isr)
+        net_w(w->regs, NET_R_IACK, isr);
+    net_fence();
+    return 0;
+}
+
+/* Phase-2 bring-up: probe, negotiate, DMA, link, RX post, one gratuitous
+ * ARP. Fills the caller's wire context on success; returns only on
+ * success (any failure parks inside net_no_link or the IRQ-timeout
+ * branch). Prints "NET: link up" then "NET: tx ok". The TX completion
+ * poll, device ISR ack, and V2_WAIT consumption below are the unchanged
+ * phase-2 pattern (Task 4 checklist). */
+static void net_phase2(struct net_wire *w)
 {
     volatile uint32_t *regs = net_find();
     long slot_tx, slot_rx;
@@ -343,20 +459,18 @@ static void net_phase2(void)
     net_w(regs, NET_R_DRV_FEAT, 1u);
     net_w(regs, NET_R_DRV_SEL, 0u);
     net_w(regs, NET_R_DRV_FEAT, 0u);
-    net_w(regs, NET_R_STATUS,
-           NET_ST_ACK | NET_ST_DRIVER | NET_ST_FEAT_OK);
+    net_w(regs, NET_R_STATUS, NET_ST_ACK | NET_ST_DRIVER | NET_ST_FEAT_OK);
     net_fence();
-    if (!(net_r(regs, NET_R_STATUS) & NET_ST_FEAT_OK)) {
-        net_w(regs, NET_R_STATUS,
-               NET_ST_ACK | NET_ST_DRIVER | NET_ST_FAILED);
+    if (!(net_r(regs, NET_R_STATUS) & NET_ST_FEAT_OK))
+    {
+        net_w(regs, NET_R_STATUS, NET_ST_ACK | NET_ST_DRIVER | NET_ST_FAILED);
         net_no_link();
     }
 
     /* 3. Two DMA frames (RW only): TX ring+buffers, RX ring. */
     slot_tx = u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
     slot_rx = u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
-    if (slot_tx < 0 || slot_rx < 0 ||
-        u_invoke(V2_INV_MAP, slot_tx, NET_TX_VPN, 0) != 0 ||
+    if (slot_tx < 0 || slot_rx < 0 || u_invoke(V2_INV_MAP, slot_tx, NET_TX_VPN, 0) != 0 ||
         u_invoke(V2_INV_MAP, slot_rx, NET_RX_VPN, 0) != 0)
         net_no_link();
     pa_tx = u_invoke(V2_INV_FRAME_PA, NET_TX_VPN, 0, 0);
@@ -368,21 +482,19 @@ static void net_phase2(void)
      * used @1024, TX header @2048 (12B zeros), TX payload @2060. */
     txf = (uint8_t *)NET_TX_VA;
     rxf = (uint8_t *)NET_RX_VA;
-    for (i = 0; i < 4096; i++) { /* bound: 4096 */
+    for (i = 0; i < 4096; i++)
+    { /* bound: 4096 */
         txf[i] = 0;
         rxf[i] = 0;
     }
-    if (!net_queue(regs, 0u, (uint64_t)pa_rx + 0u,
-                   (uint64_t)pa_rx + 64u, (uint64_t)pa_rx + 1024u))
+    if (!net_queue(regs, 0u, (uint64_t)pa_rx + 0u, (uint64_t)pa_rx + 64u, (uint64_t)pa_rx + 1024u))
         net_no_link();
     txd = (struct net_desc *)(txf + 0);
     txa = (struct net_avail *)(txf + 64);
     txu = (volatile struct net_used *)(txf + 1024);
-    if (!net_queue(regs, 1u, (uint64_t)pa_tx + 0u,
-                   (uint64_t)pa_tx + 64u, (uint64_t)pa_tx + 1024u))
+    if (!net_queue(regs, 1u, (uint64_t)pa_tx + 0u, (uint64_t)pa_tx + 64u, (uint64_t)pa_tx + 1024u))
         net_no_link();
-    net_w(regs, NET_R_STATUS, NET_ST_ACK | NET_ST_DRIVER |
-           NET_ST_FEAT_OK | NET_ST_DRIVER_OK);
+    net_w(regs, NET_R_STATUS, NET_ST_ACK | NET_ST_DRIVER | NET_ST_FEAT_OK | NET_ST_DRIVER_OK);
     net_fence();
 
     /* 5. Link status (config @0x100: MAC[6] + u16 status, bit0 = LINK_UP). */
@@ -390,6 +502,30 @@ static void net_phase2(void)
     if (!(lsts & 1u))
         net_no_link();
     u_puts("NET: link up\n");
+
+    /* Task 4: post one RX chain on queue 0, mirroring the TX layout (12B
+     * virtio-net header @2048, 1514B packet buffer @2060). Posted after the
+     * queue setup + DRIVER_OK above; the device consumes it on QNOTIFY 0.
+     * RX completions land in the RX used ring and are drained (copied then
+     * net_stack_rx) by the service loop's level check. */
+    {
+        struct net_desc *rxd = (struct net_desc *)(rxf + 0);
+        struct net_avail *rxa = (struct net_avail *)(rxf + 64);
+        rxd[0].addr = (uint64_t)pa_rx + (uint64_t)NET_RX_HDR_OFF;
+        rxd[0].len = (uint32_t)NET_VIRTIO_HDR;
+        rxd[0].flags = NET_DESC_F_NEXT;
+        rxd[0].next = 1u;
+        rxd[1].addr = (uint64_t)pa_rx + (uint64_t)NET_RX_PAY_OFF;
+        rxd[1].len = (uint32_t)NET_PKT_MAX;
+        rxd[1].flags = 0u;
+        rxd[1].next = 0u;
+        rxa->ring[0] = 0u;
+        net_fence();
+        rxa->idx = 1u;
+        net_fence();
+        net_w(regs, NET_R_QNOTIFY, 0u);
+        net_fence();
+    }
 
     /* 6. One 60B gratuitous ARP: broadcast dst, QEMU OUI src,
      * ethertype ARP, request, spa == tpa == 10.0.2.15, 18B pad. */
@@ -402,19 +538,48 @@ static void net_phase2(void)
     txd[1].flags = 0u;
     txd[1].next = 0u;
     arp = txf + 2060;
-    arp[0] = 0xff; arp[1] = 0xff; arp[2] = 0xff;
-    arp[3] = 0xff; arp[4] = 0xff; arp[5] = 0xff;
-    arp[6] = 0x52; arp[7] = 0x54; arp[8] = 0x00;
-    arp[9] = 0x12; arp[10] = 0x34; arp[11] = 0x56;
-    arp[12] = 0x08; arp[13] = 0x06;
-    arp[14] = 0x00; arp[15] = 0x01; arp[16] = 0x08; arp[17] = 0x00;
-    arp[18] = 0x06; arp[19] = 0x04; arp[20] = 0x00; arp[21] = 0x01;
-    arp[22] = 0x52; arp[23] = 0x54; arp[24] = 0x00;
-    arp[25] = 0x12; arp[26] = 0x34; arp[27] = 0x56;
-    arp[28] = 0x0a; arp[29] = 0x00; arp[30] = 0x02; arp[31] = 0x0f;
-    arp[32] = 0x00; arp[33] = 0x00; arp[34] = 0x00;
-    arp[35] = 0x00; arp[36] = 0x00; arp[37] = 0x00;
-    arp[38] = 0x0a; arp[39] = 0x00; arp[40] = 0x02; arp[41] = 0x0f;
+    arp[0] = 0xff;
+    arp[1] = 0xff;
+    arp[2] = 0xff;
+    arp[3] = 0xff;
+    arp[4] = 0xff;
+    arp[5] = 0xff;
+    arp[6] = 0x52;
+    arp[7] = 0x54;
+    arp[8] = 0x00;
+    arp[9] = 0x12;
+    arp[10] = 0x34;
+    arp[11] = 0x56;
+    arp[12] = 0x08;
+    arp[13] = 0x06;
+    arp[14] = 0x00;
+    arp[15] = 0x01;
+    arp[16] = 0x08;
+    arp[17] = 0x00;
+    arp[18] = 0x06;
+    arp[19] = 0x04;
+    arp[20] = 0x00;
+    arp[21] = 0x01;
+    arp[22] = 0x52;
+    arp[23] = 0x54;
+    arp[24] = 0x00;
+    arp[25] = 0x12;
+    arp[26] = 0x34;
+    arp[27] = 0x56;
+    arp[28] = 0x0a;
+    arp[29] = 0x00;
+    arp[30] = 0x02;
+    arp[31] = 0x0f;
+    arp[32] = 0x00;
+    arp[33] = 0x00;
+    arp[34] = 0x00;
+    arp[35] = 0x00;
+    arp[36] = 0x00;
+    arp[37] = 0x00;
+    arp[38] = 0x0a;
+    arp[39] = 0x00;
+    arp[40] = 0x02;
+    arp[41] = 0x0f;
     for (i = 42; i < 60; i++) /* bound: 18 */
         arp[i] = 0;
     txa->ring[0] = 0u;
@@ -428,8 +593,10 @@ static void net_phase2(void)
      * V2_YIELD between polls (never a spin). Timeout parks fail-closed. */
     t0 = u_rdtime();
     done = 0;
-    for (p = 0; p < NET_POLL_BOUND; p++) { /* bound: NET_POLL_BOUND */
-        if (txu->idx != 0u) {
+    for (p = 0; p < NET_POLL_BOUND; p++)
+    { /* bound: NET_POLL_BOUND */
+        if (txu->idx != 0u)
+        {
             done = 1;
             break;
         }
@@ -437,7 +604,8 @@ static void net_phase2(void)
         if (u_rdtime() - t0 > NET_IRQ_TIMEOUT_TICKS)
             break;
     }
-    if (!done) {
+    if (!done)
+    {
         u_puts("NET: irq timeout\n");
         u_park();
     }
@@ -452,56 +620,248 @@ static void net_phase2(void)
     if ((bits & NET_IRQ_BIT) == 0)
         u_park(); /* completion unconfirmed: park with no marker */
     u_puts("NET: tx ok\n");
+
+    /* Hand the live device context to the service loop (still our stack:
+     * the caller's struct, filled here). */
+    w->regs = regs;
+    w->pa_tx = (uint64_t)pa_tx;
+    w->pa_rx = (uint64_t)pa_rx;
+    w->txf = txf;
+    w->rxf = rxf;
+    w->txa = txa;
+    w->txu = txu;
+    w->rxa = (struct net_avail *)(rxf + 64);
+    w->rxu = (volatile struct net_used *)(rxf + 1024);
 }
 
 void net_main(void)
 {
+    struct net_wire wire;
+    uint8_t rxcopy[NET_PKT_MAX];        /* RX frame copy (max 1514B wire frame) */
+    uint8_t park_pay[NET_UDP_PARK_PAY]; /* parked payload: persists across iterations */
+    uint32_t park_ip;
+    uint16_t park_dport;
+    uint16_t park_sport;
+    unsigned long park_len;
+    uint64_t park_t0;
+    int park_valid;
+    uint16_t rx_seen;
+    int rx_ok_done;
+
     u_puts("NET: up\n");
-    net_phase2();
+    /* Boot-once stack init: reseeds the ARP table (gateway) and flushes
+     * the datagram queue. Called exactly once, never per-frame. */
+    net_stack_init();
+    net_phase2(&wire);
 
-    for (;;) { /* bound: inf - service loop */
-        uint64_t buf[4];
-        unsigned long snd = 0;
-        unsigned long sqb = 0;
-        unsigned long ovf = 0;
-        long n = u_recv(6, buf, 4, &snd, &sqb, &ovf);
+    park_valid = 0;
+    park_ip = 0;
+    park_dport = 0;
+    park_sport = 0;
+    park_len = 0;
+    park_t0 = 0;
+    rx_seen = 0;
+    rx_ok_done = 0;
 
-        /* Only a full T_FWD from the firewall qube is actionable.
-         * Everything else (short takes, other tags, spoofed sender)
-         * is a silent drop: no reply is ever sent. */
-        if (n < 4 || (unsigned long)buf[0] != (unsigned long)T_FWD ||
-            sqb != (unsigned long)FW_QUBE)
-            continue;
+    for (;;)
+    {                         /* bound: inf - service loop */
+        long bits = u_wait(); /* wakes on NIC IRQ (0x1) or queued message (0x10) */
+        uint64_t now = u_rdtime();
 
+        /* ARP-table expiry runs on the same timebase as the IRQ timeout. */
+        net_arp_tick(now);
+
+        /* Parked-send timeout: drop exactly once. (The ARP-learn path
+         * below sends exactly once; park_valid clears in exactly one of
+         * the two places per parked datagram.) */
+        if (park_valid && now - park_t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
+            park_valid = 0;
+
+        /* Queued firewall message. V2_WAIT reports 0x10 without consuming,
+         * so this u_recv takes without blocking. The T_FWD audit logic is
+         * the unchanged phase-1 block, only nested under the bit (early
+         * drops fold into the nesting instead of continue, so the RX drain
+         * below still runs every iteration). */
+        if (bits & NET_MSG_BIT)
         {
-            unsigned long slot = (unsigned long)buf[1];
-            unsigned long len = (unsigned long)buf[2];
-            uint64_t h = buf[3];
-            const uint8_t *pkt;
-            uint64_t done[4];
-            if (slot != (unsigned long)NET_IN_SLOT || len < 1 ||
-                len > (unsigned long)NET_PKT_MAX)
-                continue;
-            /* Live-grant check: INVALID means no granted cap behind the
-             * announcement (grant-without-announcement race) -> drop. */
-            if (u_invoke(V2_INV_MAP, (long)slot,
-                         (long)NET_SCRATCH_MAP_VPN, 0) != 0)
-                continue;
-            pkt = (const uint8_t *)NET_SCRATCH_VA;
-            if (qube_fnv1a(pkt, len) != h) {
-                u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
-                continue; /* corrupt/raced bytes: UNMAP + silent drop */
+            uint64_t buf[4];
+            unsigned long snd = 0;
+            unsigned long sqb = 0;
+            unsigned long ovf = 0;
+            long n = u_recv(6, buf, 4, &snd, &sqb, &ovf);
+
+            /* Only a full T_FWD from the firewall qube is actionable.
+             * Everything else (short takes, other tags, spoofed sender)
+             * is a silent drop: no reply is ever sent. */
+            if (n >= 4 && (unsigned long)buf[0] == (unsigned long)T_FWD &&
+                sqb == (unsigned long)FW_QUBE)
+            {
+                unsigned long slot = (unsigned long)buf[1];
+                unsigned long len = (unsigned long)buf[2];
+                uint64_t h = buf[3];
+                const uint8_t *pkt;
+                uint64_t done[4];
+                if (slot == (unsigned long)NET_IN_SLOT && len >= 1 &&
+                    len <= (unsigned long)NET_PKT_MAX)
+                {
+                    /* Live-grant check: INVALID means no granted cap behind the
+                     * announcement (grant-without-announcement race) -> drop. */
+                    if (u_invoke(V2_INV_MAP, (long)slot, (long)NET_SCRATCH_MAP_VPN, 0) == 0)
+                    {
+                        pkt = (const uint8_t *)NET_SCRATCH_VA;
+                        if (qube_fnv1a(pkt, len) != h)
+                        {
+                            u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
+                            /* corrupt/raced bytes: UNMAP + silent drop */
+                        }
+                        else
+                        {
+                            u_puts("NET: fwd ok\n");
+                            u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
+                            done[0] = (uint64_t)T_DONE;
+                            done[1] = (uint64_t)slot;
+                            done[2] = 0;
+                            done[3] = 0;
+                            /* Completion handoff: blocks until the firewall RECVs.
+                             * Cross-qube gate needs our QX (Step-5 boot grant); without
+                             * it SEND fails INVALID here, fail closed, loop continues. */
+                            u_send(5, done, 4);
+                        }
+                    }
+                }
             }
-            u_puts("NET: fwd ok\n");
-            u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
-            done[0] = (uint64_t)T_DONE;
-            done[1] = (uint64_t)slot;
-            done[2] = 0;
-            done[3] = 0;
-            /* Completion handoff: blocks until the firewall RECVs.
-             * Cross-qube gate needs our QX (Step-5 boot grant); without
-             * it SEND fails INVALID here, fail closed, loop continues. */
-            u_send(5, done, 4);
+        }
+
+        /* Wire RX: level-check the RX used ring every iteration (not only
+         * when an IRQ bit is set: a completion that landed before this
+         * loop's first V2_WAIT must still be observed). Single outstanding
+         * chain, so any advance is exactly one new frame: used len holds
+         * 12 (virtio header) + pktlen, packet bytes sit at rxf+2060. */
+        if (wire.rxu->idx != rx_seen)
+        {
+            unsigned long wlen = (unsigned long)wire.rxu->ring[0].len;
+            rx_seen = wire.rxu->idx; /* consume first: exactly-once observation */
+            if (wlen >= (unsigned long)NET_VIRTIO_HDR + 14u &&
+                wlen <= (unsigned long)NET_VIRTIO_HDR + (unsigned long)NET_PKT_MAX)
+            {
+                unsigned long pktlen = wlen - (unsigned long)NET_VIRTIO_HDR;
+                unsigned long i;
+                int cls;
+                for (i = 0; i < pktlen; i++) /* bound: 1514 */
+                    rxcopy[i] = wire.rxf[NET_RX_PAY_OFF + i];
+                cls = net_stack_rx(rxcopy, pktlen);
+                if (cls == NET_CLASS_UDP)
+                {
+                    /* Live-wire proof: first validated UDP only. */
+                    if (!rx_ok_done)
+                    {
+                        u_puts("NET: rx ok\n");
+                        rx_ok_done = 1;
+                    }
+                    /* Phase-1 live loopback: echo the datagram to its
+                     * sender with ports swapped, exercising the UDP send
+                     * path on live traffic. Reflected only when addressed
+                     * to us (never broadcast/foreign floods). The queue
+                     * provably holds this datagram: every UDP return is
+                     * dequeued here before the next chain is reposted, so
+                     * the count never exceeds 1 and drop-newest cannot
+                     * misdeliver a stale entry. rxcopy is free for reuse
+                     * as the dequeue buffer (classification is done). */
+                    {
+                        uint32_t sip = 0;
+                        uint16_t sport = 0;
+                        uint16_t local = 0;
+                        unsigned ihl;
+                        uint32_t dip;
+                        int trunc = 0;
+                        int ngot;
+                        unsigned long flen = 0;
+                        int rc;
+                        ihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
+                        dip =
+                            (uint32_t)(((uint32_t)rxcopy[30] << 24) | ((uint32_t)rxcopy[31] << 16) |
+                                       ((uint32_t)rxcopy[32] << 8) | (uint32_t)rxcopy[33]);
+                        if (ihl >= 20u && dip == NET_IP_SELF)
+                        {
+                            local = (uint16_t)(((unsigned)rxcopy[14 + ihl + 2] << 8) |
+                                               (unsigned)rxcopy[14 + ihl + 3]);
+                            ngot = net_udp_recv(rxcopy, sizeof(rxcopy), &sip, &sport, &trunc);
+                            if (ngot >= 0 && !trunc)
+                            {
+                                rc = net_stack_udp_send(sip, sport, local, rxcopy,
+                                                        (unsigned long)ngot,
+                                                        wire.txf + NET_TX_PAY_OFF, &flen);
+                                if (rc == 0)
+                                {
+                                    (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, flen);
+                                }
+                                else if (rc == -1 && !park_valid)
+                                {
+                                    /* ARP miss with a free park slot: emit
+                                     * ONE request, park ONE datagram. While
+                                     * parked, further misses drop newest
+                                     * (same discipline as the RX queue). */
+                                    unsigned long k;
+                                    for (k = 0; k < (unsigned long)ngot; k++) /* bound: 1472 */
+                                        park_pay[k] = rxcopy[k];
+                                    park_ip = sip;
+                                    park_dport = sport;
+                                    park_sport = local;
+                                    park_len = (unsigned long)ngot;
+                                    park_t0 = now;
+                                    park_valid = 1;
+                                    if (net_arp_build_request(sip, wire.txf + NET_TX_PAY_OFF) !=
+                                        (int)NET_ARP_FRAME_LEN)
+                                        park_valid = 0; /* build failed: drop at once */
+                                    else
+                                        (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF,
+                                                           (unsigned long)NET_ARP_FRAME_LEN);
+                                }
+                                /* rc == -2 is impossible (ngot <= 1472);
+                                 * occupied park: drop newest, silent. */
+                            }
+                        }
+                    }
+                }
+                else if (cls == NET_CLASS_ARP)
+                {
+                    uint32_t rip = 0;
+                    uint8_t rmac[6];
+                    /* Answer requests for our IP (reply built from the
+                     * copied request; 42B padded to 60B on TX). */
+                    if (net_arp_need_reply(&rip, rmac) &&
+                        net_arp_build_reply(rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF) ==
+                            (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF,
+                                           (unsigned long)NET_ARP_FRAME_LEN);
+                    /* Parked-send flush: this learn may have resolved it.
+                     * The flag clears before TX so the datagram sends
+                     * (here) or times out (above) exactly once. A -1 here
+                     * is impossible (lookup just hit, no tick between on
+                     * one thread); -2 is impossible by length. */
+                    if (park_valid)
+                    {
+                        uint8_t dmac[6];
+                        if (net_arp_lookup(park_ip, dmac) == 0)
+                        {
+                            unsigned long flen2 = 0;
+                            park_valid = 0;
+                            if (net_stack_udp_send(park_ip, park_dport, park_sport, park_pay,
+                                                   park_len, wire.txf + NET_TX_PAY_OFF,
+                                                   &flen2) == 0)
+                                (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, flen2);
+                        }
+                    }
+                }
+                /* All other classes: classify-and-drop preserved (no marker). */
+            }
+            /* Repost the RX chain for the next frame. */
+            wire.rxa->ring[wire.rxa->idx % 2u] = 0u;
+            net_fence();
+            wire.rxa->idx++;
+            net_fence();
+            net_w(wire.regs, NET_R_QNOTIFY, 0u);
+            net_fence();
         }
     }
 }
