@@ -362,6 +362,22 @@ int main(void)
     /* 12. Command Chaining with Semicolons */
     run_exact("echo A; echo B; echo C", "A\nB\nC\n");
 
+    /* 13. VFS node budget discipline (VFS_MAX_NODES=32): the suite must
+     * clean up its scratch dirs (rm -r /sortt etc.) so later tests keep
+     * headroom. Baseline image + legitimate leftovers sit near ~23. */
+    {
+        int vfs_used = 0;
+        for (int i = 0; i < VFS_MAX_NODES; i++)
+            if (vfs_nodes[i].in_use)
+                vfs_used++;
+        if (vfs_used > 28)
+        {
+            printf("FAIL: VFS budget exceeded: %d/32 nodes in use (leaked scratch?)\n", vfs_used);
+            assert(0);
+        }
+        printf("PASS: VFS budget %d/32 nodes\n", vfs_used);
+    }
+
     printf("\n>>> ALL MOONSH BUSYBOX TESTS PASSED SUCCESSFULLY! <<<\n");
     return 0;
 }
