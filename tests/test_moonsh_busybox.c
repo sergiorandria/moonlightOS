@@ -114,7 +114,7 @@ int main(void)
     run_check("ls", "proc/");
     run_check("ls -l /etc", "os-release");
     run_check("cat /etc/version", "0.3.0");
-    run_check("cat -n /etc/hostname", "1  moonlight");
+    run_check("cat -n /etc/hostname", "     1\tmoonlight");
     run_check("cat /readme.txt", "MoonlightOS Production Shell");
     run_check("stat /etc/os-release", "Regular File");
 
@@ -159,6 +159,19 @@ int main(void)
     run_check("ls -R /", "etc/");
     run_check("ls -R /", "/etc:");
     run_exact("ls -dR /etc", "/etc\n");
+
+    /* Task 4: cat busybox compat (coreutils/cat.c: catv/numbering/open_or_warn_stdin) */
+    run_exact("echo -e \"a\\n\\nb\" | cat -b", "     1\ta\n\n     2\tb\n");
+    run_exact("echo -e \"a\\n\\nb\" | cat -n", "     1\ta\n     2\t\n     3\tb\n");
+    run_exact("echo -e \"a\\n\\n\\nb\" | cat -s", "a\n\nb\n");
+    run_exact("echo -e \"a\\nb\" | cat -E", "a$\nb$\n");
+    run_exact("echo -e \"a\\n\\nb\" | cat -bn", "     1\ta\n\n     2\tb\n");
+    run_exact("echo -e \"a\\n\\n\\nb\" | cat -sn", "     1\ta\n     2\t\n     3\tb\n");
+    run_exact("echo -e \"hi\" | cat", "hi\n");
+    run_exact("echo -e \"hi\" | cat -", "hi\n");
+    run_check("cat /etc/version /nope", "0.3.0");
+    shell_exec_line("cat /etc/version /nope");
+    run_check("echo $?", "1");
 
     /* Head & Tail & WC */
     run_check("head -n 2 /etc/os-release", "NAME=\"MoonlightOS\"");

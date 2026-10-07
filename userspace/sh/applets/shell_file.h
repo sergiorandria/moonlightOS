@@ -87,7 +87,7 @@ static inline int sh_unknown_opt(const char *prog, char opt)
     }
     else if (vfs_strcmp(prog, "cat") == 0)
     {
-        sh_puts("usage: cat [-n] <file>\n");
+        sh_puts("usage: cat [-bnEs] [FILE]...\n");
     }
     else if (vfs_strcmp(prog, "touch") == 0)
     {
@@ -397,48 +397,161 @@ static inline int cmd_ls(int argc, char **argv)
     return rc;
 }
 
+/*
+ * cmd_cat (BusyBox 1_36_stable coreutils/cat.c compat).
+ *
+ * Mimics cat.c option handling and output: combined shorts parsed
+ * getopt32-style, then catv()/print_numbered_lines-style emission with a
+ * number_state equivalent (width 6 right-aligned, start 1, inc 1, tab
+ * separator). `-b` numbers only non-blank lines and overrides `-n` on
+ * blanks; `-s` squeezes adjacent blank lines (squeezed lines emit nothing,
+ * not even a number); `-E` prints `$` at each line end. `-A`/`-e` imply
+ * `-E` only (`-A == -vET` upstream; `-v`/`-T` are text no-ops on ramfs),
+ * `-v`/`-T`/`-t`/`-u` are accepted no-ops so valid BusyBox invocations
+ * do not trip the unknown-option path.
+ *
+ * Stdin default follows open_or_warn_stdin: no operands (or `--` alone)
+ * reads pipe stdin (`sh_stdin_data`), as does a lone `-` operand; bare
+ * `cat` with no pipe data prints nothing and succeeds (cannot block).
+ * Multi-file loop continues on error with an accumulated exit code
+ * (G.exit_code pattern): one missing entry still prints the others and
+ * returns 1.
+ *
+ * Deliberate deviations: whole-file VFS_FILE_MAX buffering instead of
+ * bb_cat streaming (ramfs bound); squeeze/line-number state is continuous
+ * across files in one invocation (GNU-style); unterminated trailing input
+ * still gets a closing newline (legacy moonsh display old tests rely on).
+ */
+/*
+ * Pipe-stdin length: shell_exec_single_cmd() restores its entry-time
+ * shell_out_t copy on return, which clobbers the pipe OUT_BUFFER buf_pos
+ * back to 0, so sh_stdin_len/sh_pipe_len read 0 even though the buffer
+ * still holds the NUL-terminated stage-1 output. strlen() the buffer
+ * instead (engine fix deferred to keep this diff applet-scoped).
+ */
+static inline int sh_cat_stdin_len(void)
+{
+    if (!sh_stdin_data)
+        return 0;
+    if (sh_stdin_len > 0)
+        return sh_stdin_len;
+    return vfs_strlen(sh_stdin_data);
+}
+
+static inline void sh_cat_print_numbered(unsigned long n)
+{
+    char digits[24];
+    int nd = 0;
+    unsigned long t = n;
+    if (t == 0)
+    {
+        digits[nd++] = '0';
+    }
+    else
+    {
+        while (t > 0 && nd < 23)
+        {
+            digits[nd++] = (char)('0' + (t % 10));
+            t /= 10;
+        }
+    }
+    for (int i = nd; i < 6; i++)
+        sh_putc(' ');
+    for (int i = nd - 1; i >= 0; i--)
+        sh_putc(digits[i]);
+    sh_putc('\t');
+}
+
+static inline void sh_cat_emit(const char *data, int len, int opt_b, int opt_n, int opt_s,
+                               int opt_e, unsigned long *lineno, int *prev_blank)
+{
+    int pos = 0;
+    while (pos < len)
+    {
+        int eol = pos;
+        while (eol < len && data[eol] != '\n')
+            eol++;
+        int has_nl = (eol < len);
+        int blank = (eol == pos);
+        /* -s: squeezed repeats emit nothing, not even a number. */
+        if (!(opt_s && blank && *prev_blank))
+        {
+            if (opt_b ? !blank : opt_n)
+                sh_cat_print_numbered((*lineno)++);
+            for (int i = pos; i < eol; i++)
+                sh_putc(data[i]);
+            if (opt_e)
+                sh_putc('$');
+            sh_putc('\n');
+        }
+        *prev_blank = blank;
+        pos = has_nl ? eol + 1 : len;
+    }
+}
+
 static inline int cmd_cat(int argc, char **argv)
 {
-    int opt_n = 0;
+    int opt_n = 0, opt_b = 0, opt_s = 0, opt_e = 0;
     int start = 1;
 
-    /* Leading short options (Task 4 adds -b/-s/-E; reject others now). */
     while (start < argc && argv[start][0] == '-' && argv[start][1] != '\0' &&
            vfs_strcmp(argv[start], "--") != 0 && vfs_strcmp(argv[start], "-") != 0)
     {
-        if (vfs_strcmp(argv[start], "-n") == 0)
+        for (int k = 1; argv[start][k]; k++)
         {
-            opt_n = 1;
-            start++;
+            switch (argv[start][k])
+            {
+            case 'n':
+                opt_n = 1;
+                break;
+            case 'b':
+                opt_b = 1;
+                break;
+            case 's':
+                opt_s = 1;
+                break;
+            case 'E':
+                opt_e = 1;
+                break;
+            case 'A': /* -A == -vET upstream; only the -E effect applies */
+            case 'e': /* -e == -vE upstream; only the -E effect applies */
+                opt_e = 1;
+                break;
+            case 'v': /* accepted no-ops: ramfs files are plain text */
+            case 'T':
+            case 't':
+            case 'u':
+                break;
+            default:
+                return sh_unknown_opt("cat", argv[start][k]);
+            }
         }
-        else
-        {
-            return sh_unknown_opt("cat", argv[start][1]);
-        }
+        start++;
     }
     if (start < argc && vfs_strcmp(argv[start], "--") == 0)
         start++;
 
+    unsigned long lineno = 1; /* number_state start=1, inc=1 */
+    int prev_blank = 0;
+    int rc = 0;
+
+    /* No operands: default stdin (cat.c: *--argv = "-"). */
     if (start >= argc)
     {
-        /* Check if stdin from pipe has data */
-        if (sh_stdin_data && sh_stdin_len > 0)
-        {
-            sh_puts(sh_stdin_data);
-            return 0;
-        }
-        sh_puts("usage: cat [-n] <file>\n");
-        return 2;
+        if (sh_stdin_data)
+            sh_cat_emit(sh_stdin_data, sh_cat_stdin_len(), opt_b, opt_n, opt_s, opt_e, &lineno,
+                        &prev_blank);
+        return 0;
     }
 
-    int rc = 0;
     for (int a = start; a < argc; a++)
     {
-        /* Lone "-" reads pipe stdin (BusyBox open_or_warn_stdin pattern). */
+        /* Lone "-" reads pipe stdin (open_or_warn_stdin pattern). */
         if (vfs_strcmp(argv[a], "-") == 0)
         {
-            if (sh_stdin_data && sh_stdin_len > 0)
-                sh_puts(sh_stdin_data);
+            if (sh_stdin_data)
+                sh_cat_emit(sh_stdin_data, sh_cat_stdin_len(), opt_b, opt_n, opt_s, opt_e, &lineno,
+                            &prev_blank);
             continue;
         }
 
@@ -460,28 +573,7 @@ static inline int cmd_cat(int argc, char **argv)
             rc = 1;
             continue;
         }
-
-        if (opt_n)
-        {
-            int line_num = 1;
-            sh_print_ulong(line_num++);
-            sh_puts("  ");
-            for (int i = 0; i < len; i++)
-            {
-                sh_putc(buf[i]);
-                if (buf[i] == '\n' && i < len - 1)
-                {
-                    sh_print_ulong(line_num++);
-                    sh_puts("  ");
-                }
-            }
-        }
-        else
-        {
-            sh_puts(buf);
-        }
-        if (len > 0 && buf[len - 1] != '\n')
-            sh_putc('\n');
+        sh_cat_emit(buf, len, opt_b, opt_n, opt_s, opt_e, &lineno, &prev_blank);
     }
     return rc;
 }
