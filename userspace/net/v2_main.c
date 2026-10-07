@@ -169,7 +169,10 @@ struct net_used
 {
     uint16_t flags;
     uint16_t idx;
-    struct net_used_elem ring[1];
+    /* Sized for NET_QNUM_WANT: the device appends completion i at
+     * ring[i % 2] (precedent: drivers/virtio_net.c drain uses
+     * ring[seen % ndesc]); consumers must index, never assume ring[0]. */
+    struct net_used_elem ring[2];
 };
 
 /* ---- Task 4 RX/wire constants ----
@@ -196,12 +199,21 @@ struct net_wire
     uint64_t pa_tx;
     uint64_t pa_rx;
     uint8_t *txf;
-    uint8_t *rxf;
+    volatile uint8_t *rxf; /* device-written: volatile loads + fence on observe */
     struct net_avail *txa;
     volatile struct net_used *txu;
     struct net_avail *rxa;
     volatile struct net_used *rxu;
 };
+
+/* Stack budget: net_main's frame lives in the 4KB ustack_net
+ * (kernel/user.c, no guard page): rxcopy 1514 + park_pay 1472 + wire and
+ * scalars ≈ 3.1KB, callees add < 256B worst case. Enforced at build time
+ * with 640B slack; shrink locals if this ever fires. */
+_Static_assert(sizeof(struct net_wire) + (unsigned long)NET_PKT_MAX +
+                       (unsigned long)NET_UDP_PARK_PAY + 640u <=
+                   4096u,
+               "net_main frame exceeds ustack_net");
 
 static long u_ecall3(long sys, long a0, long a1, long a2)
 {
@@ -734,13 +746,24 @@ void net_main(void)
 
         /* Wire RX: level-check the RX used ring every iteration (not only
          * when an IRQ bit is set: a completion that landed before this
-         * loop's first V2_WAIT must still be observed). Single outstanding
-         * chain, so any advance is exactly one new frame: used len holds
-         * 12 (virtio header) + pktlen, packet bytes sit at rxf+2060. */
+         * loop's first V2_WAIT must still be observed). Completions are
+         * counted, not edge-compared: completion i lands at ring[i % 2]
+         * with used len = 12 (virtio header) + pktlen, packet bytes at
+         * rxf+2060. */
         if (wire.rxu->idx != rx_seen)
         {
-            unsigned long wlen = (unsigned long)wire.rxu->ring[0].len;
-            rx_seen = wire.rxu->idx; /* consume first: exactly-once observation */
+            unsigned long wlen = (unsigned long)wire.rxu->ring[rx_seen % 2u].len;
+            uint32_t isr;
+            net_fence(); /* acquire: DMA bytes land before the idx bump */
+            rx_seen++;   /* consume one completion (wrap-safe uint16_t count) */
+            /* Ack the device latch on every RX observation, even drops:
+             * pure-RX iterations (foreign/broadcast, non-UDP, invalid
+             * wlen) must not leave ISTATUS asserted or the device may
+             * suppress further interrupts. */
+            isr = net_r(wire.regs, NET_R_ISTATUS);
+            if (isr)
+                net_w(wire.regs, NET_R_IACK, isr);
+            net_fence();
             if (wlen >= (unsigned long)NET_VIRTIO_HDR + 14u &&
                 wlen <= (unsigned long)NET_VIRTIO_HDR + (unsigned long)NET_PKT_MAX)
             {
@@ -761,12 +784,13 @@ void net_main(void)
                     /* Phase-1 live loopback: echo the datagram to its
                      * sender with ports swapped, exercising the UDP send
                      * path on live traffic. Reflected only when addressed
-                     * to us (never broadcast/foreign floods). The queue
-                     * provably holds this datagram: every UDP return is
-                     * dequeued here before the next chain is reposted, so
-                     * the count never exceeds 1 and drop-newest cannot
-                     * misdeliver a stale entry. rxcopy is free for reuse
-                     * as the dequeue buffer (classification is done). */
+                     * to us (never broadcast/foreign floods). The queue is
+                     * drained on EVERY validated UDP (foreign included, by
+                     * the unconditional dequeue below): entries can never
+                     * accumulate to the 4-slot drop point, so the echo
+                     * always pairs this frame's sip/sport/payload with its
+                     * own local port. rxcopy is free for reuse as the
+                     * dequeue buffer (classification is done). */
                     {
                         uint32_t sip = 0;
                         uint16_t sport = 0;
@@ -781,45 +805,49 @@ void net_main(void)
                         dip =
                             (uint32_t)(((uint32_t)rxcopy[30] << 24) | ((uint32_t)rxcopy[31] << 16) |
                                        ((uint32_t)rxcopy[32] << 8) | (uint32_t)rxcopy[33]);
+                        /* Always drain the queue: net_stack_rx enqueues every
+                         * validated UDP (foreign/broadcast included); leaving
+                         * entries behind would fill the 4 slots and make a
+                         * later echo misdeliver a stale datagram. Anything
+                         * not addressed to us is dequeued and discarded.
+                         * Port/addr views are captured before the dequeue
+                         * overwrites rxcopy with the payload. */
                         if (ihl >= 20u && dip == NET_IP_SELF)
-                        {
                             local = (uint16_t)(((unsigned)rxcopy[14 + ihl + 2] << 8) |
                                                (unsigned)rxcopy[14 + ihl + 3]);
-                            ngot = net_udp_recv(rxcopy, sizeof(rxcopy), &sip, &sport, &trunc);
-                            if (ngot >= 0 && !trunc)
+                        ngot = net_udp_recv(rxcopy, sizeof(rxcopy), &sip, &sport, &trunc);
+                        if (ihl >= 20u && dip == NET_IP_SELF && ngot >= 0 && !trunc)
+                        {
+                            rc = net_stack_udp_send(sip, sport, local, rxcopy, (unsigned long)ngot,
+                                                    wire.txf + NET_TX_PAY_OFF, &flen);
+                            if (rc == 0)
                             {
-                                rc = net_stack_udp_send(sip, sport, local, rxcopy,
-                                                        (unsigned long)ngot,
-                                                        wire.txf + NET_TX_PAY_OFF, &flen);
-                                if (rc == 0)
-                                {
-                                    (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, flen);
-                                }
-                                else if (rc == -1 && !park_valid)
-                                {
-                                    /* ARP miss with a free park slot: emit
-                                     * ONE request, park ONE datagram. While
-                                     * parked, further misses drop newest
-                                     * (same discipline as the RX queue). */
-                                    unsigned long k;
-                                    for (k = 0; k < (unsigned long)ngot; k++) /* bound: 1472 */
-                                        park_pay[k] = rxcopy[k];
-                                    park_ip = sip;
-                                    park_dport = sport;
-                                    park_sport = local;
-                                    park_len = (unsigned long)ngot;
-                                    park_t0 = now;
-                                    park_valid = 1;
-                                    if (net_arp_build_request(sip, wire.txf + NET_TX_PAY_OFF) !=
-                                        (int)NET_ARP_FRAME_LEN)
-                                        park_valid = 0; /* build failed: drop at once */
-                                    else
-                                        (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF,
-                                                           (unsigned long)NET_ARP_FRAME_LEN);
-                                }
-                                /* rc == -2 is impossible (ngot <= 1472);
-                                 * occupied park: drop newest, silent. */
+                                (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, flen);
                             }
+                            else if (rc == -1 && !park_valid)
+                            {
+                                /* ARP miss with a free park slot: emit
+                                 * ONE request, park ONE datagram. While
+                                 * parked, further misses drop newest
+                                 * (same discipline as the RX queue). */
+                                unsigned long k;
+                                for (k = 0; k < (unsigned long)ngot; k++) /* bound: 1472 */
+                                    park_pay[k] = rxcopy[k];
+                                park_ip = sip;
+                                park_dport = sport;
+                                park_sport = local;
+                                park_len = (unsigned long)ngot;
+                                park_t0 = now;
+                                park_valid = 1;
+                                if (net_arp_build_request(sip, wire.txf + NET_TX_PAY_OFF) !=
+                                    (int)NET_ARP_FRAME_LEN)
+                                    park_valid = 0; /* build failed: drop at once */
+                                else
+                                    (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF,
+                                                       (unsigned long)NET_ARP_FRAME_LEN);
+                            }
+                            /* rc == -2 is impossible (ngot <= 1472);
+                             * occupied park: drop newest, silent. */
                         }
                     }
                 }
