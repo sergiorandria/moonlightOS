@@ -1,18 +1,19 @@
 /* tests/test_net_stack.c - classify + socket stub. */
+#include "../userspace/net/cksum.h"
+#include "../userspace/net/sock.c"
+#include "../userspace/net/stack.c"
+#include "../userspace/net/stack.h"
 #include <stdio.h>
 #include <string.h>
-#include "../userspace/net/stack.h"
-#include "../userspace/net/stack.c"
-#include "../userspace/net/sock.c"
 
-#define CHECK(c)                                                               \
-    do                                                                         \
-    {                                                                          \
-        if (!(c))                                                              \
-        {                                                                      \
-            printf("FAIL line %d: %s\n", __LINE__, #c);                        \
-            return 1;                                                          \
-        }                                                                      \
+#define CHECK(c)                                                                                   \
+    do                                                                                             \
+    {                                                                                              \
+        if (!(c))                                                                                  \
+        {                                                                                          \
+            printf("FAIL line %d: %s\n", __LINE__, #c);                                            \
+            return 1;                                                                              \
+        }                                                                                          \
     } while (0)
 
 int main(void)
@@ -51,6 +52,26 @@ int main(void)
     }
     CHECK(net_sock_open(NET_SOCK_UDP, 53) < 0);
     CHECK(net_sock_send(0, ip, 4) < 0);
+    /* RFC-style fixed vectors: IPv4 header checksum (field zeroed). */
+    {
+        static const uint8_t hdr[20] = {0x45, 0x00, 0x00, 0x29, 0x12, 0x34, 0x40, 0x00, 0x40, 0x11,
+                                        0x00, 0x00, 0x0A, 0x00, 0x02, 0x0F, 0x0A, 0x00, 0x02, 0x02};
+        CHECK(net_ip_checksum(hdr, sizeof(hdr)) == 0x1080u);
+    }
+    /* UDP pseudo-header checksum: odd 21B segment (13B "Hello, world!"
+     * payload, trailing byte padded as high-order octet). */
+    {
+        static const uint8_t seg[21] = {0x12, 0x34, 0x00, 0x35, 0x00, 0x15, 0x00,
+                                        0x00, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C,
+                                        0x20, 0x77, 0x6F, 0x72, 0x6C, 0x64, 0x21};
+        CHECK(net_udp_checksum(0x0A00020Fu, 0x0A000202u, seg, sizeof(seg)) == 0x93FEu);
+    }
+    /* UDP pseudo-header checksum: even 12B segment (4B "test" payload). */
+    {
+        static const uint8_t seg[12] = {0x12, 0x34, 0x00, 0x35, 0x00, 0x0C,
+                                        0x00, 0x00, 0x74, 0x65, 0x73, 0x74};
+        CHECK(net_udp_checksum(0x0A00020Fu, 0x0A000202u, seg, sizeof(seg)) == 0xED82u);
+    }
     puts("PASS: test_net_stack");
     return 0;
 }
