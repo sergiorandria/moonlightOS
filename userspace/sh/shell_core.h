@@ -73,6 +73,7 @@ typedef struct
 
 static shell_out_t sh_out_active;
 static char sh_pipe_buffer[SHELL_PIPE_MAX];
+static char sh_pipe_buffer2[SHELL_PIPE_MAX];
 static int sh_pipe_len = 0;
 static const char *sh_stdin_data = NULL;
 static int sh_stdin_pos = 0;
@@ -2055,26 +2056,69 @@ void shell_exec_line(const char *line)
         {
             *pipe_sym++ = '\0';
 
-            /* Stage 1: Run left command with output to sh_pipe_buffer */
+            /* Collect all pipe segments (quote-aware) so a | b | c ...
+             * chains left-to-right. Segments share two alternating
+             * buffers: seg i reads the buffer seg i-1 wrote, so input
+             * is never clobbered by its own stage's output. */
+            char *segs[SHELL_ARGS_MAX];
+            int nseg = 0;
+            segs[nseg++] = cmd_ptr;
+            segs[nseg++] = pipe_sym;
+            {
+                int in_q2 = 0;
+                for (char *s = pipe_sym; *s && nseg < SHELL_ARGS_MAX; s++)
+                {
+                    if (*s == '\'' || *s == '\"')
+                    {
+                        if (in_q2 == *s)
+                            in_q2 = 0;
+                        else if (in_q2 == 0)
+                            in_q2 = *s;
+                    }
+                    else if (!in_q2 && *s == '|' && *(s + 1) != '|' &&
+                             (s == pipe_sym || *(s - 1) != '|'))
+                    {
+                        *s = '\0';
+                        segs[nseg++] = s + 1;
+                    }
+                }
+            }
+
             shell_out_t old_out = sh_out_active;
-            sh_out_active.mode = OUT_BUFFER;
-            sh_out_active.buf = sh_pipe_buffer;
-            sh_out_active.buf_pos = 0;
-            sh_out_active.buf_max = sizeof(sh_pipe_buffer);
-            sh_pipe_buffer[0] = '\0';
+            const char *stage_in = NULL;
+            int stage_in_len = 0;
+            for (int si = 0; si < nseg; si++)
+            {
+                int last = (si == nseg - 1);
+                char *stage_buf = (si % 2 == 0) ? sh_pipe_buffer : sh_pipe_buffer2;
+                if (!last)
+                {
+                    /* Intermediate stage: capture output */
+                    sh_out_active.mode = OUT_BUFFER;
+                    sh_out_active.buf = stage_buf;
+                    sh_out_active.buf_pos = 0;
+                    sh_out_active.buf_max = sizeof(sh_pipe_buffer);
+                    stage_buf[0] = '\0';
+                }
+                else
+                {
+                    /* Final stage: normal destination (TTY / redirection) */
+                    sh_out_active = old_out;
+                }
+                sh_stdin_data = stage_in;
+                sh_stdin_len = stage_in_len;
+                sh_stdin_pos = 0;
 
-            shell_exec_single_cmd(cmd_ptr);
+                shell_exec_single_cmd(segs[si]);
 
-            sh_pipe_len = sh_out_active.buf_pos;
+                if (!last)
+                {
+                    stage_in_len = sh_out_active.buf_pos;
+                    stage_in = stage_buf;
+                    sh_pipe_len = stage_in_len;
+                }
+            }
             sh_out_active = old_out;
-
-            /* Stage 2: Run right command with stdin from sh_pipe_buffer */
-            sh_stdin_data = sh_pipe_buffer;
-            sh_stdin_len = sh_pipe_len;
-            sh_stdin_pos = 0;
-
-            shell_exec_single_cmd(pipe_sym);
-
             sh_stdin_data = NULL;
             sh_stdin_len = 0;
         }

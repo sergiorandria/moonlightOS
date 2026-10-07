@@ -300,6 +300,11 @@ int main(void)
     run_exact("echo \"foo bar baz\" | wc -w", "3\n");
     run_exact("seq 1 10 | head -n 3", "1\n2\n3\n");
 
+    /* Chained pipes (a | b | c ...): N-segment left-to-right threading */
+    run_exact("echo hello | cat | wc -c", "6\n");
+    run_exact("seq 1 10 | head -n 3 | wc -l", "3\n");
+    run_exact("seq 1 10 | head -n 5 | tail -n 2 | wc -l", "2\n");
+
     /* 7. Variables & Expansion */
     shell_exec_line("export MY_VAR=MoonlightRock");
     run_check("echo $MY_VAR", "MoonlightRock");
