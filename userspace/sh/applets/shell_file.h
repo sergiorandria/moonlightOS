@@ -119,15 +119,15 @@ static inline int sh_unknown_opt(const char *prog, char opt)
     }
     else if (vfs_strcmp(prog, "head") == 0)
     {
-        sh_puts("usage: head [-n N] [FILE]\n");
+        sh_puts("usage: head [-n N] [-c N] [-qv] [FILE]...\n");
     }
     else if (vfs_strcmp(prog, "tail") == 0)
     {
-        sh_puts("usage: tail [-n N] [FILE]\n");
+        sh_puts("usage: tail [-n N] [-c N] [-qv] [FILE]...\n");
     }
     else if (vfs_strcmp(prog, "wc") == 0)
     {
-        sh_puts("usage: wc [-lwc] [FILE]...\n");
+        sh_puts("usage: wc [-lwcmL] [FILE]...\n");
     }
     else if (vfs_strcmp(prog, "stat") == 0)
     {
@@ -871,202 +871,642 @@ static inline int cmd_rmdir(int argc, char **argv)
     return rc;
 }
 
+/*
+ * Task 5: head/tail/wc compat (BusyBox 1_36_stable coreutils/head.c,
+ * coreutils/tail.c, coreutils/wc.c).
+ *
+ * Mimics the upstream option handling: `-n N` (lines) vs `-c N`
+ * (bytes), last-wins when both are given; obsolete `-N` (first/last N
+ * lines); `tail -n +N` / `tail -c +N` / bare `tail +N` count from line
+ * / byte N (`from` mode); `-q` never prints multi-file headers, `-v`
+ * always prints them (default: headers only when >1 operand, in the
+ * `==> FILE <==` form with a blank line between files). `wc`
+ * supports `-l/-w/-c/-m/-L` (default `-lwc`, never `-L`), one row per
+ * file plus a `total` row for multi-file input. Stdin default follows
+ * open_or_warn_stdin: no operands (or `--` alone) reads pipe stdin,
+ * as does a lone `-` operand (explicit `-` prints under the `-` /
+ * `standard input` name for wc / head-tail headers). Multi-file loops
+ * continue on error with an accumulated exit code (G.exit_code
+ * pattern) via sh_file_error; unknown options go through
+ * sh_unknown_opt (return 2); unparseable counts print
+ * `prog: invalid number 'X'` and return 1.
+ *
+ * Deliberate deviations: whole-file VFS_FILE_MAX buffering instead of
+ * lseek/bb_cat streaming (ramfs bound); `wc` columns are unpadded
+ * single-space (existing exact test locks `"3\n"`, not BusyBox/GNU
+ * `%7lu` padding); `-m` (chars) equals `-c` (bytes) on ramfs;
+ * `tail -f/-F` follow mode is rejected as an unknown option (no
+ * blocking reads on ramfs); pipe-stdin length reuses the Task 4
+ * sh_cat_stdin_len() strlen fallback (engine sh_stdin_len bug
+ * deferred, NOT fixed here).
+ */
+
+/*
+ * Strict count parser (xatoul-style): optional leading '+'/'-',
+ * then digits only. Sets *is_plus for the tail `+N` from-form.
+ * Returns 0 on success, -1 on empty/non-numeric text. Values clamp
+ * at 2^30-1 (ramfs bound). shell_eval_expr() is NOT used here:
+ * "2+2" must be an invalid number, not 4.
+ */
+static inline int sh_parse_count(const char *s, long *val, int *is_plus)
+{
+    int i = 0;
+    int neg = 0;
+    *is_plus = 0;
+    if (!s || !s[0])
+        return -1;
+    if (s[0] == '+')
+    {
+        *is_plus = 1;
+        i = 1;
+    }
+    else if (s[0] == '-')
+    {
+        neg = 1;
+        i = 1;
+    }
+    if (s[i] == '\0')
+        return -1;
+    long v = 0;
+    for (; s[i]; i++)
+    {
+        if (s[i] < '0' || s[i] > '9')
+            return -1;
+        v = v * 10 + (s[i] - '0');
+        if (v > 0x3fffffffL)
+            v = 0x3fffffffL;
+    }
+    *val = neg ? -v : v;
+    return 0;
+}
+
+/* Multi-file header (head.c/tail.c "==> FILE <==" form). */
+static inline void sh_headtail_header(const char *name, int *first)
+{
+    if (!(*first))
+        sh_putc('\n');
+    sh_puts("==> ");
+    sh_puts(name);
+    sh_puts(" <==\n");
+    *first = 0;
+}
+
+/*
+ * Shared head/tail option parser (getopt32-style over combined
+ * shorts). Handles `-n/-c` with separate (`-n 5`) or attached
+ * (`-n5`, `-c+3`) values, obsolete `-N`, `-q/-v`, `--`, and (tail
+ * only, allow_plus) bare `+N`. On success returns 0 with *start_io
+ * at the first operand; on failure the message is already printed
+ * and the return value (1 invalid number, 2 usage) is the exit code.
+ */
+static inline int sh_headtail_opts(const char *prog, int argc, char **argv, int *start_io,
+                                   int *mode_io, long *count_io, int *from_io, int *q_io, int *v_io,
+                                   int allow_plus)
+{
+    int start = *start_io;
+    while (start < argc)
+    {
+        const char *a = argv[start];
+        if (allow_plus && a[0] == '+' && a[1] != '\0')
+        {
+            long num;
+            int plus;
+            if (sh_parse_count(a + 1, &num, &plus) != 0)
+                break; /* not a number: treat as a filename operand */
+            *mode_io = 'n';
+            *count_io = num;
+            *from_io = 1;
+            start++;
+            continue;
+        }
+        if (a[0] != '-' || a[1] == '\0' || vfs_strcmp(a, "-") == 0)
+            break;
+        if (vfs_strcmp(a, "--") == 0)
+        {
+            start++;
+            break;
+        }
+        /* Obsolete "-N": first/last N lines. */
+        if (a[1] >= '0' && a[1] <= '9')
+        {
+            long num;
+            int plus;
+            if (sh_parse_count(a + 1, &num, &plus) != 0)
+            {
+                sh_puts(prog);
+                sh_puts(": invalid number '");
+                sh_puts(a + 1);
+                sh_puts("'\n");
+                return 1;
+            }
+            *mode_io = 'n';
+            *count_io = num;
+            *from_io = 0;
+            start++;
+            continue;
+        }
+        for (int k = 1; a[k]; k++)
+        {
+            char opt = a[k];
+            if (opt == 'n' || opt == 'c')
+            {
+                const char *numstr;
+                if (a[k + 1] != '\0')
+                    numstr = a + k + 1; /* attached value: -n5, -c+3 */
+                else
+                {
+                    if (start + 1 >= argc)
+                    {
+                        sh_puts(prog);
+                        sh_puts(": option requires an argument -- '");
+                        sh_putc(opt);
+                        sh_puts("'\nusage: ");
+                        sh_puts(prog);
+                        sh_puts(" [-n N] [-c N] [-qv] [FILE]...\n");
+                        return 2;
+                    }
+                    numstr = argv[++start];
+                }
+                long num;
+                int plus;
+                if (sh_parse_count(numstr, &num, &plus) != 0)
+                {
+                    sh_puts(prog);
+                    sh_puts(": invalid number '");
+                    sh_puts(numstr);
+                    sh_puts("'\n");
+                    return 1;
+                }
+                *mode_io = opt; /* last of -n/-c wins (head.c/tail.c) */
+                *count_io = num;
+                if (allow_plus)
+                    *from_io = plus ? 1 : 0;
+                break; /* value consumed the rest of this arg */
+            }
+            else if (opt == 'q')
+            {
+                *q_io = 1;
+            }
+            else if (opt == 'v')
+            {
+                *v_io = 1;
+            }
+            else
+            {
+                return sh_unknown_opt(prog, opt);
+            }
+        }
+        start++;
+    }
+    *start_io = start;
+    return 0;
+}
+
+/* head.c emit: first N lines ('n') or first N bytes ('c'). */
+static inline void sh_head_emit(const char *data, int len, int mode, long count)
+{
+    if (mode == 'c')
+    {
+        long n = count;
+        if (n < 0) /* head -c -N: all but last N bytes (GNU compat) */
+            n = (long)len + n;
+        if (n < 0)
+            n = 0;
+        for (long i = 0; i < n && i < len; i++)
+            sh_putc(data[i]);
+        return;
+    }
+    if (count >= 0)
+    {
+        long lines = 0;
+        for (int i = 0; i < len && lines < count; i++)
+        {
+            sh_putc(data[i]);
+            if (data[i] == '\n')
+                lines++;
+        }
+        return;
+    }
+    /* head -n -N: all but last N lines (GNU/BusyBox compat). */
+    long omit = -count;
+    long total = 0;
+    for (int i = 0; i < len; i++)
+    {
+        if (data[i] == '\n')
+            total++;
+    }
+    if (len > 0 && data[len - 1] != '\n')
+        total++; /* unterminated trailing input is a logical line */
+    long keep = total - omit;
+    long lines = 0;
+    if (keep < 0)
+        keep = 0;
+    for (int i = 0; i < len && lines < keep; i++)
+    {
+        sh_putc(data[i]);
+        if (data[i] == '\n')
+            lines++;
+    }
+}
+
 static inline int cmd_head(int argc, char **argv)
 {
-    int n = 10;
+    int mode = 'n';
+    long count = 10; /* default: first 10 lines (head.c) */
+    int from = 0;    /* unused by head; shared parser slot */
+    int opt_q = 0, opt_v = 0;
     int start = 1;
-    if (start < argc && vfs_strcmp(argv[start], "-n") == 0 && start + 1 < argc)
-    {
-        int64_t v = 10;
-        shell_eval_expr(argv[start + 1], &v);
-        n = (int)v;
-        start += 2;
-    }
+    int pr = sh_headtail_opts("head", argc, argv, &start, &mode, &count, &from, &opt_q, &opt_v, 0);
+    if (pr != 0)
+        return pr;
 
-    const char *data = sh_stdin_data;
-    char file_buf[VFS_FILE_MAX];
-    if (start < argc)
-    {
-        char resolved[VFS_PATH_MAX];
-        vfs_resolve_path(sh_cwd, argv[start], resolved, sizeof(resolved));
-        int idx = vfs_find(resolved);
-        if (idx < 0)
-        {
-            sh_puts("head: cannot open '");
-            sh_puts(argv[start]);
-            sh_puts("'\n");
-            return 1;
-        }
-        int len = vfs_read_file(idx, file_buf, sizeof(file_buf));
-        if (len < 0)
-            return 1;
-        data = file_buf;
-    }
+    int nfiles = argc - start;
+    int show = opt_v || (!opt_q && nfiles > 1);
+    int rc = 0;
+    int first = 1;
 
-    if (!data)
+    if (nfiles <= 0)
+    {
+        /* Stdin default (open_or_warn_stdin pattern). */
+        if (sh_stdin_data)
+            sh_head_emit(sh_stdin_data, sh_cat_stdin_len(), mode, count);
         return 0;
-    int lines = 0;
-    while (*data && lines < n)
-    {
-        sh_putc(*data);
-        if (*data == '\n')
-            lines++;
-        data++;
     }
-    return 0;
+    for (int i = start; i < argc; i++)
+    {
+        const char *data;
+        int len;
+        const char *dname;
+        char file_buf[VFS_FILE_MAX];
+        if (vfs_strcmp(argv[i], "-") == 0)
+        {
+            if (!sh_stdin_data)
+                continue; /* bare "-" with no pipe: nothing (cat pattern) */
+            data = sh_stdin_data;
+            len = sh_cat_stdin_len();
+            dname = "standard input";
+        }
+        else
+        {
+            char resolved[VFS_PATH_MAX];
+            vfs_resolve_path(sh_cwd, argv[i], resolved, sizeof(resolved));
+            int idx = vfs_find(resolved);
+            if (idx < 0)
+            {
+                sh_file_error("head", argv[i], "No such file or directory");
+                rc = 1;
+                continue;
+            }
+            if (vfs_nodes[idx].is_dir)
+            {
+                sh_file_error("head", argv[i], "Is a directory");
+                rc = 1;
+                continue;
+            }
+            len = vfs_read_file(idx, file_buf, sizeof(file_buf));
+            if (len < 0)
+            {
+                sh_file_error("head", argv[i], "No such file or directory");
+                rc = 1;
+                continue;
+            }
+            data = file_buf;
+            dname = argv[i];
+        }
+        if (show)
+            sh_headtail_header(dname, &first);
+        sh_head_emit(data, len, mode, count);
+    }
+    return rc;
+}
+
+/* tail.c emit: last N lines/bytes, or from line/byte N when from != 0. */
+static inline void sh_tail_emit(const char *data, int len, int mode, long count, int from)
+{
+    if (len <= 0)
+        return;
+    if (mode == 'c')
+    {
+        if (from)
+        {
+            long off = count - 1; /* +N is 1-based; +0/+1 print all */
+            if (off < 0)
+                off = 0;
+            for (long i = off; i < len; i++)
+                sh_putc(data[i]);
+        }
+        else
+        {
+            long n = count < 0 ? -count : count; /* -c -N == -c N */
+            for (long i = (long)len - n; i < len; i++)
+            {
+                if (i >= 0)
+                    sh_putc(data[i]);
+            }
+        }
+        return;
+    }
+    if (from)
+    {
+        long skip = count - 1; /* print from 1-based line `count` */
+        long ln = 1;
+        if (skip < 0)
+            skip = 0;
+        for (int i = 0; i < len; i++)
+        {
+            if (ln > skip)
+                sh_putc(data[i]);
+            if (data[i] == '\n')
+                ln++;
+        }
+        return;
+    }
+    long n = count < 0 ? -count : count; /* -n -N == -n N */
+    if (n <= 0)
+        return;
+    long total = 0;
+    for (int i = 0; i < len; i++)
+    {
+        if (data[i] == '\n')
+            total++;
+    }
+    if (data[len - 1] != '\n')
+        total++; /* unterminated trailing input is a logical line */
+    long skip = total - n;
+    long ln = 0;
+    if (skip < 0)
+        skip = 0;
+    for (int i = 0; i < len; i++)
+    {
+        if (ln >= skip)
+            sh_putc(data[i]);
+        if (data[i] == '\n')
+            ln++;
+    }
 }
 
 static inline int cmd_tail(int argc, char **argv)
 {
-    int n = 10;
+    int mode = 'n';
+    long count = 10; /* default: last 10 lines (tail.c) */
+    int from = 0;    /* tail -n +N / -c +N / bare +N from-form */
+    int opt_q = 0, opt_v = 0;
     int start = 1;
-    if (start < argc && vfs_strcmp(argv[start], "-n") == 0 && start + 1 < argc)
-    {
-        int64_t v = 10;
-        shell_eval_expr(argv[start + 1], &v);
-        n = (int)v;
-        start += 2;
-    }
+    int pr = sh_headtail_opts("tail", argc, argv, &start, &mode, &count, &from, &opt_q, &opt_v, 1);
+    if (pr != 0)
+        return pr;
 
-    const char *data = sh_stdin_data;
-    char file_buf[VFS_FILE_MAX];
-    if (start < argc)
-    {
-        char resolved[VFS_PATH_MAX];
-        vfs_resolve_path(sh_cwd, argv[start], resolved, sizeof(resolved));
-        int idx = vfs_find(resolved);
-        if (idx < 0)
-        {
-            sh_puts("tail: cannot open '");
-            sh_puts(argv[start]);
-            sh_puts("'\n");
-            return 1;
-        }
-        int len = vfs_read_file(idx, file_buf, sizeof(file_buf));
-        if (len < 0)
-            return 1;
-        data = file_buf;
-    }
+    int nfiles = argc - start;
+    int show = opt_v || (!opt_q && nfiles > 1);
+    int rc = 0;
+    int first = 1;
 
-    if (!data)
+    if (nfiles <= 0)
+    {
+        /* Stdin default (open_or_warn_stdin pattern). */
+        if (sh_stdin_data)
+            sh_tail_emit(sh_stdin_data, sh_cat_stdin_len(), mode, count, from);
         return 0;
-    int total_lines = 0;
-    for (const char *p = data; *p; p++)
-    {
-        if (*p == '\n')
-            total_lines++;
     }
-
-    int skip = total_lines - n;
-    if (skip < 0)
-        skip = 0;
-    int cur = 0;
-    while (*data)
+    for (int i = start; i < argc; i++)
     {
-        if (cur >= skip)
-            sh_putc(*data);
-        if (*data == '\n')
-            cur++;
-        data++;
-    }
-    return 0;
-}
-
-static inline int cmd_wc(int argc, char **argv)
-{
-    int opt_l = 0, opt_w = 0, opt_c = 0;
-    int start = 1;
-    while (start < argc && argv[start][0] == '-')
-    {
-        for (int k = 1; argv[start][k]; k++)
+        const char *data;
+        int len;
+        const char *dname;
+        char file_buf[VFS_FILE_MAX];
+        if (vfs_strcmp(argv[i], "-") == 0)
         {
-            if (argv[start][k] == 'l')
-                opt_l = 1;
-            else if (argv[start][k] == 'w')
-                opt_w = 1;
-            else if (argv[start][k] == 'c')
-                opt_c = 1;
-        }
-        start++;
-    }
-    if (!opt_l && !opt_w && !opt_c)
-    {
-        opt_l = opt_w = opt_c = 1;
-    }
-
-    const char *data = sh_stdin_data;
-    const char *name = "";
-    char file_buf[VFS_FILE_MAX];
-    if (start < argc)
-    {
-        char resolved[VFS_PATH_MAX];
-        vfs_resolve_path(sh_cwd, argv[start], resolved, sizeof(resolved));
-        int idx = vfs_find(resolved);
-        if (idx < 0)
-        {
-            sh_puts("wc: '");
-            sh_puts(argv[start]);
-            sh_puts("': No such file\n");
-            return 1;
-        }
-        int len = vfs_read_file(idx, file_buf, sizeof(file_buf));
-        if (len < 0)
-            return 1;
-        data = file_buf;
-        name = argv[start];
-    }
-
-    if (!data)
-        data = "";
-    unsigned long lines = 0, words = 0, bytes = 0;
-    int in_word = 0;
-    for (const char *p = data; *p; p++)
-    {
-        bytes++;
-        if (*p == '\n')
-            lines++;
-        if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
-        {
-            in_word = 0;
+            if (!sh_stdin_data)
+                continue; /* bare "-" with no pipe: nothing (cat pattern) */
+            data = sh_stdin_data;
+            len = sh_cat_stdin_len();
+            dname = "standard input";
         }
         else
         {
-            if (!in_word)
+            char resolved[VFS_PATH_MAX];
+            vfs_resolve_path(sh_cwd, argv[i], resolved, sizeof(resolved));
+            int idx = vfs_find(resolved);
+            if (idx < 0)
             {
-                words++;
-                in_word = 1;
+                sh_file_error("tail", argv[i], "No such file or directory");
+                rc = 1;
+                continue;
             }
+            if (vfs_nodes[idx].is_dir)
+            {
+                sh_file_error("tail", argv[i], "Is a directory");
+                rc = 1;
+                continue;
+            }
+            len = vfs_read_file(idx, file_buf, sizeof(file_buf));
+            if (len < 0)
+            {
+                sh_file_error("tail", argv[i], "No such file or directory");
+                rc = 1;
+                continue;
+            }
+            data = file_buf;
+            dname = argv[i];
+        }
+        if (show)
+            sh_headtail_header(dname, &first);
+        sh_tail_emit(data, len, mode, count, from);
+    }
+    return rc;
+}
+
+/* wc.c counter: newlines, words (isspace-split), longest line. */
+static inline void sh_wc_count(const char *data, int len, unsigned long *lines,
+                               unsigned long *words, unsigned long *maxline)
+{
+    unsigned long li = 0, wo = 0, ml = 0, cur = 0;
+    int in_word = 0;
+    for (int i = 0; i < len; i++)
+    {
+        char c = data[i];
+        if (c == '\n')
+        {
+            li++;
+            if (cur > ml)
+                ml = cur;
+            cur = 0;
+        }
+        else
+        {
+            cur++;
+        }
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r')
+            in_word = 0;
+        else if (!in_word)
+        {
+            wo++;
+            in_word = 1;
         }
     }
+    if (cur > ml)
+        ml = cur; /* unterminated trailing line still counts for -L */
+    *lines = li;
+    *words = wo;
+    *maxline = ml;
+}
 
-    int printed = 0;
+/* wc.c row: selected columns in l/w/c/m/L order, then name (if any). */
+static inline void sh_wc_print(unsigned long lines, unsigned long words, unsigned long bytes,
+                               unsigned long maxline, int opt_l, int opt_w, int opt_c, int opt_m,
+                               int opt_L, const char *name)
+{
+    int p = 0;
     if (opt_l)
     {
         sh_print_ulong(lines);
-        printed = 1;
+        p = 1;
     }
     if (opt_w)
     {
-        if (printed)
+        if (p)
             sh_putc(' ');
         sh_print_ulong(words);
-        printed = 1;
+        p = 1;
     }
     if (opt_c)
     {
-        if (printed)
+        if (p)
             sh_putc(' ');
         sh_print_ulong(bytes);
-        printed = 1;
+        p = 1;
     }
-    if (*name)
+    if (opt_m)
     {
-        if (printed)
+        if (p)
+            sh_putc(' ');
+        sh_print_ulong(bytes); /* ramfs is byte-oriented: chars == bytes */
+        p = 1;
+    }
+    if (opt_L)
+    {
+        if (p)
+            sh_putc(' ');
+        sh_print_ulong(maxline);
+        p = 1;
+    }
+    if (name)
+    {
+        if (p)
             sh_putc(' ');
         sh_puts(name);
     }
     sh_putc('\n');
-    return 0;
+}
+
+static inline int cmd_wc(int argc, char **argv)
+{
+    int opt_l = 0, opt_w = 0, opt_c = 0, opt_m = 0, opt_L = 0;
+    int start = 1;
+    while (start < argc)
+    {
+        const char *a = argv[start];
+        if (a[0] != '-' || a[1] == '\0' || vfs_strcmp(a, "-") == 0)
+            break;
+        if (vfs_strcmp(a, "--") == 0)
+        {
+            start++;
+            break;
+        }
+        for (int k = 1; a[k]; k++)
+        {
+            switch (a[k])
+            {
+            case 'l':
+                opt_l = 1;
+                break;
+            case 'w':
+                opt_w = 1;
+                break;
+            case 'c':
+                opt_c = 1;
+                break;
+            case 'm':
+                opt_m = 1;
+                break;
+            case 'L':
+                opt_L = 1;
+                break;
+            default:
+                return sh_unknown_opt("wc", a[k]);
+            }
+        }
+        start++;
+    }
+    if (!opt_l && !opt_w && !opt_c && !opt_m && !opt_L)
+        opt_l = opt_w = opt_c = 1; /* wc.c default: -lwc (never -L) */
+
+    unsigned long t_lines = 0, t_words = 0, t_bytes = 0, t_max = 0;
+    int nsuccess = 0;
+    int rc = 0;
+
+    if (start >= argc)
+    {
+        /* Stdin default (open_or_warn_stdin pattern). */
+        const char *data = sh_stdin_data ? sh_stdin_data : "";
+        int len = sh_stdin_data ? sh_cat_stdin_len() : 0;
+        unsigned long li, wo, ml;
+        sh_wc_count(data, len, &li, &wo, &ml);
+        sh_wc_print(li, wo, (unsigned long)len, ml, opt_l, opt_w, opt_c, opt_m, opt_L, NULL);
+        return 0;
+    }
+    for (int i = start; i < argc; i++)
+    {
+        const char *data;
+        int len;
+        const char *dname;
+        char file_buf[VFS_FILE_MAX];
+        if (vfs_strcmp(argv[i], "-") == 0)
+        {
+            data = sh_stdin_data ? sh_stdin_data : "";
+            len = sh_stdin_data ? sh_cat_stdin_len() : 0;
+            dname = "-";
+        }
+        else
+        {
+            char resolved[VFS_PATH_MAX];
+            vfs_resolve_path(sh_cwd, argv[i], resolved, sizeof(resolved));
+            int idx = vfs_find(resolved);
+            if (idx < 0)
+            {
+                sh_file_error("wc", argv[i], "No such file or directory");
+                rc = 1;
+                continue;
+            }
+            if (vfs_nodes[idx].is_dir)
+            {
+                sh_file_error("wc", argv[i], "Is a directory");
+                rc = 1;
+                continue;
+            }
+            len = vfs_read_file(idx, file_buf, sizeof(file_buf));
+            if (len < 0)
+            {
+                sh_file_error("wc", argv[i], "No such file or directory");
+                rc = 1;
+                continue;
+            }
+            data = file_buf;
+            dname = argv[i];
+        }
+        unsigned long li, wo, ml;
+        sh_wc_count(data, len, &li, &wo, &ml);
+        sh_wc_print(li, wo, (unsigned long)len, ml, opt_l, opt_w, opt_c, opt_m, opt_L, dname);
+        t_lines += li;
+        t_words += wo;
+        t_bytes += (unsigned long)len;
+        if (ml > t_max)
+            t_max = ml;
+        nsuccess++;
+    }
+    if (nsuccess > 1) /* wc.c: total row for multi-file input */
+        sh_wc_print(t_lines, t_words, t_bytes, t_max, opt_l, opt_w, opt_c, opt_m, opt_L, "total");
+    return rc;
 }
 
 static inline int cmd_stat(int argc, char **argv)

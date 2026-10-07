@@ -178,6 +178,30 @@ int main(void)
     run_check("tail -n 2 /etc/os-release", "ARCH=\"riscv64\"");
     run_check("wc -l /etc/os-release", "6");
 
+    /* Task 5: head/tail/wc busybox compat (head.c/tail.c/wc.c: -n/-c, +n, total) */
+    run_exact("seq 1 5 | head -c 3", "1\n2");
+    run_exact("seq 1 5 | head -n 2", "1\n2\n");
+    run_exact("seq 1 5 | tail -n 2", "4\n5\n");
+    run_exact("seq 1 5 | tail -c 4", "4\n5\n");
+    run_exact("seq 1 5 | tail -n +3", "3\n4\n5\n");
+    run_exact("seq 1 10 | tail -n +8", "8\n9\n10\n");
+    run_exact("seq 1 5 | tail +2", "2\n3\n4\n5\n");
+    run_exact("echo -e \"hi\" | head -", "hi\n");
+    run_exact("echo -e \"hi\" | tail -", "hi\n");
+    run_exact("echo hi | wc -c", "3\n");
+    run_exact("echo abcdef | wc -L", "6\n");
+    run_exact("wc /etc/version /etc/hostname",
+              "1 1 6 /etc/version\n1 1 10 /etc/hostname\n2 2 16 total\n");
+    run_check("wc /etc/version /etc/hostname", "total");
+    run_check("wc /nope /etc/version", "1 1 6 /etc/version");
+    shell_exec_line("wc /etc/version /nope");
+    run_check("echo $?", "1");
+    run_check("head -z", "invalid option");
+    shell_exec_line("head -z");
+    run_check("echo $?", "2");
+    run_exact("head -n 1 /etc/version /etc/hostname",
+              "==> /etc/version <==\n0.3.0\n\n==> /etc/hostname <==\nmoonlight\n");
+
     /* 5. Dynamic Procfs */
     run_check("cat /proc/version", "MoonlightOS version 0.3.0");
     run_check("cat /proc/meminfo", "MemTotal:");
