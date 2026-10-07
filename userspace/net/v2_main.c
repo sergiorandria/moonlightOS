@@ -34,6 +34,17 @@
  * datagram until reply (sent) or 2s timeout (dropped) -- exactly once.
  * The loop waits with V2_WAIT, which wakes on NIC IRQ (bit 0x1) or queued
  * firewall messages (bit 0x10); the T_FWD audit block itself is unchanged.
+ *
+ * Socket RPC (net-sockets Task 2, spec Sec 2): tag-switched S_OPEN /
+ * S_SEND / S_TRYRECV / S_CLOSE beside T_FWD on the same ep, with S_OK /
+ * S_DATA / S_EMPTY / S_ERR replies via T_DONE-style rendezvous SENDs to
+ * the kernel-stamped sender (QX gating is the kernel rendezvous gate, as
+ * for T_FWD; unknown tags/senders drop silently). S_SEND is two phases:
+ * [S_SEND, sock, ip, port] pins routing (single-flight pending), then a
+ * literal [T_FWD, slot, len, h] from the same sender carries the granted
+ * payload under the same MAP/verify discipline. S_TRYRECV stages
+ * dequeued bytes into a PT_ALLOC'd reply frame granted to the client's
+ * RSVP slot. No new threads/endpoints; all state stays stack-local.
  */
 #include <stdint.h>
 
@@ -46,6 +57,10 @@
  * below use byte loops only, safe for the freestanding U-mode ELF. */
 #include "arp_cache.c"
 #include "stack.c"
+/* Task 1 socket table, same single-TU pattern as the host suite
+ * (tests/test_net_stack.c includes sock.c beside stack.c): owner is the
+ * kernel-stamped sender tid, unforgable by clients. */
+#include "sock.c"
 
 #define V2_PUTC 1
 #define V2_SEND 3
@@ -56,12 +71,46 @@
 #define V2_PARK 2
 #define V2_WAIT 6
 
+#define V2_INV_GRANT 2
 #define V2_INV_MAP 3
 #define V2_INV_UNMAP 4
 #define V2_INV_PT_ALLOC 6
 #define V2_INV_FRAME_PA 16
 #define T_FWD 6
 #define T_DONE 7
+
+/* Net socket RPC tags on ep 6 (spec Sec 2, above T_DONE):
+ *   S_OPEN    [S_OPEN, kind, port, 0]  -> [S_OK, id, 0, 0] / [S_ERR, 0,0,0]
+ *   S_SEND    [S_SEND, sock, ip, port] -> [S_OK, 0,0,0] (routing phase only)
+ *     then a literal [T_FWD, slot, len, h] payload announcement from the
+ *     same sender ("announced like T_FWD": same MAP/verify discipline).
+ *   S_TRYRECV [S_TRYRECV, sock, 0, 0]  -> [S_DATA, len, 0, 0] (+ payload in
+ *     the client-RSVP frame, NET_SDATA_SLOT) / [S_EMPTY, 0,0,0].
+ *   S_CLOSE   [S_CLOSE, sock, 0, 0]    -> [S_OK, sock, 0, 0] / [S_ERR, 0,0,0]
+ * QX gate: the kernel rendezvous already required sender QX cross-qube
+ * (same gate as T_FWD; a denied take fails the u_recv itself). The server
+ * additionally honors only these known tags with full takes (n >= 4).
+ * Unknown tags, short takes, and unowned sockets are silent drops, never
+ * replies: a noise sender is owed nothing, and every u_send here blocks
+ * until the peer RECVs, so replying to noise could wedge the server.
+ * Every honored request gets exactly one reply; the requester is always
+ * RECV-waiting per the client protocol. */
+#define S_OPEN 8
+#define S_SEND 9
+#define S_TRYRECV 10
+#define S_CLOSE 11
+#define S_OK 12
+#define S_DATA 13
+#define S_EMPTY 14
+#define S_ERR 15
+
+/* Client-side RSVP slot for S_DATA payload grants: the S_TRYRECV client
+ * keeps this slot of its own table empty; net GRANTs its reply frame
+ * there, announces [S_DATA, len, 0, 0], and the client MAPs/copies then
+ * REVOKEs the slot for reuse (client-side lifecycle; net never revokes,
+ * mirroring the T_FWD UNMAP-only discipline). A grant fails while the
+ * slot is occupied -> S_ERR (client protocol violation). */
+#define NET_SDATA_SLOT 10
 
 #define FW_QUBE 4
 
@@ -250,6 +299,31 @@ static void u_puts(const char *s)
 static long u_send(unsigned long ep, const uint64_t *p, unsigned long n)
 {
     return u_ecall3(V2_SEND, (long)ep, (long)p, (long)n);
+}
+
+/* T_DONE-style rendezvous reply: blocks until the requester RECVs
+ * (backpressure, same as T_DONE). Call only for honored requests whose
+ * sender is RECV-waiting per the client protocol. All replies share the
+ * [w0, w1, 0, 0] shape. */
+static void net_rpc_reply(unsigned long dst, uint64_t w0, uint64_t w1)
+{
+    uint64_t rep[4];
+    rep[0] = w0;
+    rep[1] = w1;
+    rep[2] = 0;
+    rep[3] = 0;
+    u_send(dst, rep, 4);
+}
+
+/* Socket id usable by this sender: in range, open, owned by the
+ * kernel-stamped tid. Same-TU view of sock.c (included above). */
+static int net_sock_owned(long id, unsigned long owner)
+{
+    if (id < 0 || id >= (long)NET_SOCK_MAX)
+        return 0;
+    if (!net_socks[(int)id].used)
+        return 0;
+    return net_socks[(int)id].owner == (unsigned)owner;
 }
 
 /* RECV returns words-written in a0, kernel-stamped sender in a1,
@@ -659,6 +733,12 @@ void net_main(void)
     int park_valid;
     uint16_t rx_seen;
     int rx_ok_done;
+    int pend_valid;         /* S_SEND routing phase outstanding */
+    unsigned long pend_snd; /* ... from this kernel-stamped sender */
+    int pend_sock;          /* ... for this socket */
+    uint32_t pend_ip;       /* ... to this destination */
+    uint16_t pend_port;
+    long reply_slot; /* PT_ALLOC'd S_DATA reply frame (-1 when none) */
 
     u_puts("NET: up\n");
     /* Boot-once stack init: reseeds the ARP table (gateway) and flushes
@@ -674,6 +754,16 @@ void net_main(void)
     park_t0 = 0;
     rx_seen = 0;
     rx_ok_done = 0;
+    pend_valid = 0;
+    pend_snd = 0;
+    pend_sock = 0;
+    pend_ip = 0;
+    pend_port = 0;
+    reply_slot = u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
+    /* PT_ALLOC failure (~impossible: pool-sized): TRYRECV hits answer
+     * S_ERR below; the server otherwise runs. The reply frame is never
+     * persistently mapped (transient scratch MAP per hit) and never
+     * revoked; grants copy the cap, the frame itself persists. */
 
     for (;;)
     {                         /* bound: inf - service loop */
@@ -702,9 +792,11 @@ void net_main(void)
             unsigned long ovf = 0;
             long n = u_recv(6, buf, 4, &snd, &sqb, &ovf);
 
-            /* Only a full T_FWD from the firewall qube is actionable.
-             * Everything else (short takes, other tags, spoofed sender)
-             * is a silent drop: no reply is ever sent. */
+            /* Tag demultiplex beside T_FWD. Only a full T_FWD from the
+             * firewall qube enters the audit block below (byte-unchanged);
+             * S_OPEN/S_SEND/S_TRYRECV/S_CLOSE chain after it. Everything
+             * else (short takes, unknown tags, unprivileged senders) is a
+             * silent drop: no reply is ever sent. */
             if (n >= 4 && (unsigned long)buf[0] == (unsigned long)T_FWD &&
                 sqb == (unsigned long)FW_QUBE)
             {
@@ -742,6 +834,217 @@ void net_main(void)
                     }
                 }
             }
+            else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)T_FWD &&
+                     sqb != (unsigned long)FW_QUBE && pend_valid && snd == pend_snd)
+            {
+                /* S_SEND payload phase: a literal T_FWD announcement
+                 * [slot, len, h] from the phase-1 sender ("announced like
+                 * T_FWD": same MAP/verify discipline). Firewall T_FWDs can
+                 * never land here (first branch + sqb guard); replying is
+                 * safe because the phase-1 S_OK promised exactly one
+                 * completion reply to this waiter. Anything else shaped
+                 * like T_FWD (no pending, other sender) falls through to
+                 * the silent drop. */
+                unsigned long slot = (unsigned long)buf[1];
+                unsigned long len = (unsigned long)buf[2];
+                uint64_t h = buf[3];
+                int sid = pend_sock;
+                uint32_t dip = pend_ip;
+                uint16_t dport = pend_port;
+                uint16_t sport;
+                const uint8_t *pay;
+                unsigned long flen = 0;
+                int rc;
+                pend_valid = 0; /* consume exactly once, before any TX */
+                if (!net_sock_owned((long)sid, snd))
+                {
+                    /* Socket closed or reowned between phases: error,
+                     * no cap touched. */
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else if (len < 1 || len > (unsigned long)NET_UDP_PARK_PAY)
+                {
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else if (u_invoke(V2_INV_MAP, (long)slot, (long)NET_SCRATCH_MAP_VPN, 0) != 0)
+                {
+                    /* No granted cap behind the announcement (same race
+                     * the T_FWD INVALID check drops); here the sender
+                     * waits, so answer instead of dropping. */
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else
+                {
+                    pay = (const uint8_t *)NET_SCRATCH_VA;
+                    if (qube_fnv1a(pay, len) != h)
+                    {
+                        u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
+                        net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                    }
+                    else
+                    {
+                        sport = net_socks[sid].port;
+                        rc = net_stack_udp_send(dip, dport, sport, pay, len,
+                                                wire.txf + NET_TX_PAY_OFF, &flen);
+                        u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
+                        if (rc != 0)
+                        {
+                            /* ARP miss (-1) or oversize (-2, unreachable
+                             * by the len bound): fail closed, no park --
+                             * the single park slot belongs to the RX
+                             * loopback path below, never to RPC. */
+                            net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                        }
+                        else
+                        {
+                            /* TX-completion timeout stays silent
+                             * (loopback precedent); acceptance is the
+                             * reply. */
+                            (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, flen);
+                            net_rpc_reply(snd, (uint64_t)S_OK, 0);
+                        }
+                    }
+                }
+            }
+            else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_OPEN)
+            {
+                /* S_OPEN [S_OPEN, kind, port, 0]: UDP only; duplicate bind
+                 * and a full fair-share pool fail via error reply, never
+                 * a wedge. Owner is the kernel-stamped sender tid. */
+                uint64_t kind = buf[1];
+                uint64_t portw = buf[2];
+                int id;
+                if (kind != (uint64_t)NET_SOCK_UDP || (portw >> 16) != 0)
+                {
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else
+                {
+                    id = net_sock_open((unsigned)kind, (uint16_t)portw, (unsigned)snd);
+                    if (id < 0)
+                        net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                    else
+                        net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)id);
+                }
+            }
+            else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_SEND)
+            {
+                /* S_SEND routing phase [S_SEND, sock, ip, port]: validate
+                 * ownership now; the payload follows as a T_FWD
+                 * announcement (branch above). Exactly one reply. A
+                 * single-flight pending held by another sender is kept;
+                 * the newcomer gets S_ERR and sends no payload. */
+                long sid = (long)buf[1];
+                uint64_t ipw = buf[2];
+                uint64_t ptw = buf[3];
+                if (!net_sock_owned(sid, snd) || (ipw >> 32) != 0 || (uint32_t)ipw == 0 ||
+                    (ptw >> 16) != 0 || (uint16_t)ptw == 0)
+                {
+                    /* Unknown/foreign socket or malformed route: error,
+                     * pending untouched, never a wedge. */
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else if (pend_valid && pend_snd != snd)
+                {
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else
+                {
+                    pend_valid = 1;
+                    pend_snd = snd;
+                    pend_sock = (int)sid;
+                    pend_ip = (uint32_t)ipw;
+                    pend_port = (uint16_t)ptw;
+                    net_rpc_reply(snd, (uint64_t)S_OK, 0);
+                }
+            }
+            else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_TRYRECV)
+            {
+                /* S_TRYRECV [S_TRYRECV, sock, 0, 0]: only the owner's own
+                 * socket drains (shared-FIFO head; single-socket exact).
+                 * Hit: dequeue into rxcopy (free for reuse here: the RX
+                 * block below runs later in the iteration), stage into
+                 * the reply frame, grant it to the client's RSVP slot,
+                 * answer S_DATA. Miss: S_EMPTY, no grant touched. The
+                 * source address has no room in [S_DATA, len, 0, 0] and
+                 * is dropped (single-peer DNS needs none). */
+                long sid = (long)buf[1];
+                if (!net_sock_owned(sid, snd))
+                {
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else if (reply_slot < 0)
+                {
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else
+                {
+                    int trunc = 0;
+                    long ngot;
+                    unsigned long k;
+                    uint8_t *dst;
+                    ngot = net_udp_recv(rxcopy, sizeof(rxcopy), 0, 0, &trunc);
+                    if (ngot == -(NET_ERR_EMPTY))
+                    {
+                        net_rpc_reply(snd, (uint64_t)S_EMPTY, 0);
+                    }
+                    else if (ngot < 0 || trunc)
+                    {
+                        /* TRUNC is unreachable (1514 cap > 1472 max);
+                         * defensive error. */
+                        net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                    }
+                    else if (u_invoke(V2_INV_MAP, reply_slot, (long)NET_SCRATCH_MAP_VPN, 0) != 0)
+                    {
+                        net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                    }
+                    else
+                    {
+                        dst = (uint8_t *)NET_SCRATCH_VA;
+                        for (k = 0; k < (unsigned long)ngot; k++) /* bound: 1472 */
+                            dst[k] = rxcopy[k];
+                        u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
+                        if (u_invoke(V2_INV_GRANT, reply_slot, (long)snd, (long)NET_SDATA_SLOT) !=
+                            0)
+                        {
+                            /* Client RSVP slot occupied (protocol
+                             * violation): datagram already dequeued,
+                             * dropped fail-closed. */
+                            net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                        }
+                        else
+                        {
+                            net_rpc_reply(snd, (uint64_t)S_DATA, (uint64_t)ngot);
+                        }
+                    }
+                }
+            }
+            else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_CLOSE)
+            {
+                /* S_CLOSE [S_CLOSE, sock, 0, 0]: free the entry and discard
+                 * its queued datagrams so the fair-share pool slot
+                 * returns. The RX queue is one shared FIFO (no per-socket
+                 * carve), so the close drains it whole (bounded: depth 4
+                 * + terminal EMPTY take); with one socket outstanding
+                 * this is exact. */
+                long sid = (long)buf[1];
+                int k;
+                if (!net_sock_owned(sid, snd))
+                {
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else
+                {
+                    net_sock_close((int)sid);
+                    for (k = 0; k <= (int)NET_UDP_QDEPTH; k++) /* bound: 4+1 */
+                    {
+                        if (net_udp_recv(rxcopy, sizeof(rxcopy), 0, 0, 0) == -(NET_ERR_EMPTY))
+                            break;
+                    }
+                    net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)sid);
+                }
+            }
+            /* else: unknown tag/sender or short take: silent drop. */
         }
 
         /* Wire RX: level-check the RX used ring every iteration (not only
