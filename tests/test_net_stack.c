@@ -20,6 +20,9 @@
  * Later tasks include arp_cache.h for the canonical MAC/IP constants. */
 #include "../userspace/net/arp_cache.c"
 
+/* Task 3: DNS codec (same single-TU pattern). */
+#include "../userspace/net/dns.c"
+
 static void t2_mk_arp(uint8_t *f, const uint8_t *dmac, const uint8_t *smac, unsigned op,
                       const uint8_t *sha, uint32_t spa, const uint8_t *tha, uint32_t tpa)
 {
@@ -325,6 +328,68 @@ int main(void)
             CHECK(net_stack_rx(big, sizeof(big)) == NET_CLASS_DROP);
             CHECK(net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
         }
+    }
+    /* ---- Task 3: DNS codec (query build + first-A parse) ---- */
+    {
+        static const uint8_t dns_q_expect[29] = {0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
+                                                 0x00, 0x00, 0x00, 0x00, 0x07, 0x65, 0x78, 0x61,
+                                                 0x6D, 0x70, 0x6C, 0x65, 0x03, 0x63, 0x6F, 0x6D,
+                                                 0x00, 0x00, 0x01, 0x00, 0x01};
+        static const uint8_t dns_resp[45] = {0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00,
+                                             0x00, 0x00, 0x00, 0x07, 0x65, 0x78, 0x61, 0x6D, 0x70,
+                                             0x6C, 0x65, 0x03, 0x63, 0x6F, 0x6D, 0x00, 0x00, 0x01,
+                                             0x00, 0x01, 0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00,
+                                             0x00, 0x0E, 0x10, 0x00, 0x04, 0x5D, 0xB8, 0xD8, 0x22};
+        static const uint8_t dns_noans[29] = {0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00,
+                                              0x00, 0x00, 0x00, 0x00, 0x07, 0x65, 0x78, 0x61,
+                                              0x6D, 0x70, 0x6C, 0x65, 0x03, 0x63, 0x6F, 0x6D,
+                                              0x00, 0x00, 0x01, 0x00, 0x01};
+        static const uint8_t dns_garbage[3] = {0x00, 0x01, 0x02};
+        uint8_t q[512];
+        uint8_t tc[45];
+        unsigned long qlen = 0;
+        uint32_t ip = 0;
+        unsigned k;
+        CHECK(net_dns_build_query("example.com", 0x1234u, q, &qlen) == 0);
+        CHECK(qlen == sizeof(dns_q_expect));
+        CHECK(memcmp(q, dns_q_expect, sizeof(dns_q_expect)) == 0);
+        CHECK(net_dns_build_query(NULL, 0x1234u, q, &qlen) < 0);
+        CHECK(net_dns_build_query("example.com", 0x1234u, NULL, &qlen) < 0);
+        CHECK(net_dns_build_query("example.com", 0x1234u, q, NULL) < 0);
+        CHECK(net_dns_build_query("", 0x1234u, q, &qlen) < 0);
+        CHECK(net_dns_build_query("example..com", 0x1234u, q, &qlen) < 0);
+        {
+            char big[70];
+            for (k = 0; k < 64; k++)
+                big[k] = 'a';
+            big[64] = '\0';
+            CHECK(net_dns_build_query(big, 0x1234u, q, &qlen) < 0);
+        }
+        {
+            /* 4 x 63-char labels: wire QNAME 257 > 255 -> reject. */
+            char big[260];
+            unsigned o2 = 0;
+            unsigned li;
+            for (li = 0; li < 4; li++)
+            {
+                for (k = 0; k < 63; k++)
+                    big[o2++] = (char)('a' + (int)li);
+                if (li < 3)
+                    big[o2++] = '.';
+            }
+            big[o2] = '\0';
+            CHECK(net_dns_build_query(big, 0x1234u, q, &qlen) < 0);
+        }
+        CHECK(net_dns_parse_a(dns_resp, sizeof(dns_resp), &ip) == 0);
+        CHECK(ip == 0x5DB8D822u);
+        CHECK(net_dns_parse_a(NULL, sizeof(dns_resp), &ip) == -(NET_ERR_TRUNC));
+        CHECK(net_dns_parse_a(dns_resp, sizeof(dns_resp), NULL) == -(NET_ERR_TRUNC));
+        memcpy(tc, dns_resp, sizeof(tc));
+        tc[2] |= 0x02u;
+        CHECK(net_dns_parse_a(tc, sizeof(tc), &ip) == -(NET_ERR_TRUNC));
+        CHECK(net_dns_parse_a(dns_resp, sizeof(dns_resp) - 2u, &ip) == -(NET_ERR_TRUNC));
+        CHECK(net_dns_parse_a(dns_noans, sizeof(dns_noans), &ip) == -(NET_ERR_EMPTY));
+        CHECK(net_dns_parse_a(dns_garbage, sizeof(dns_garbage), &ip) == -(NET_ERR_TRUNC));
     }
     puts("PASS: test_net_stack");
     return 0;
