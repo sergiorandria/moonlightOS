@@ -13,11 +13,16 @@
 #define ETH_TYPE_IPV6 0x86DDu
 #define ETH_FRAME_MAX 1514u
 
+/* Ethernet header offsets */
+#define ETH_OFF_DST 0u
+#define ETH_OFF_SRC 6u
+#define ETH_OFF_TYPE 12u
+
 static inline uint16_t eth_type(const uint8_t *f, unsigned long len)
 {
     if (!f || len < (unsigned long)ETH_HDR_LEN)
         return 0;
-    return (uint16_t)(((unsigned)f[12] << 8) | (unsigned)f[13]);
+    return (uint16_t)(((unsigned)f[ETH_OFF_TYPE] << 8) | (unsigned)f[ETH_OFF_TYPE + 1]);
 }
 
 static inline int eth_hdr_ok(const uint8_t *f, unsigned long len)

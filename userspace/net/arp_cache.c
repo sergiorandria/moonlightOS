@@ -12,17 +12,29 @@
 const uint8_t NET_MAC_SELF[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
 /* Runtime address state (DHCP lease applies here; boot defaults are the
  * hardcoded SLIRP values). Mutable by design: every builder reads the
- * live value, so no call-site changes are needed on lease apply. */
+ * live value, so no call-site changes are needed on lease apply.
+ *
+ * These are modified only by DHCP (explicit event boundary) and read by
+ * packet builders. The network service is single-threaded, so no
+ * synchronization is needed: DHCP runs in the same loop as packet
+ * processing, and all reads happen between DHCP updates. This invariant
+ * must be preserved if the network service ever becomes multi-threaded. */
 uint32_t NET_IP_SELF = 0x0A00020Fu;
 uint32_t NET_IP_GW = 0x0A000202u;
 uint32_t NET_IP_DNS = 0x0A000202u;
 uint32_t NET_IP_SUBNET = 0xFFFFFF00u;
 
-#define ARP_OFF_OP 20u
-#define ARP_OFF_SHA 22u
-#define ARP_OFF_SPA 28u
-#define ARP_OFF_THA 32u
-#define ARP_OFF_TPA 38u
+/* ARP packet offsets (relative to start of Ethernet frame)
+ * Ethernet header is 14 bytes, ARP header starts at offset 14 */
+#define ARP_PKT_OFF_HTYPE (ETH_HDR_LEN + ARP_OFF_HTYPE)
+#define ARP_PKT_OFF_PTYPE (ETH_HDR_LEN + ARP_OFF_PTYPE)
+#define ARP_PKT_OFF_HLEN (ETH_HDR_LEN + ARP_OFF_HLEN)
+#define ARP_PKT_OFF_PLEN (ETH_HDR_LEN + ARP_OFF_PLEN)
+#define ARP_PKT_OFF_OP (ETH_HDR_LEN + ARP_OFF_OP)
+#define ARP_PKT_OFF_SHA (ETH_HDR_LEN + ARP_OFF_SHA)
+#define ARP_PKT_OFF_SPA (ETH_HDR_LEN + ARP_OFF_SPA)
+#define ARP_PKT_OFF_THA (ETH_HDR_LEN + ARP_OFF_THA)
+#define ARP_PKT_OFF_TPA (ETH_HDR_LEN + ARP_OFF_TPA)
 
 struct arp_entry
 {
@@ -146,19 +158,19 @@ void net_arp_learn(const uint8_t *frame, unsigned long len)
         return;
     if (!arp_hdr_ok(frame, len))
         return;
-    op = (uint16_t)(((unsigned)frame[ARP_OFF_OP] << 8) | (unsigned)frame[ARP_OFF_OP + 1u]);
-    spa = arp_ip_at(frame, ARP_OFF_SPA);
-    tpa = arp_ip_at(frame, ARP_OFF_TPA);
+    op = (uint16_t)(((unsigned)frame[ARP_PKT_OFF_OP] << 8) | (unsigned)frame[ARP_PKT_OFF_OP + 1u]);
+    spa = arp_ip_at(frame, ARP_PKT_OFF_SPA);
+    tpa = arp_ip_at(frame, ARP_PKT_OFF_TPA);
     if (op == ARP_OP_REPLY)
     {
-        arp_insert(spa, frame + ARP_OFF_SHA);
+        arp_insert(spa, frame + ARP_PKT_OFF_SHA);
         return;
     }
     if (op == ARP_OP_REQUEST && tpa == NET_IP_SELF)
     {
-        arp_insert(spa, frame + ARP_OFF_SHA);
+        arp_insert(spa, frame + ARP_PKT_OFF_SHA);
         s_rip = spa;
-        arp_mac_copy(s_rmac, frame + ARP_OFF_SHA);
+        arp_mac_copy(s_rmac, frame + ARP_PKT_OFF_SHA);
         s_need = 1;
     }
 }
@@ -182,24 +194,24 @@ int net_arp_build_request(uint32_t target_ip, uint8_t *frame_out)
         return -1;
     for (i = 0; i < ETH_ADDR_LEN; i++)
     {
-        frame_out[i] = 0xFF;
-        frame_out[6 + i] = NET_MAC_SELF[i];
+        frame_out[ETH_OFF_DST + i] = 0xFF;
+        frame_out[ETH_OFF_SRC + i] = NET_MAC_SELF[i];
     }
-    frame_out[12] = 0x08;
-    frame_out[13] = 0x06;
-    frame_out[14] = 0x00;
-    frame_out[15] = 0x01;
-    frame_out[16] = 0x08;
-    frame_out[17] = 0x00;
-    frame_out[18] = ETH_ADDR_LEN;
-    frame_out[19] = 4u;
-    frame_out[20] = 0x00;
-    frame_out[ARP_OFF_OP + 1u] = (uint8_t)ARP_OP_REQUEST;
-    arp_mac_copy(frame_out + ARP_OFF_SHA, NET_MAC_SELF);
-    arp_ip_put(frame_out, ARP_OFF_SPA, NET_IP_SELF);
+    frame_out[ETH_OFF_TYPE] = 0x08;
+    frame_out[ETH_OFF_TYPE + 1] = 0x06;
+    frame_out[ARP_PKT_OFF_HTYPE] = 0x00;
+    frame_out[ARP_PKT_OFF_HTYPE + 1] = 0x01;
+    frame_out[ARP_PKT_OFF_PTYPE] = 0x08;
+    frame_out[ARP_PKT_OFF_PTYPE + 1] = 0x00;
+    frame_out[ARP_PKT_OFF_HLEN] = ETH_ADDR_LEN;
+    frame_out[ARP_PKT_OFF_PLEN] = 4u;
+    frame_out[ARP_PKT_OFF_OP] = 0x00;
+    frame_out[ARP_PKT_OFF_OP + 1u] = (uint8_t)ARP_OP_REQUEST;
+    arp_mac_copy(frame_out + ARP_PKT_OFF_SHA, NET_MAC_SELF);
+    arp_ip_put(frame_out, ARP_PKT_OFF_SPA, NET_IP_SELF);
     for (i = 0; i < ETH_ADDR_LEN; i++)
-        frame_out[ARP_OFF_THA + i] = 0;
-    arp_ip_put(frame_out, ARP_OFF_TPA, target_ip);
+        frame_out[ARP_PKT_OFF_THA + i] = 0;
+    arp_ip_put(frame_out, ARP_PKT_OFF_TPA, target_ip);
     return (int)NET_ARP_FRAME_LEN;
 }
 
@@ -213,30 +225,30 @@ int net_arp_build_reply(const uint8_t *req, unsigned long reqlen, uint8_t *frame
         return -1;
     if (!arp_hdr_ok(req, reqlen))
         return -1;
-    op = (uint16_t)(((unsigned)req[ARP_OFF_OP] << 8) | (unsigned)req[ARP_OFF_OP + 1u]);
+    op = (uint16_t)(((unsigned)req[ARP_PKT_OFF_OP] << 8) | (unsigned)req[ARP_PKT_OFF_OP + 1u]);
     if (op != ARP_OP_REQUEST)
         return -1;
-    if (arp_ip_at(req, ARP_OFF_TPA) != NET_IP_SELF)
+    if (arp_ip_at(req, ARP_PKT_OFF_TPA) != NET_IP_SELF)
         return -1;
     for (i = 0; i < ETH_ADDR_LEN; i++)
     {
-        frame_out[i] = req[6 + i];
-        frame_out[6 + i] = NET_MAC_SELF[i];
+        frame_out[ETH_OFF_DST + i] = req[ETH_OFF_SRC + i];
+        frame_out[ETH_OFF_SRC + i] = NET_MAC_SELF[i];
     }
-    frame_out[12] = 0x08;
-    frame_out[13] = 0x06;
-    frame_out[14] = 0x00;
-    frame_out[15] = 0x01;
-    frame_out[16] = 0x08;
-    frame_out[17] = 0x00;
-    frame_out[18] = ETH_ADDR_LEN;
-    frame_out[19] = 4u;
-    frame_out[20] = 0x00;
-    frame_out[ARP_OFF_OP + 1u] = (uint8_t)ARP_OP_REPLY;
-    arp_mac_copy(frame_out + ARP_OFF_SHA, NET_MAC_SELF);
-    arp_ip_put(frame_out, ARP_OFF_SPA, NET_IP_SELF);
-    arp_mac_copy(frame_out + ARP_OFF_THA, req + ARP_OFF_SHA);
-    arp_ip_put(frame_out, ARP_OFF_TPA, arp_ip_at(req, ARP_OFF_SPA));
+    frame_out[ETH_OFF_TYPE] = 0x08;
+    frame_out[ETH_OFF_TYPE + 1] = 0x06;
+    frame_out[ARP_PKT_OFF_HTYPE] = 0x00;
+    frame_out[ARP_PKT_OFF_HTYPE + 1] = 0x01;
+    frame_out[ARP_PKT_OFF_PTYPE] = 0x08;
+    frame_out[ARP_PKT_OFF_PTYPE + 1] = 0x00;
+    frame_out[ARP_PKT_OFF_HLEN] = ETH_ADDR_LEN;
+    frame_out[ARP_PKT_OFF_PLEN] = 4u;
+    frame_out[ARP_PKT_OFF_OP] = 0x00;
+    frame_out[ARP_PKT_OFF_OP + 1u] = (uint8_t)ARP_OP_REPLY;
+    arp_mac_copy(frame_out + ARP_PKT_OFF_SHA, NET_MAC_SELF);
+    arp_ip_put(frame_out, ARP_PKT_OFF_SPA, NET_IP_SELF);
+    arp_mac_copy(frame_out + ARP_PKT_OFF_THA, req + ARP_PKT_OFF_SHA);
+    arp_ip_put(frame_out, ARP_PKT_OFF_TPA, arp_ip_at(req, ARP_PKT_OFF_SPA));
     return (int)NET_ARP_FRAME_LEN;
 }
 

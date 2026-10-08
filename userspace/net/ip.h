@@ -11,6 +11,23 @@
 #define IP_PROTO_TCP 6u
 #define IP_PROTO_UDP 17u
 
+/* IPv4 header offsets (relative to start of IP header) */
+#define IP_OFF_VER_IHL 0u
+#define IP_OFF_TOS 1u
+#define IP_OFF_LEN 2u
+#define IP_OFF_ID 4u
+#define IP_OFF_FLAGS_FRAG 6u
+#define IP_OFF_TTL 8u
+#define IP_OFF_PROTO 9u
+#define IP_OFF_CKSUM 10u
+#define IP_OFF_SRC 12u
+#define IP_OFF_DST 16u
+
+/* IPv4 constants */
+#define IP_VER_IHL 0x45u /* Version 4, IHL 5 (20 bytes) */
+#define IP_TOS_DSCP 0x00u
+#define IP_TTL_DEFAULT 64u
+
 static inline unsigned ip_ihl_bytes(const uint8_t *f, unsigned long len)
 {
     unsigned ihl;

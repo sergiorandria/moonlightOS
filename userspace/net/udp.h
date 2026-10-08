@@ -7,6 +7,12 @@
 
 #define UDP_HDR_LEN 8u
 
+/* UDP header offsets (relative to start of UDP header) */
+#define UDP_OFF_SRC 0u
+#define UDP_OFF_DST 2u
+#define UDP_OFF_LEN 4u
+#define UDP_OFF_CKSUM 6u
+
 static inline int udp_hdr_ok(const uint8_t *f, unsigned long len)
 {
     unsigned ihl, off;

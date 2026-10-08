@@ -75,6 +75,18 @@ int net_sock_demux(uint16_t dport)
     return -1;
 }
 
+int net_sock_owned(long id, unsigned long owner)
+{
+    if (id < 0 || id >= (long)NET_SOCK_MAX)
+        return 0;
+    if (!net_socks[id].used)
+        return 0;
+    return net_socks[id].owner == owner;
+}
+
+/* Phase 1 stub: UDP sockets use net_stack_udp_send directly; TCP is not
+ * yet implemented. This API seam exists for future phase work. Always
+ * returns -1 (intentional LSP violation, documented in sock.h). */
 int net_sock_send(int id, const uint8_t *buf, unsigned long len)
 {
     (void)buf;
@@ -131,7 +143,7 @@ int net_waiter_expire(uint64_t now, int *sock_out, unsigned *owner_out)
         int sid;
         if (!net_waiters[i].armed)
             continue;
-        /* Wrap-safe absolute-deadline compare: expired iff now is at or
+        /* Wrap-safe absolute-deadline compare: expired iff now is strictly
          * past deadline in modular arithmetic (timeouts << 2^63). */
         if ((int64_t)(now - net_waiters[i].deadline) < 0)
             continue;

@@ -30,6 +30,10 @@ struct net_waiter
 int net_sock_open(unsigned kind, uint16_t port, unsigned owner);
 int net_sock_close(int id);
 int net_sock_demux(uint16_t dport);
+int net_sock_owned(long id, unsigned long owner);
+/* net_sock_send: Phase 1 stub, always returns -1. Intentional LSP violation:
+ * UDP sockets use net_stack_udp_send directly; TCP is not yet implemented.
+ * This API seam exists for future phase work. */
 int net_sock_send(int id, const uint8_t *buf, unsigned long len);
 int net_waiter_arm(int sock_id, unsigned owner, uint64_t now, uint64_t timeout);
 int net_waiter_match(uint16_t dport, unsigned *owner_out);

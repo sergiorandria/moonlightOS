@@ -11,6 +11,17 @@
 #define ARP_OP_REQUEST 1u
 #define ARP_OP_REPLY 2u
 
+/* ARP header offsets (relative to start of ARP header) */
+#define ARP_OFF_HTYPE 0u
+#define ARP_OFF_PTYPE 2u
+#define ARP_OFF_HLEN 4u
+#define ARP_OFF_PLEN 5u
+#define ARP_OFF_OP 6u
+#define ARP_OFF_SHA 8u
+#define ARP_OFF_SPA 14u
+#define ARP_OFF_THA 18u
+#define ARP_OFF_TPA 24u
+
 static inline int arp_hdr_ok(const uint8_t *f, unsigned long len)
 {
     uint16_t ht, pt, op;
