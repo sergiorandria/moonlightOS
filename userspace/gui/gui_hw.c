@@ -503,23 +503,9 @@ static void gui_handle_key(uint16_t code, uint32_t value)
     /* Forward key event to Console service via IPC */
     gui_send_key_event(code, (uint32_t)(uint8_t)ch, mod_flags, pressed ? 1 : 0);
 
-    /* Also echo locally to framebuffer for immediate feedback */
-    if (pressed && ch != 0)
-    {
-        if (ch == '\n')
-        {
-            fb_putc('\n');
-        }
-        else if (ch == '\b')
-        {
-            fb_putc('\b');
-        }
-        else
-        {
-            fb_putc(ch);
-        }
-        fb_cursor();
-    }
+    /* No local echo: the TTY layer echoes through the console render
+     * path at the authoritative cursor. A local echo here races it at
+     * a stale cursor (text appears lines above, overwriting output). */
 }
 
 /* ---- main entry point -------------------------------------------------- */
@@ -579,7 +565,7 @@ void gui_main(void)
     fb_puts(kbd_ok ? "OK" : "N/A");
     fb_puts("  Mouse: ");
     fb_puts(mouse_ok ? "OK" : "N/A");
-    fb_puts("\nmoonsh$ ");
+    fb_puts("\n");
     fb_cursor();
 
     /* 4. Event loop: WAIT for IRQ notify bits, poll rings */

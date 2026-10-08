@@ -50,7 +50,7 @@ void console_init(void)
         cons->cursor_y = 0;
         cons->cursor_visible = 1;
         cons->fg_color = COLOR_WHITE;
-        cons->bg_color = COLOR_BLACK;
+        cons->bg_color = COLOR_BLUE;
         cons->attr = 0;
 
         /* Scroll region = entire screen */
@@ -357,7 +357,7 @@ void console_process_ansi(console_state_t *cons, char ch)
                     if (param == 0)
                     { /* Reset */
                         cons->fg_color = COLOR_WHITE;
-                        cons->bg_color = COLOR_BLACK;
+                        cons->bg_color = COLOR_BLUE;
                         cons->attr = 0;
                     }
                     else if (param >= 30 && param <= 37)
