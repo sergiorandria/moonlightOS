@@ -411,6 +411,53 @@ int main(void)
                   -(NET_ERR_EMPTY));
         }
     }
+    /* ---- SDD 2026-10-08 net-blocking-recv Task 2: waiter table ---- */
+    {
+        int s0, s1;
+        unsigned owner = 0;
+        int rsock = -9;
+        unsigned rowner = 0;
+        s0 = net_sock_open(NET_SOCK_UDP, 5000, 5);
+        CHECK(s0 >= 0);
+        s1 = net_sock_open(NET_SOCK_UDP, 5001, 7);
+        CHECK(s1 >= 0);
+        /* register with fake ticks: deadline 150 */
+        CHECK(net_waiter_arm(s0, 5, 100, 50) == 0);
+        owner = 0;
+        CHECK(net_waiter_match(5000, &owner) >= 0);
+        CHECK(owner == 5);
+        CHECK(net_waiter_match(5001, &owner) < 0);
+        CHECK(net_waiter_match(9999, &owner) < 0);
+        /* expiry boundary: 149 misses, 151 hits once then misses */
+        CHECK(net_waiter_expire(149, &rsock, &rowner) < 0);
+        CHECK(net_waiter_expire(151, &rsock, &rowner) >= 0);
+        CHECK(rsock == s0);
+        CHECK(rowner == 5);
+        CHECK(net_waiter_expire(151, &rsock, &rowner) < 0);
+        CHECK(net_waiter_match(5000, &owner) < 0);
+        /* replace-arm resets deadline: 210+50=260 */
+        CHECK(net_waiter_arm(s0, 5, 200, 50) == 0);
+        CHECK(net_waiter_arm(s0, 5, 210, 50) == 0);
+        CHECK(net_waiter_expire(255, &rsock, &rowner) < 0);
+        CHECK(net_waiter_expire(261, &rsock, &rowner) >= 0);
+        CHECK(rsock == s0);
+        CHECK(net_waiter_expire(261, &rsock, &rowner) < 0);
+        /* clear disarms */
+        CHECK(net_waiter_arm(s0, 5, 300, 50) == 0);
+        net_waiter_clear(s0);
+        CHECK(net_waiter_match(5000, &owner) < 0);
+        CHECK(net_waiter_expire(400, &rsock, &rowner) < 0);
+        /* wrong owner / bad sock fail */
+        CHECK(net_waiter_arm(s0, 6, 400, 50) < 0);
+        CHECK(net_waiter_arm(-1, 5, 400, 50) < 0);
+        CHECK(net_waiter_match(5000, &owner) < 0);
+        /* timeout 0 -> no-wait code 1 without arming */
+        CHECK(net_waiter_arm(s0, 5, 400, 0) == 1);
+        CHECK(net_waiter_match(5000, &owner) < 0);
+        CHECK(net_waiter_expire(500, &rsock, &rowner) < 0);
+        CHECK(net_sock_close(s0) == 0);
+        CHECK(net_sock_close(s1) == 0);
+    }
     /* ---- Task 3: DNS codec (query build + first-A parse) ---- */
     {
         static const uint8_t dns_q_expect[29] = {0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
