@@ -76,6 +76,13 @@ int moonlight_send(uint32_t ep_cptr, void *msg)
     return (int)raw_ecall(MOONLIGHT_SYS_SEND, ep_cptr, (long)msg_words(msg), (long)MOONLIGHT_SEND_WORDS);
 }
 
+/* Fire-and-forget send: queues (or hands off to a waiter) and returns at
+ * once, never parks. OVERFLOW when the queue is full. */
+int moonlight_asend(uint32_t ep_cptr, void *msg)
+{
+    return (int)raw_ecall(MOONLIGHT_SYS_ASEND, ep_cptr, (long)msg_words(msg), (long)MOONLIGHT_SEND_WORDS);
+}
+
 int moonlight_yield(void)
 {
     return (int)raw_ecall(MOONLIGHT_SYS_YIELD, 0, 0, 0);
@@ -141,6 +148,12 @@ int moonlight_recv(uint32_t ep_cptr, void *msg)
     return 0;
 }
 int moonlight_send(uint32_t ep_cptr, void *msg)
+{
+    (void)ep_cptr;
+    (void)msg;
+    return 0;
+}
+int moonlight_asend(uint32_t ep_cptr, void *msg)
 {
     (void)ep_cptr;
     (void)msg;

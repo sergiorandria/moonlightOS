@@ -22,6 +22,7 @@ _Static_assert(MOONLIGHT_SYS_RECV == V2_RECV, "recv must be V2_RECV (4)");
 _Static_assert(MOONLIGHT_SYS_NOTIFY == V2_NOTIFY, "notify must be V2_NOTIFY (5)");
 _Static_assert(MOONLIGHT_SYS_WAIT == V2_WAIT, "wait must be V2_WAIT (6)");
 _Static_assert(MOONLIGHT_SYS_INVOKE == V2_INVOKE, "invoke must be V2_INVOKE (7)");
+_Static_assert(MOONLIGHT_SYS_ASEND == V2_ASEND, "asend must be V2_ASEND (8)");
 
 /* INVOKE sub-ops (a0) exposed by the lib */
 _Static_assert(MOONLIGHT_INV_MINT == V2_INV_MINT, "mint op must match");

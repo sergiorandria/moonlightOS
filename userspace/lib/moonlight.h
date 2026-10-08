@@ -44,6 +44,7 @@ typedef struct
 #define MOONLIGHT_SYS_NOTIFY 5
 #define MOONLIGHT_SYS_WAIT 6
 #define MOONLIGHT_SYS_INVOKE 7
+#define MOONLIGHT_SYS_ASEND 8
 /* V2 IPC transfers at most V2_MSG_MAX words (kernel/ipc.h, currently 4).
  * moonlight_send/recv move exactly MOONLIGHT_SEND_WORDS leading words of
  * msg->words (struct header fields label/length/caps/sender_tcb are NOT
@@ -63,6 +64,7 @@ typedef struct
 int moonlight_call(uint32_t ep_cptr, void *msg);
 int moonlight_recv(uint32_t ep_cptr, void *msg);
 int moonlight_send(uint32_t ep_cptr, void *msg);
+int moonlight_asend(uint32_t ep_cptr, void *msg);
 int moonlight_yield(void);
 int moonlight_retype(uint32_t untyped_cptr, uint32_t type, size_t size, uint32_t dest_cptr);
 int moonlight_cnode_copy(uint32_t dst, uint32_t src, uint32_t rights);

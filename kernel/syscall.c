@@ -124,6 +124,11 @@ void s_trap_handler(uint64_t cause, uctx_t *ctx)
             sys_send();
             return;
         }
+        else if (sys == V2_ASEND)
+        {
+            sys_asend();
+            return;
+        }
         else if (sys == V2_RECV)
         {
             sys_recv();

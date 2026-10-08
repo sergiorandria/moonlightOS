@@ -13,6 +13,7 @@
 
 #include "caps.h"
 #include "ipc.h"
+#include "platform.h"
 #include "qube.h"
 
 /* ---- Threads: 0 A, 1 B, 2 mem_server, 3 console, 4 tty, 5-6 (reserved),
@@ -77,6 +78,7 @@ typedef struct
 #define V2_NOTIFY 5 /* (target, bits): OR-accumulate + wake waiters only; a0 = 0 / -ERR */
 #define V2_WAIT 6   /* (): take pending bits (a0) or block; a0 = bits */
 #define V2_INVOKE 7
+#define V2_ASEND 8 /* (ep, u_ptr, len): copy IN, queue or hand off, never block; a0 = 0 / -ERR */
 #define V2_INV_MINT 1
 #define V2_INV_GRANT 2
 #define V2_INV_MAP 3
@@ -144,7 +146,7 @@ extern int cur;
 extern unsigned long tick;
 extern v2_ep_t eps[V2_NEP];
 extern v2_caps_t caps;
-extern uctx_t *cur_ctx; /* read by trap.S */
+extern uctx_t *cur_ctx;          /* read by trap.S */
 extern uintptr_t trap_stack_top; /* read by trap.S */
 extern uctx_t halt_ctx;
 extern uint8_t kstack[16384];
@@ -195,6 +197,7 @@ void sys_yield(void);
 void sys_putc(void);
 void sys_park(void);
 void sys_send(void);
+void sys_asend(void);
 void sys_recv(void);
 void sys_notify(void);
 void sys_wait(void);
@@ -208,8 +211,7 @@ int syscall_qube_handles(uint64_t op);
 long syscall_qube_invoke(uint64_t op, uint64_t a1, uint64_t a2, uint64_t a3);
 int frame_alloc(void);
 void frame_free(int f);
-void v2_pte_install(unsigned long t, unsigned long vpn,
-                      unsigned long frame, unsigned long rights);
+void v2_pte_install(unsigned long t, unsigned long vpn, unsigned long frame, unsigned long rights);
 void v2_pte_clear(unsigned long t, unsigned long vpn);
 void v2_sfence_all(void);
 void v2_real_write(unsigned long frame, const uint8_t *src, size_t len);
@@ -229,18 +231,15 @@ void u_copy_out(uintptr_t ud, const uint64_t *ks, unsigned long n);
 int qube_has_qx(unsigned long tid);
 void v2_pte_sync(unsigned long t);
 uint64_t v2_satp_of(unsigned long t);
-unsigned long build_child_vspace(unsigned long parent_tid,
-                                 unsigned long child_tid);
-void v2_cow_write_protect(unsigned long parent_tid,
-                           unsigned long child_tid);
+unsigned long build_child_vspace(unsigned long parent_tid, unsigned long child_tid);
+void v2_cow_write_protect(unsigned long parent_tid, unsigned long child_tid);
 void s_trap_handler(uint64_t cause, uctx_t *ctx);
 
 /* ---- Device discovery (device.c) ---- */
 void device_init(void);
 
 /* ---- ELF spawning (elf_loader.c) ---- */
-int elf_loader_spawn(const char *name, unsigned index, unsigned tid,
-                     const char *fail);
+int elf_loader_spawn(const char *name, unsigned index, unsigned tid, const char *fail);
 
 /* ---- Boot orchestrator (kboot.c) ---- */
 void kboot(void);
