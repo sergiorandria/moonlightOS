@@ -66,6 +66,9 @@
 /* Task 3 DNS codec, same single-TU pattern: query builder + first-A
  * parser, libc-free, safe for the freestanding U-mode ELF. */
 #include "dns.c"
+/* DHCP client codec, same single-TU pattern: DISCOVER/REQUEST builders
+ * + OFFER/ACK parser with bounded option scan, libc-free. */
+#include "dhcp.c"
 /* Task 1 socket table, same single-TU pattern as the host suite
  * (tests/test_net_stack.c includes sock.c beside stack.c): owner is the
  * kernel-stamped sender tid, unforgable by clients. */
@@ -706,7 +709,7 @@ static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
         net_sock_close(sid);
         return;
     }
-    rc = net_stack_udp_send(NET_IP_GW, (uint16_t)NET_DNS_PORT, sport, tmp, qlen,
+    rc = net_stack_udp_send(NET_IP_DNS, (uint16_t)NET_DNS_PORT, sport, tmp, qlen,
                             w->txf + NET_TX_PAY_OFF, &flen);
     if (rc != 0 || net_tx_frame(w, w->txf + NET_TX_PAY_OFF, flen) != 0)
     {
@@ -812,6 +815,190 @@ static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
     net_queue_drain(tmp, tcap);
     net_sock_close(sid);
     u_puts("NET: dns err=-3\n");
+}
+
+/* Boot DHCP client (DISCOVER/OFFER/REQUEST/ACK, RFC 2131): runs after
+ * "NET: tx ok", before DNS (DNS may need the leased server). Each leg
+ * has a ~2s rdtime deadline with RX pumps shared with the DNS idiom;
+ * any failure prints "NET: dhcp err=<code>" and keeps the hardcoded
+ * SLIRP values (never parks). On ACK the lease applies to the live
+ * address state and a gratuitous ARP re-announces when the IP changed.
+ * tmp must be >= NET_PKT_MAX; only scalars live in this frame. */
+static void net_boot_dhcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
+                          int *rx_ok_done)
+{
+    uint32_t xid;
+    unsigned long flen = 0;
+    struct net_dhcp_lease ls;
+    uint32_t old_ip;
+    uint64_t t0;
+    int p;
+    int got_offer = 0;
+    int got_ack = 0;
+    if (!w || !tmp || tcap < (unsigned long)NET_PKT_MAX || !rx_seen || !rx_ok_done)
+        return; /* defensive: never print, never park */
+    xid = u_rdtime() & 0xFFFFFFFFu;
+    if (xid == 0u)
+        xid = 1u;
+    if (net_dhcp_build_discover(xid, tmp, &flen) != 0)
+    {
+        u_puts("NET: dhcp err=-2\n");
+        return;
+    }
+    if (net_tx_frame(w, tmp, flen) != 0)
+    {
+        u_puts("NET: dhcp err=-2\n");
+        return;
+    }
+    t0 = u_rdtime();
+    for (p = 0; p < NET_POLL_BOUND; p++)
+    { /* bound: NET_POLL_BOUND */
+        if (w->rxu->idx != *rx_seen)
+        {
+            unsigned long wlen = (unsigned long)w->rxu->ring[*rx_seen % 2u].len;
+            uint32_t isr;
+            net_fence();
+            (*rx_seen)++;
+            isr = net_r(w->regs, NET_R_ISTATUS);
+            if (isr)
+                net_w(w->regs, NET_R_IACK, isr);
+            net_fence();
+            if (wlen >= (unsigned long)NET_VIRTIO_HDR + 14u &&
+                wlen <= (unsigned long)NET_VIRTIO_HDR + (unsigned long)NET_PKT_MAX)
+            {
+                unsigned long pktlen = wlen - (unsigned long)NET_VIRTIO_HDR;
+                unsigned long i;
+                int cls;
+                for (i = 0; i < pktlen; i++) /* bound: 1514 */
+                    tmp[i] = w->rxf[NET_RX_PAY_OFF + i];
+                cls = net_stack_rx(tmp, pktlen);
+                if (cls == NET_CLASS_UDP)
+                {
+                    if (!*rx_ok_done)
+                    {
+                        u_puts("NET: rx ok\n");
+                        *rx_ok_done = 1;
+                    }
+                    if (!got_offer && net_dhcp_parse_offer(tmp, pktlen, xid, &ls) == 0)
+                    {
+                        got_offer = 1;
+                        break;
+                    }
+                }
+                else if (cls == NET_CLASS_ARP)
+                {
+                    uint32_t rip = 0;
+                    uint8_t rmac[6];
+                    if (net_arp_need_reply(&rip, rmac) &&
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
+                            (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
+                                           (unsigned long)NET_ARP_FRAME_LEN);
+                }
+            }
+            w->rxa->ring[w->rxa->idx % 2u] = 0u;
+            net_fence();
+            w->rxa->idx++;
+            net_fence();
+            net_w(w->regs, NET_R_QNOTIFY, 0u);
+            net_fence();
+        }
+        u_yield();
+        if (u_rdtime() - t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
+            break;
+    }
+    if (!got_offer)
+    {
+        net_queue_drain(tmp, tcap); /* drop DHCP chatter queued by net_stack_rx */
+        u_puts("NET: dhcp err=-3\n");
+        return;
+    }
+    if (net_dhcp_build_request(xid, &ls, tmp, &flen) != 0)
+    {
+        u_puts("NET: dhcp err=-2\n");
+        return;
+    }
+    if (net_tx_frame(w, tmp, flen) != 0)
+    {
+        u_puts("NET: dhcp err=-2\n");
+        return;
+    }
+    t0 = u_rdtime();
+    for (p = 0; p < NET_POLL_BOUND; p++)
+    { /* bound: NET_POLL_BOUND */
+        if (w->rxu->idx != *rx_seen)
+        {
+            unsigned long wlen = (unsigned long)w->rxu->ring[*rx_seen % 2u].len;
+            uint32_t isr;
+            net_fence();
+            (*rx_seen)++;
+            isr = net_r(w->regs, NET_R_ISTATUS);
+            if (isr)
+                net_w(w->regs, NET_R_IACK, isr);
+            net_fence();
+            if (wlen >= (unsigned long)NET_VIRTIO_HDR + 14u &&
+                wlen <= (unsigned long)NET_VIRTIO_HDR + (unsigned long)NET_PKT_MAX)
+            {
+                unsigned long pktlen = wlen - (unsigned long)NET_VIRTIO_HDR;
+                unsigned long i;
+                int cls;
+                for (i = 0; i < pktlen; i++) /* bound: 1514 */
+                    tmp[i] = w->rxf[NET_RX_PAY_OFF + i];
+                cls = net_stack_rx(tmp, pktlen);
+                if (cls == NET_CLASS_UDP)
+                {
+                    if (!*rx_ok_done)
+                    {
+                        u_puts("NET: rx ok\n");
+                        *rx_ok_done = 1;
+                    }
+                    if (net_dhcp_parse_ack(tmp, pktlen, xid, &ls) == 0)
+                    {
+                        got_ack = 1;
+                        break;
+                    }
+                }
+                else if (cls == NET_CLASS_ARP)
+                {
+                    uint32_t rip = 0;
+                    uint8_t rmac[6];
+                    if (net_arp_need_reply(&rip, rmac) &&
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
+                            (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
+                                           (unsigned long)NET_ARP_FRAME_LEN);
+                }
+            }
+            w->rxa->ring[w->rxa->idx % 2u] = 0u;
+            net_fence();
+            w->rxa->idx++;
+            net_fence();
+            net_w(w->regs, NET_R_QNOTIFY, 0u);
+            net_fence();
+        }
+        u_yield();
+        if (u_rdtime() - t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
+            break;
+    }
+    if (!got_ack)
+    {
+        net_queue_drain(tmp, tcap);
+        u_puts("NET: dhcp err=-3\n");
+        return;
+    }
+    old_ip = NET_IP_SELF;
+    net_dhcp_apply(&ls);
+    net_queue_drain(tmp, tcap);
+    u_puts("NET: dhcp ");
+    net_put_ip(NET_IP_SELF);
+    u_putc('\n');
+    if (NET_IP_SELF != old_ip)
+    {
+        /* Re-announce under the leased address (gratuitous ARP:
+         * request with spa == tpa == new IP). */
+        if (net_arp_build_request(NET_IP_SELF, w->txf + NET_TX_PAY_OFF) == (int)NET_ARP_FRAME_LEN)
+            (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, (unsigned long)NET_ARP_FRAME_LEN);
+    }
 }
 
 /* Boot self-ping (ICMP slice): one echo request to the gateway after
@@ -1150,6 +1337,10 @@ void net_main(void)
      * staging, frame copy, reply buffer, all sequential). */
     rx_seen = 0;
     rx_ok_done = 0;
+    /* DHCP first: it may re-point NET_IP_SELF/GW/DNS for everything
+     * below (DNS server, ping target, echo self-check all read the
+     * live globals). Fallback keeps the hardcoded SLIRP values. */
+    net_boot_dhcp(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
     net_boot_dns(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
     net_boot_ping(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
 

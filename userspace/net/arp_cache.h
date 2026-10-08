@@ -22,10 +22,13 @@
 #define NET_ARP_TIMEOUT_TICKS 600000000ULL
 
 extern const uint8_t NET_MAC_SELF[6];
-extern const uint32_t NET_IP_SELF;
-extern const uint32_t NET_IP_GW;
+extern uint32_t NET_IP_SELF;
+extern uint32_t NET_IP_GW;
+extern uint32_t NET_IP_DNS;
+extern uint32_t NET_IP_SUBNET;
 
 void net_arp_init(void);
+void net_arp_invalidate(uint32_t ip);
 int net_arp_lookup(uint32_t ip, uint8_t *mac_out);
 void net_arp_learn(const uint8_t *frame, unsigned long len);
 int net_arp_need_reply(uint32_t *sender_ip, uint8_t *sender_mac);

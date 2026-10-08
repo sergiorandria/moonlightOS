@@ -28,6 +28,9 @@ static int t_carve_drop7(uint16_t dport)
 /* Task 3: DNS codec (same single-TU pattern). */
 #include "../userspace/net/dns.c"
 
+/* DHCP client (same single-TU pattern). */
+#include "../userspace/net/dhcp.c"
+
 static void t2_mk_arp(uint8_t *f, const uint8_t *dmac, const uint8_t *smac, unsigned op,
                       const uint8_t *sha, uint32_t spa, const uint8_t *tha, uint32_t tpa)
 {
@@ -547,6 +550,135 @@ int main(void)
         CHECK(net_ping_match(rep, replen, 0x1235u, 0x0001u) < 0);   /* id mismatch */
         CHECK(net_ping_match(rep, replen, 0x1234u, 0x0002u) < 0);   /* seq mismatch */
         CHECK(net_stack_icmp_reply(rep, replen, req, &reqlen) < 0); /* reply != request */
+    }
+    /* DHCP client (RFC 2131 + udhcpc option discipline). */
+    {
+        uint8_t dis[400];
+        uint8_t off[400];
+        uint8_t req[400];
+        unsigned long dislen = 0, offlen = 0, reqlen = 0;
+        struct net_dhcp_lease ls;
+        uint32_t xid = 0x12345678u;
+        /* Craft a minimal OFFER: eth + ip + udp + bootp + options. */
+        {
+            unsigned o = 0, i;
+            for (i = 0; i < 6; i++)
+            {
+                off[o++] = 0x52u;
+                off[o++] = 0x52u;
+            }
+            for (i = 0; i < 6; i++)
+                off[o++] = 0x52u; /* dst = bcast-ish, parse ignores eth */
+            off[12] = 0x08u;
+            off[13] = 0x00u;
+            off[14] = 0x45u;
+            off[15] = 0x00u;
+            off[16] = 0x01u;
+            off[17] = 0x2Eu; /* tot = 302 */
+            memset(off + 18, 0, 8);
+            off[23] = IP_PROTO_UDP;
+            off[26] = 0x0Au;
+            off[27] = 0x00u;
+            off[28] = 0x02u;
+            off[29] = 0x02u; /* src = server */
+            off[30] = 0xFFu;
+            off[31] = 0xFFu;
+            off[32] = 0xFFu;
+            off[33] = 0xFFu; /* dst = broadcast */
+            off[34] = 0u;
+            off[35] = 67u; /* sport 67 */
+            off[36] = 0u;
+            off[37] = 68u; /* dport 68 */
+            off[38] = 0x01u;
+            off[39] = 0x1Au; /* ulen = 282 */
+            memset(off + 40, 0, 2);
+            off[42] = 2u; /* BOOTREPLY */
+            off[43] = 1u;
+            off[44] = 6u;
+            off[45] = 0u; /* hops */
+            off[46] = 0x12u;
+            off[47] = 0x34u;
+            off[48] = 0x56u;
+            off[49] = 0x78u; /* xid */
+            memset(off + 50, 0, 8);
+            off[58] = 0x0Au;
+            off[59] = 0x00u;
+            off[60] = 0x02u;
+            off[61] = 0x64u; /* yiaddr = 10.0.2.100 */
+            memset(off + 62, 0, 18 + 64 + 128);
+            o = 42 + 236;
+            off[o++] = 99u;
+            off[o++] = 130u;
+            off[o++] = 83u;
+            off[o++] = 99u; /* magic cookie */
+            off[o++] = 53u;
+            off[o++] = 1u;
+            off[o++] = 2u; /* OFFER */
+            off[o++] = 54u;
+            off[o++] = 4u;
+            off[o++] = 0x0Au;
+            off[o++] = 0x00u;
+            off[o++] = 0x02u;
+            off[o++] = 0x02u; /* server 10.0.2.2 */
+            off[o++] = 51u;
+            off[o++] = 4u;
+            off[o++] = 0u;
+            off[o++] = 0u;
+            off[o++] = 0x0Eu;
+            off[o++] = 0x10u; /* lease 3600 */
+            off[o++] = 1u;
+            off[o++] = 4u;
+            off[o++] = 0xFFu;
+            off[o++] = 0xFFu;
+            off[o++] = 0xFFu;
+            off[o++] = 0u; /* mask /24 */
+            off[o++] = 3u;
+            off[o++] = 4u;
+            off[o++] = 0x0Au;
+            off[o++] = 0x00u;
+            off[o++] = 0x02u;
+            off[o++] = 0x02u; /* router */
+            off[o++] = 6u;
+            off[o++] = 4u;
+            off[o++] = 0x0Au;
+            off[o++] = 0x00u;
+            off[o++] = 0x02u;
+            off[o++] = 0x03u; /* dns */
+            off[o++] = 255u;  /* end */
+            offlen = o;
+        }
+        CHECK(net_dhcp_build_discover(xid, dis, &dislen) == 0);
+        CHECK(dislen >= 300u);
+        CHECK(dis[0] == 0xFFu && dis[5] == 0xFFu);           /* bcast eth */
+        CHECK(dis[30] == 0xFFu && dis[33] == 0xFFu);         /* bcast IP */
+        CHECK(dis[34] == 0u && dis[35] == 68u);              /* sport 68 */
+        CHECK(dis[36] == 0u && dis[37] == 67u);              /* dport 67 */
+        CHECK(dis[42] == 1u && dis[44] == 6u);               /* BOOTP request, eth */
+        CHECK(dis[46] == 0x12u && dis[49] == 0x78u);         /* xid echo */
+        CHECK(dis[42 + 236] == 99u && dis[42 + 239] == 99u); /* cookie */
+        CHECK(dis[42 + 240] == 53u && dis[42 + 242] == 1u);  /* DISCOVER */
+        CHECK(net_dhcp_parse_offer(off, offlen, xid, &ls) == 0);
+        CHECK(ls.yiaddr == 0x0A000264u);
+        CHECK(ls.server == 0x0A000202u);
+        CHECK(ls.subnet == 0xFFFFFF00u);
+        CHECK(ls.router == 0x0A000202u);
+        CHECK(ls.dns == 0x0A000203u);
+        CHECK(ls.lease_sec == 3600u);
+        CHECK(net_dhcp_parse_offer(off, offlen, xid ^ 1u, &ls) < 0); /* xid */
+        off[42 + 242] = 1u;                                          /* DISCOVER, not OFFER */
+        CHECK(net_dhcp_parse_offer(off, offlen, xid, &ls) < 0);
+        off[42 + 242] = 2u;
+        CHECK(net_dhcp_build_request(xid, &ls, req, &reqlen) == 0);
+        CHECK(req[42 + 242] == 3u); /* REQUEST */
+        off[42 + 242] = 5u;         /* ACK for the ack-path test */
+        CHECK(net_dhcp_parse_ack(off, offlen, xid, &ls) == 0);
+        off[42 + 240] = 0u; /* bad cookie */
+        CHECK(net_dhcp_parse_ack(off, offlen, xid, &ls) < 0);
+        net_dhcp_apply(&ls);
+        CHECK(NET_IP_SELF == 0x0A000264u);
+        CHECK(NET_IP_GW == 0x0A000202u);
+        CHECK(NET_IP_DNS == 0x0A000203u);
+        CHECK(NET_IP_SUBNET == 0xFFFFFF00u);
     }
     puts("PASS: test_net_stack");
     return 0;

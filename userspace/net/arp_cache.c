@@ -10,8 +10,13 @@
 #include "eth.h"
 
 const uint8_t NET_MAC_SELF[6] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56};
-const uint32_t NET_IP_SELF = 0x0A00020Fu;
-const uint32_t NET_IP_GW = 0x0A000202u;
+/* Runtime address state (DHCP lease applies here; boot defaults are the
+ * hardcoded SLIRP values). Mutable by design: every builder reads the
+ * live value, so no call-site changes are needed on lease apply. */
+uint32_t NET_IP_SELF = 0x0A00020Fu;
+uint32_t NET_IP_GW = 0x0A000202u;
+uint32_t NET_IP_DNS = 0x0A000202u;
+uint32_t NET_IP_SUBNET = 0xFFFFFF00u;
 
 #define ARP_OFF_OP 20u
 #define ARP_OFF_SHA 22u
@@ -121,6 +126,16 @@ int net_arp_lookup(uint32_t ip, uint8_t *mac_out)
         }
     }
     return -1;
+}
+
+void net_arp_invalidate(uint32_t ip)
+{
+    unsigned i;
+    for (i = 0; i < NET_ARP_MAX; i++)
+    {
+        if (s_tab[i].valid && s_tab[i].ip == ip)
+            s_tab[i].valid = 0;
+    }
 }
 
 void net_arp_learn(const uint8_t *frame, unsigned long len)
