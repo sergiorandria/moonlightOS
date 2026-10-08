@@ -24,8 +24,13 @@ static inline void raw_ecall_recv(long sys, long a0, long a1, long a2, long *out
     register long r_a0 asm("a0") = a0;
     register long r_a1 asm("a1") = a1;
     register long r_a2 asm("a2") = a2;
+    /* The kernel's RECV return convention delivers qube/ovf in a2/a3,
+     * clobbering the caller's registers: model a2/a3 as read-write so
+     * the compiler spills live values (e.g. a message pointer) across
+     * the trap instead of keeping them in a2/a3. */
+    register long r_a3 asm("a3") = 0;
     register long r_a7 asm("a7") = sys;
-    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1) : "r"(r_a2), "r"(r_a7) : "memory");
+    asm volatile("ecall" : "+r"(r_a0), "+r"(r_a1), "+r"(r_a2), "+r"(r_a3) : "r"(r_a7) : "memory");
     *out_a0 = r_a0;
     *out_a1 = r_a1;
 }
@@ -51,14 +56,18 @@ int moonlight_call(uint32_t ep_cptr, void *msg)
 
 int moonlight_recv(uint32_t ep_cptr, void *msg)
 {
+    /* NOTE: msg must not be kept in a2/a3 across the ecall below: the
+     * kernel's RECV return convention delivers qube/ovf there. Safety
+     * comes from raw_ecall_recv, which models a2/a3 as clobbered so
+     * the compiler spills msg to the stack. */
     moonlight_msg_t *m = (moonlight_msg_t *)msg;
     long ret_a0, ret_a1;
     raw_ecall_recv(MOONLIGHT_SYS_RECV, ep_cptr, (long)msg_words(msg), (long)MOONLIGHT_SEND_WORDS, &ret_a0, &ret_a1);
-    
+
     /* Kernel returns: a0 = word count (or negative error), a1 = sender TID */
     m->sender_tcb = (uint32_t)ret_a1;
     m->length = (uint32_t)ret_a0;
-    
+
     return (int)ret_a0;
 }
 
