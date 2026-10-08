@@ -1,32 +1,45 @@
-CC = riscv64-unknown-elf-clang
-CFLAGS = -march=rv64imacxcheri -mabi=l64pc128d -cheri-bounds=conservative \
-         -O2 -ffreestanding -nostdlib -Wall -Wextra -Werror \
-         -fno-builtin -mcmodel=medany -mno-relax
+# Moonlight kernel: S-mode under OpenSBI (QEMU -bios default). Freestanding.
+# NOTE: plain `=` (not `?=`): make's built-in CC=cc would otherwise win.
+CC = clang
+CLANG_INC := $(shell $(CC) --print-resource-dir)/include
+CFLAGS_K = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
+           -O2 -ffreestanding -nostdlib -fno-builtin -mcmodel=medany -mno-relax \
+           -Wall -Wextra -Werror -I$(CLANG_INC) \
+           -fno-stack-protector \
+           -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast \
+           -fno-delete-null-pointer-checks \
+           -fwrapv \
+           -fno-strict-aliasing \
+           -fno-strict-overflow
+# NOTE: -fno-stack-protector is explicit, not an omission. There is no libc
+# to host __stack_chk_fail, and the mechanisms are paging/CHERI instead.
+# A canary layer arrives with the Stage-3 C library; until then any
+# -fstack-protector in these flags is a build break by design.
+#
+# Hardening flags (production-grade):
+# -fno-delete-null-pointer-checks: Don't assume NULL deref is UB (safety-critical)
+# -fwrapv: Signed integer overflow wraps (predictable behavior)
+# -fno-strict-aliasing: Disable type-based alias analysis (safety-critical)
+# -fno-strict-overflow: Don't optimize on signed overflow assumptions
+LDFLAGS_K = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib -T linker.ld
 
-ISABELLE = isabelle
-LD = riscv64-unknown-elf-ld
-SRC = src/cap.c src/cnode.c src/tcb.c src/vspace.c src/sched.c src/endpoint.c src/syscall.c src/cheri.c src/boot.c src/iommu.c src/irq.c src/alloc.c src/revoke.c src/process.c src/hardening.c
-ASM = src/trap.S
-OBJ = $(SRC:.c=.o) $(ASM:.S=.o)
-TARGET = build/moonlight.elf
+SRC_C = kboot.c user.c elf.c initrd.c initrd_data.c irq.c device.c sched.c syscall.c elf_loader.c console.c vm.c syscall_ipc.c syscall_cap.c syscall_mem.c syscall_proc.c syscall_qube.c
+SRC_S = start.S trap.S
 
-all: $(TARGET)
+all: build/moonlight.elf
 
-$(TARGET): $(OBJ) linker.ld
+build/moonlight.elf: $(SRC_C) $(SRC_S) linker.ld *.h
 	@mkdir -p build
-	$(CC) $(CFLAGS) -T linker.ld -o $@ $(OBJ)
-
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-%.o: %.S
-	$(CC) $(CFLAGS) -c $< -o $@
-
-isabelle:
-	$(ISABELLE) build -D isabelle -v
-	$(ISABELLE) build -D isabelle Moonlight_A -v
+	$(CC) $(CFLAGS_K) $(LDFLAGS_K) -o $@ $(SRC_C) $(SRC_S) -Wl,--no-undefined
+	ls -lh $@
 
 clean:
-	rm -rf build src/*.o
+	rm -rf build
 
-.PHONY: all clean isabelle
+isabelle:
+	isabelle build -D isabelle -v
+
+verify:
+	@../tools/verify.sh
+
+.PHONY: all clean isabelle verify

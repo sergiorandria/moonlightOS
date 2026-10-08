@@ -5,21 +5,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: gcc -I kernel/include -o /tmp/test_cap tests/test_cap.c kernel/src/cap.c kernel/src/cnode.c kernel/src/alloc.c kernel/src/sched.c kernel/src/iommu.c kernel/src/irq.c kernel/src/cheri.c && /tmp/test_cap
-      - run: gcc -I kernel/include -o /tmp/test_sched tests/test_sched_realtime.c kernel/src/sched.c kernel/src/cheri.c && /tmp/test_sched
-      - run: gcc -I kernel/include -o /tmp/test_revoke tests/test_revoke_process.c kernel/src/revoke.c kernel/src/process.c kernel/src/sched.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c && /tmp/test_revoke
-      - run: gcc -I kernel/include -o /tmp/host_emul tests/host_emul.c kernel/src/revoke.c kernel/src/process.c kernel/src/sched.c kernel/src/alloc.c kernel/src/cheri.c kernel/src/tcb.c kernel/src/cnode.c kernel/src/cap.c kernel/src/endpoint.c && /tmp/host_emul
-      - run: gcc -I kernel/include -o /tmp/fuzz tests/fuzz_syscall.c kernel/src/syscall.c kernel/src/cap.c kernel/src/cnode.c kernel/src/tcb.c kernel/src/endpoint.c kernel/src/sched.c kernel/src/cheri.c kernel/src/vspace.c && /tmp/fuzz
+      - name: Install deps (clang + QEMU for kernel smoke)
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-misc
+      - name: Run full verification (single source of truth)
+        run: tools/verify.sh
+  # NOTE (PLAN 1.4): host-tests is the single source of truth — do not
+  # re-implement its test list here. The isabelle job below is a matrix
+  # extension, not a duplicate: verify.sh SKIPs proofs when Isabelle is
+  # absent, and this container provides it. There is a single kernel
+  # spec session (`kernel/isabelle`); no separate v2 tree.
   isabelle:
     runs-on: ubuntu-latest
     container:
-      image: makarius/isabelle:Isabelle2024
+      image: makarius/isabelle:Isabelle2025-2
       options: --user root
     steps:
       - uses: actions/checkout@v4
-      - name: Check Isabelle theories
-        run: |
-          echo "Checking Isabelle syntax and quick build (sorries allowed for skeletons)..."
-          isabelle build -D kernel/isabelle -v -o quick_and_dirty || \
-          (echo "::warning::Isabelle skeleton theories contain sorries — expected until proofs complete" && \
-           for f in kernel/isabelle/*.thy; do echo " syntax OK: $f"; done && exit 0)
+      - run: isabelle build -D kernel/isabelle -v

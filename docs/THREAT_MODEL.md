@@ -1,5 +1,10 @@
 # Threat Model - MoonlightOS vs seL4
 
+> **v1-era reference** (historical). This document describes the threat
+> model for the removed v1 M-mode kernel. The v2 kernel's isolation
+> model (S-mode, U-bit, SUM, fault containment) is in
+> `docs/ARCHITECTURE.md` and `docs/V2_DESIGN.md`.
+
 ## Assumptions
 - HW CHERI-RISC-V correctly implements CC128, PMP, IOMMU. Verified via riscv-formal.
 - ROM immutable, OTP UDS unfused read-once.

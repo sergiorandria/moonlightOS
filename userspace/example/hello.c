@@ -1,11 +1,13 @@
-/* hello - minimal general-purpose app, dynamic thread + alloc */
-#include "../lib/moonlight.h"
-#include <stdint.h>
+/* hello - minimal userspace app: says hi on the debug console, yields.
+ * Freestanding: no libc, linked at 0x81000000 via user.ld. */
+#include "moonlight.h"
 
-void _start(void) {
-    // On real HW: purecap, every pointer is bounded
-    char *msg = (char*)"hello moonlight\n";
-    moonlight_call(1, msg);
+static void puts(const char *s) {
+    while (*s) moonlight_putc(*s++);
+}
+
+void hello_main(void) {
+    puts("hello moonlight\n");
     moonlight_yield();
-    while(1) {}
+    for (;;) moonlight_yield();
 }

@@ -1,12 +1,10 @@
-session Moonlight = HOL +
-  options [document = pdf, document_output = "output"]
+session V2 = HOL +
   theories
-    RISCV_CHERI
-    CacheColoring
-    IOMMU_Verification
-    Moonlight_A
-    Moonlight_E
-    Sched_Verification
-    Refine
-  document_files (with_ext)
-    document/root.tex
+    V2_A
+    V2_B
+    V2_C
+    V2_D
+    Qubes_A
+    Qubes_B
+    Qubes_C
+    Qubes_D

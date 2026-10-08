@@ -1,5 +1,6 @@
 build/
 *.o
+*.d
 *.elf
 *.bin
 /tmp/
@@ -7,3 +8,13 @@ build/
 __pycache__/
 *.pyc
 output/
+qemu/
+riscv64-softmmu/
+riscv64cheristd-softmmu/
+config-host.mak
+config-meson.cross
+config-temp/
+config.log
+.gdbinit
+
+.worktrees/
