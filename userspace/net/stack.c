@@ -25,6 +25,20 @@ static struct udp_slot s_q[NET_UDP_QDEPTH];
 static unsigned s_qhead;
 static unsigned s_qcount;
 
+/* Byte-loop slot copy: struct assignment lowers to memcpy, which the
+ * freestanding net ELF (-nostdlib) cannot link. Field-wise scalars plus
+ * a payload byte loop (the established libc-free pattern). */
+static void udp_slot_copy(struct udp_slot *d, const struct udp_slot *s)
+{
+    unsigned i;
+    d->src_ip = s->src_ip;
+    d->src_port = s->src_port;
+    d->dst_port = s->dst_port;
+    d->len = s->len;
+    for (i = 0; i < (unsigned)sizeof(d->payload); i++) /* bound: 1472 */
+        d->payload[i] = s->payload[i];
+}
+
 int net_stack_init(void)
 {
     net_stack_up = 1;
@@ -226,7 +240,7 @@ int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *sr
             *trunc = 0;
         return -(NET_ERR_EMPTY);
     }
-    s = s_q[s_qhead];
+    udp_slot_copy(&s, &s_q[s_qhead]);
     s_qhead = (s_qhead + 1u) % NET_UDP_QDEPTH;
     s_qcount--;
     return udp_emit(&s, buf, cap, src_ip, src_port, trunc);
@@ -242,9 +256,10 @@ int net_udp_recv_from(uint16_t dport, uint8_t *buf, unsigned long cap, uint32_t 
         unsigned idx = (s_qhead + k) % NET_UDP_QDEPTH;
         if (s_q[idx].dst_port != dport)
             continue;
-        s = s_q[idx];
+        udp_slot_copy(&s, &s_q[idx]);
         for (j = k; j + 1u < s_qcount; j++)
-            s_q[(s_qhead + j) % NET_UDP_QDEPTH] = s_q[(s_qhead + j + 1u) % NET_UDP_QDEPTH];
+            udp_slot_copy(&s_q[(s_qhead + j) % NET_UDP_QDEPTH],
+                          &s_q[(s_qhead + j + 1u) % NET_UDP_QDEPTH]);
         s_qcount--;
         return udp_emit(&s, buf, cap, src_ip, src_port, trunc);
     }
@@ -266,7 +281,7 @@ void net_udp_drop_if(int (*drop)(uint16_t dport))
         if (drop(s_q[ridx].dst_port))
             continue;
         if (wr != rd)
-            s_q[(s_qhead + wr) % NET_UDP_QDEPTH] = s_q[ridx];
+            udp_slot_copy(&s_q[(s_qhead + wr) % NET_UDP_QDEPTH], &s_q[ridx]);
         wr++;
     }
     s_qcount = wr;

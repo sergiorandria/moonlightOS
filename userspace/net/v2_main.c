@@ -36,8 +36,8 @@
  * firewall messages (bit 0x10); the T_FWD audit block itself is unchanged.
  *
  * Socket RPC (net-sockets Task 2, spec Sec 2): tag-switched S_OPEN /
- * S_SEND / S_TRYRECV / S_CLOSE beside T_FWD on the same ep, with S_OK /
- * S_DATA / S_EMPTY / S_ERR replies via T_DONE-style rendezvous SENDs to
+ * S_SEND / S_TRYRECV / S_RECV / S_CLOSE beside T_FWD on the same ep, with S_OK /
+ * S_DATA / S_EMPTY / S_TIMEOUT / S_ERR replies via T_DONE-style rendezvous SENDs to
  * the kernel-stamped sender (QX gating is the kernel rendezvous gate, as
  * for T_FWD; unknown tags/senders drop silently). S_SEND is two phases:
  * [S_SEND, sock, ip, port] pins routing (single-flight pending), then a
@@ -75,6 +75,7 @@
 #define V2_SEND 3
 #define V2_RECV 4
 #define V2_INVOKE 7
+#define V2_ASEND 8 /* fire-and-forget SEND: queue + return, never blocks (sys_asend) */
 
 #define V2_YIELD 0
 #define V2_PARK 2
@@ -95,6 +96,12 @@
  *     same sender ("announced like T_FWD": same MAP/verify discipline).
  *   S_TRYRECV [S_TRYRECV, sock, 0, 0]  -> [S_DATA, len, 0, 0] (+ payload in
  *     the client-RSVP frame, NET_SDATA_SLOT) / [S_EMPTY, 0,0,0].
+ *   S_RECV [S_RECV, sock, timeout_ticks, 0] -> immediate hit answers S_DATA
+ *     at once (waiter never activates); a miss with timeout 0 answers
+ *     S_EMPTY (single no-wait check, never parks); a miss with timeout > 0
+ *     arms that socket's waiter and answers later -- S_DATA on arrival via
+ *     fire-and-forget ASEND, S_TIMEOUT [S_TIMEOUT, sock, 0, 0] on rdtime
+ *     expiry (waiter cleared exactly once, no double reply).
  *   S_CLOSE   [S_CLOSE, sock, 0, 0]    -> [S_OK, sock, 0, 0] / [S_ERR, 0,0,0]
  * QX gate: the kernel rendezvous already required sender QX cross-qube
  * (same gate as T_FWD; a denied take fails the u_recv itself). The server
@@ -112,6 +119,8 @@
 #define S_DATA 13
 #define S_EMPTY 14
 #define S_ERR 15
+#define S_RECV 16
+#define S_TIMEOUT 17
 
 /* Client-side RSVP slot for S_DATA payload grants: the S_TRYRECV client
  * keeps this slot of its own table empty; net GRANTs its reply frame
@@ -343,6 +352,20 @@ static long u_send(unsigned long ep, const uint64_t *p, unsigned long n)
     return u_ecall3(V2_SEND, (long)ep, (long)p, (long)n);
 }
 
+/* Non-blocking reply path for deferred waiter traffic (S_DATA wakeups,
+ * S_TIMEOUT expiries): queues behind a RECV-waiting owner like SEND, but
+ * returns at once (OVERFLOW when the queue is full) instead of blocking.
+ * A waiter owner that exited without closing can never wedge the server
+ * loop through this path. Synchronous request/response legs keep the
+ * rendezvous u_send above: the requester just spoke, proving it lives. */
+static long u_asend(unsigned long ep, const uint64_t *p, unsigned long n)
+{
+    return u_ecall3(V2_ASEND, (long)ep, (long)p, (long)n);
+}
+
+static long u_invoke(long op, long a1, long a2,
+                     long a3); /* defined below; used by net_sdata_send */
+
 /* T_DONE-style rendezvous reply: blocks until the requester RECVs
  * (backpressure, same as T_DONE). Call only for honored requests whose
  * sender is RECV-waiting per the client protocol. All replies share the
@@ -366,6 +389,83 @@ static int net_sock_owned(long id, unsigned long owner)
     if (!net_socks[(int)id].used)
         return 0;
     return net_socks[(int)id].owner == (unsigned)owner;
+}
+
+/* Deferred-reply liveness gate (design Sec 6): the waiter owner proved
+ * alive when it sent S_RECV, but may have closed or lost the socket
+ * since. Re-check ownership immediately before SENDing: a closed or
+ * re-owned socket means the waiter is stale -> the caller clears it,
+ * drops the datagram, and never SENDs. (No thread-state query exists in
+ * the V2 UABI and the kernel stays untouched, so a bare thread exit with
+ * the socket left open is not detectable here; deferred replies use
+ * fire-and-forget ASEND precisely so even that case cannot wedge the
+ * loop: the announcement queues or overflows, the server keeps running.) */
+static int net_owner_live(long sid, unsigned owner)
+{
+    return net_sock_owned(sid, (unsigned long)owner);
+}
+
+/* Deferred [w0, w1, 0, 0] announcement via ASEND (never blocks; the
+ * return code is informational: a dead or deaf owner just queues or
+ * overflows while the loop continues). */
+static void net_wake_reply(unsigned long dst, uint64_t w0, uint64_t w1)
+{
+    uint64_t rep[4];
+    rep[0] = w0;
+    rep[1] = w1;
+    rep[2] = 0;
+    rep[3] = 0;
+    (void)u_asend(dst, rep, 4);
+}
+
+/* net_udp_drop_if predicate: drop datagrams for ports with no bound
+ * socket (N1: the loopback drain uses the same gate, so no special skip
+ * is needed -- unbound traffic never parks). */
+static int net_port_unbound(uint16_t dport)
+{
+    return net_sock_demux(dport) < 0;
+}
+
+/* S_CLOSE drain selector: single-threaded, so a file-scope port cell is
+ * race-free. Set net_drop_port to the closing socket's bound port, then
+ * net_udp_drop_if(net_drop_port_eq) discards only that socket's queued
+ * datagrams (other sockets' traffic is untouched). */
+static uint16_t net_drop_port;
+static int net_drop_port_eq(uint16_t dport)
+{
+    return dport == net_drop_port;
+}
+
+/* Stage payload[0..n) into the shared S_DATA reply frame, grant it to
+ * the client's RSVP slot, and announce [S_DATA, n, 0, 0] -- rendezvous
+ * by default, fire-and-forget when use_asend (waiter wakeups, whose
+ * owner may be gone). Returns 0 on announcement, -1 on MAP failure,
+ * -2 on grant failure (client RSVP slot occupied: protocol violation;
+ * the datagram was already dequeued and drops fail-closed). The caller
+ * answers S_ERR on nonzero for synchronous legs. */
+static int net_sdata_send(unsigned long dst, long rslot, const uint8_t *payload, unsigned long n,
+                          int use_asend)
+{
+    unsigned long k;
+    uint8_t *fr;
+    uint64_t ann[4];
+    if (u_invoke(V2_INV_MAP, rslot, (long)NET_SCRATCH_MAP_VPN, 0) != 0)
+        return -1;
+    fr = (uint8_t *)NET_SCRATCH_VA;
+    for (k = 0; k < n; k++) /* bound: 1472 */
+        fr[k] = payload[k];
+    u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
+    if (u_invoke(V2_INV_GRANT, rslot, (long)dst, (long)NET_SDATA_SLOT) != 0)
+        return -2;
+    ann[0] = (uint64_t)S_DATA;
+    ann[1] = (uint64_t)n;
+    ann[2] = 0;
+    ann[3] = 0;
+    if (use_asend)
+        (void)u_asend(dst, ann, 4);
+    else
+        u_send(dst, ann, 4);
+    return 0;
 }
 
 /* RECV returns words-written in a0, kernel-stamped sender in a1,
@@ -939,7 +1039,8 @@ void net_main(void)
     int pend_sock;          /* ... for this socket */
     uint32_t pend_ip;       /* ... to this destination */
     uint16_t pend_port;
-    long reply_slot; /* PT_ALLOC'd S_DATA reply frame (-1 when none) */
+    uint64_t pend_t0; /* ... armed at S_SEND accept; ~2s expiry, same timebase */
+    long reply_slot;  /* PT_ALLOC'd S_DATA reply frame (-1 when none) */
 
     u_puts("NET: up\n");
     /* Boot-once stack init: reseeds the ARP table (gateway) and flushes
@@ -967,6 +1068,7 @@ void net_main(void)
     pend_sock = 0;
     pend_ip = 0;
     pend_port = 0;
+    pend_t0 = 0;
     reply_slot = u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
     /* PT_ALLOC failure (~impossible: pool-sized): TRYRECV hits answer
      * S_ERR below; the server otherwise runs. The reply frame is never
@@ -987,6 +1089,12 @@ void net_main(void)
         if (park_valid && now - park_t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
             park_valid = 0;
 
+        /* S_SEND routing-phase timeout: a payload announcement that never
+         * arrives must not wedge later senders (single-flight pending).
+         * Same ~2s timebase as the parked datagram above. */
+        if (pend_valid && now - pend_t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
+            pend_valid = 0;
+
         /* Queued firewall message. V2_WAIT reports 0x10 without consuming,
          * so this u_recv takes without blocking. The T_FWD audit logic is
          * the unchanged phase-1 block, only nested under the bit (early
@@ -1002,7 +1110,7 @@ void net_main(void)
 
             /* Tag demultiplex beside T_FWD. Only a full T_FWD from the
              * firewall qube enters the audit block below (byte-unchanged);
-             * S_OPEN/S_SEND/S_TRYRECV/S_CLOSE chain after it. Everything
+             * S_OPEN/S_SEND/S_TRYRECV/S_RECV/S_CLOSE chain after it. Everything
              * else (short takes, unknown tags, unprivileged senders) is a
              * silent drop: no reply is ever sent. */
             if (n >= 4 && (unsigned long)buf[0] == (unsigned long)T_FWD &&
@@ -1163,19 +1271,21 @@ void net_main(void)
                     pend_sock = (int)sid;
                     pend_ip = (uint32_t)ipw;
                     pend_port = (uint16_t)ptw;
+                    pend_t0 = now;
                     net_rpc_reply(snd, (uint64_t)S_OK, 0);
                 }
             }
             else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_TRYRECV)
             {
                 /* S_TRYRECV [S_TRYRECV, sock, 0, 0]: only the owner's own
-                 * socket drains (shared-FIFO head; single-socket exact).
-                 * Hit: dequeue into rxcopy (free for reuse here: the RX
-                 * block below runs later in the iteration), stage into
-                 * the reply frame, grant it to the client's RSVP slot,
-                 * answer S_DATA. Miss: S_EMPTY, no grant touched. The
-                 * source address has no room in [S_DATA, len, 0, 0] and
-                 * is dropped (single-peer DNS needs none). */
+                 * socket drains, via its bound port (per-socket carve:
+                 * foreign datagrams are invisible here). Hit: dequeue into
+                 * rxcopy (free for reuse here: the RX block below runs
+                 * later in the iteration), stage into the reply frame,
+                 * grant it to the client's RSVP slot, answer S_DATA. Miss:
+                 * S_EMPTY, no grant touched. The source address has no
+                 * room in [S_DATA, len, 0, 0] and is dropped (single-peer
+                 * DNS needs none). */
                 long sid = (long)buf[1];
                 if (!net_sock_owned(sid, snd))
                 {
@@ -1189,9 +1299,8 @@ void net_main(void)
                 {
                     int trunc = 0;
                     long ngot;
-                    unsigned long k;
-                    uint8_t *dst;
-                    ngot = net_udp_recv(rxcopy, sizeof(rxcopy), 0, 0, &trunc);
+                    ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy), 0, 0,
+                                             &trunc);
                     if (ngot == -(NET_ERR_EMPTY))
                     {
                         net_rpc_reply(snd, (uint64_t)S_EMPTY, 0);
@@ -1202,53 +1311,88 @@ void net_main(void)
                          * defensive error. */
                         net_rpc_reply(snd, (uint64_t)S_ERR, 0);
                     }
-                    else if (u_invoke(V2_INV_MAP, reply_slot, (long)NET_SCRATCH_MAP_VPN, 0) != 0)
+                    else if (net_sdata_send(snd, reply_slot, rxcopy, (unsigned long)ngot, 0) != 0)
                     {
+                        /* MAP failure (~impossible: our own frame) or
+                         * client RSVP slot occupied (protocol violation:
+                         * datagram already dequeued, dropped fail-closed). */
                         net_rpc_reply(snd, (uint64_t)S_ERR, 0);
                     }
-                    else
+                }
+            }
+            else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_RECV)
+            {
+                /* S_RECV [S_RECV, sock, timeout_ticks, 0]: blocking recv.
+                 * Owner-checked like TRYRECV. Immediate hit (a datagram
+                 * already queued for the socket's bound port) answers
+                 * S_DATA at once via rendezvous, waiter never activates.
+                 * Miss with timeout 0 is a single no-wait check (S_EMPTY,
+                 * never parks). Miss with timeout > 0 arms that socket's
+                 * waiter (replacing any prior one) and answers later:
+                 * the per-pass match below ASENDs S_DATA on arrival, the
+                 * expiry sweep ASENDs S_TIMEOUT. No reply is sent at arm
+                 * time: the requester stays RECV-blocked for it. */
+                long sid = (long)buf[1];
+                uint64_t to = buf[2];
+                if (!net_sock_owned(sid, snd))
+                {
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else if (reply_slot < 0)
+                {
+                    net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                }
+                else
+                {
+                    int trunc = 0;
+                    long ngot;
+                    ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy), 0, 0,
+                                             &trunc);
+                    if (ngot == -(NET_ERR_EMPTY))
                     {
-                        dst = (uint8_t *)NET_SCRATCH_VA;
-                        for (k = 0; k < (unsigned long)ngot; k++) /* bound: 1472 */
-                            dst[k] = rxcopy[k];
-                        u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
-                        if (u_invoke(V2_INV_GRANT, reply_slot, (long)snd, (long)NET_SDATA_SLOT) !=
-                            0)
+                        if (to == 0)
                         {
-                            /* Client RSVP slot occupied (protocol
-                             * violation): datagram already dequeued,
-                             * dropped fail-closed. */
-                            net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                            net_rpc_reply(snd, (uint64_t)S_EMPTY, 0);
+                        }
+                        else if (net_waiter_arm((int)sid, (unsigned)snd, now, to) == 0)
+                        {
+                            /* Parked: no reply yet (S_DATA/S_TIMEOUT
+                             * later). */
                         }
                         else
                         {
-                            net_rpc_reply(snd, (uint64_t)S_DATA, (uint64_t)ngot);
+                            /* Unreachable (ownership just checked);
+                             * defensive error. */
+                            net_rpc_reply(snd, (uint64_t)S_ERR, 0);
                         }
+                    }
+                    else if (ngot < 0 || trunc)
+                    {
+                        net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                    }
+                    else if (net_sdata_send(snd, reply_slot, rxcopy, (unsigned long)ngot, 0) != 0)
+                    {
+                        net_rpc_reply(snd, (uint64_t)S_ERR, 0);
                     }
                 }
             }
             else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_CLOSE)
             {
-                /* S_CLOSE [S_CLOSE, sock, 0, 0]: free the entry and discard
-                 * its queued datagrams so the fair-share pool slot
-                 * returns. The RX queue is one shared FIFO (no per-socket
-                 * carve), so the close drains it whole (bounded: depth 4
-                 * + terminal EMPTY take); with one socket outstanding
-                 * this is exact. */
+                /* S_CLOSE [S_CLOSE, sock, 0, 0]: disarm the socket's
+                 * waiter, free the entry, and discard only that socket's
+                 * queued datagrams (bound-port drop-if) so the fair-share
+                 * pool slot returns; other sockets' traffic is untouched. */
                 long sid = (long)buf[1];
-                int k;
                 if (!net_sock_owned(sid, snd))
                 {
                     net_rpc_reply(snd, (uint64_t)S_ERR, 0);
                 }
                 else
                 {
+                    net_drop_port = net_socks[(int)sid].port; /* before close zeroes it */
+                    net_waiter_clear((int)sid);
                     net_sock_close((int)sid);
-                    for (k = 0; k <= (int)NET_UDP_QDEPTH; k++) /* bound: 4+1 */
-                    {
-                        if (net_udp_recv(rxcopy, sizeof(rxcopy), 0, 0, 0) == -(NET_ERR_EMPTY))
-                            break;
-                    }
+                    net_udp_drop_if(net_drop_port_eq);
                     net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)sid);
                 }
             }
@@ -1295,13 +1439,14 @@ void net_main(void)
                     /* Phase-1 live loopback: echo the datagram to its
                      * sender with ports swapped, exercising the UDP send
                      * path on live traffic. Reflected only when addressed
-                     * to us (never broadcast/foreign floods). The queue is
-                     * drained on EVERY validated UDP (foreign included, by
-                     * the unconditional dequeue below): entries can never
-                     * accumulate to the 4-slot drop point, so the echo
-                     * always pairs this frame's sip/sport/payload with its
-                     * own local port. rxcopy is free for reuse as the
-                     * dequeue buffer (classification is done). */
+                     * to us (never broadcast/foreign floods). Per-socket
+                     * carve: unbound-port datagrams are purged by the same
+                     * demux gate above (never park, never echo); the echo
+                     * below reads only this frame's bound socket slot via
+                     * recv_from. A waiter armed on that port wins the new
+                     * arrival (S_DATA via ASEND, waiter cleared); the echo
+                     * takes only the leftover. rxcopy is free for reuse as
+                     * the dequeue buffer (classification is done). */
                     {
                         uint32_t sip = 0;
                         uint16_t sport = 0;
@@ -1310,23 +1455,90 @@ void net_main(void)
                         uint32_t dip;
                         int trunc = 0;
                         int ngot;
+                        int consumed = 0; /* waiter took this arrival: skip echo */
                         unsigned long flen = 0;
                         int rc;
                         ihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
                         dip =
                             (uint32_t)(((uint32_t)rxcopy[30] << 24) | ((uint32_t)rxcopy[31] << 16) |
                                        ((uint32_t)rxcopy[32] << 8) | (uint32_t)rxcopy[33]);
-                        /* Always drain the queue: net_stack_rx enqueues every
-                         * validated UDP (foreign/broadcast included); leaving
-                         * entries behind would fill the 4 slots and make a
-                         * later echo misdeliver a stale datagram. Anything
-                         * not addressed to us is dequeued and discarded.
-                         * Port/addr views are captured before the dequeue
-                         * overwrites rxcopy with the payload. */
-                        if (ihl >= 20u && dip == NET_IP_SELF)
+                        /* N1 gate: purge unbound-port datagrams dropped by
+                         * the demux (no socket bound there). Port/addr
+                         * views are captured before any dequeue overwrites
+                         * rxcopy with the payload. */
+                        net_udp_drop_if(net_port_unbound);
+                        if (ihl >= 20u)
                             local = (uint16_t)(((unsigned)rxcopy[14 + ihl + 2] << 8) |
                                                (unsigned)rxcopy[14 + ihl + 3]);
-                        ngot = net_udp_recv(rxcopy, sizeof(rxcopy), &sip, &sport, &trunc);
+                        /* Waiter match for the new arrival (design Sec 2):
+                         * an armed waiter on this frame's port consumes
+                         * exactly one queued datagram and is cleared, so a
+                         * late duplicate can never double-reply. Stale
+                         * waiter (socket closed or re-owned since the arm)
+                         * is cleared with the datagram dropped, never
+                         * SENDing. Reply path is ASEND: even a vanished
+                         * owner cannot wedge the loop. */
+                        if (ihl >= 20u)
+                        {
+                            unsigned wowner = 0;
+                            int wsid = net_waiter_match(local, &wowner);
+                            if (wsid >= 0)
+                            {
+                                if (!net_owner_live((long)wsid, wowner))
+                                {
+                                    net_waiter_clear(wsid);
+                                }
+                                else
+                                {
+                                    int wtrunc = 0;
+                                    long wgot;
+                                    wgot = net_udp_recv_from(local, rxcopy, sizeof(rxcopy), 0, 0,
+                                                             &wtrunc);
+                                    if (wgot == -(NET_ERR_EMPTY))
+                                    {
+                                        /* Lost race (queue full dropped the
+                                         * arrival, or a poller took it):
+                                         * waiter stays armed for the next
+                                         * arrival; echo still skipped this
+                                         * pass so nothing is misdelivered. */
+                                        consumed = 1;
+                                    }
+                                    else if (wgot >= 0 && !wtrunc)
+                                    {
+                                        net_waiter_clear(wsid);
+                                        consumed = 1;
+                                        if (net_sdata_send((unsigned long)wowner, reply_slot,
+                                                           rxcopy, (unsigned long)wgot, 1) != 0)
+                                        {
+                                            /* MAP failure (~impossible) or
+                                             * RSVP occupied: datagram
+                                             * already dequeued, dropped
+                                             * fail-closed; tell the waiter
+                                             * without blocking. */
+                                            net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR,
+                                                           0);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        /* TRUNC unreachable (1514 cap >
+                                         * 1472 max); waiter already
+                                         * cleared, datagram dropped,
+                                         * echo skipped. */
+                                        net_waiter_clear(wsid);
+                                        consumed = 1;
+                                    }
+                                }
+                            }
+                        }
+                        if (!consumed)
+                            ngot = net_udp_recv_from(local, rxcopy, sizeof(rxcopy), &sip, &sport,
+                                                     &trunc);
+                        else
+                        {
+                            ngot = -(NET_ERR_EMPTY);
+                            trunc = 0;
+                        }
                         if (ihl >= 20u && dip == NET_IP_SELF && ngot >= 0 && !trunc)
                         {
                             rc = net_stack_udp_send(sip, sport, local, rxcopy, (unsigned long)ngot,
@@ -1401,6 +1613,27 @@ void net_main(void)
             net_fence();
             net_w(wire.regs, NET_R_QNOTIFY, 0u);
             net_fence();
+        }
+
+        /* Waiter expiry sweep, every pass (design Sec 4): each armed
+         * waiter whose rdtime deadline has passed fires exactly once --
+         * net_waiter_expire clears it on return, so a late RX can never
+         * double-reply. Stale owners (socket closed/re-owned since the
+         * arm) are skipped without SENDing; live ones get S_TIMEOUT via
+         * ASEND, which cannot wedge the loop even if the owner vanished
+         * without closing. Same rdtime timebase as NET_IRQ_TIMEOUT_TICKS;
+         * wrap-safe unsigned compare lives in net_waiter_expire. */
+        for (;;)
+        {
+            int esid;
+            int esock = -1;
+            unsigned eowner = 0;
+            esid = net_waiter_expire(now, &esock, &eowner);
+            if (esid < 0)
+                break;
+            if (!net_owner_live((long)esock, eowner))
+                continue; /* already cleared by expire: nothing owed */
+            net_wake_reply((unsigned long)eowner, (uint64_t)S_TIMEOUT, (uint64_t)esock);
         }
     }
 }
