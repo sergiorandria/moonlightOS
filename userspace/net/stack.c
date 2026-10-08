@@ -15,6 +15,7 @@ struct udp_slot
 {
     uint32_t src_ip;
     uint16_t src_port;
+    uint16_t dst_port;
     unsigned long len;
     uint8_t payload[ETH_FRAME_MAX - ETH_HDR_LEN - IP_MIN - UDP_HDR_LEN];
 };
@@ -162,6 +163,7 @@ int net_stack_rx(const uint8_t *f, unsigned long len)
     idx = (s_qhead + s_qcount) % NET_UDP_QDEPTH;
     s_q[idx].src_ip = sip;
     s_q[idx].src_port = (uint16_t)(((unsigned)f[off] << 8) | (unsigned)f[off + 1]);
+    s_q[idx].dst_port = (uint16_t)(((unsigned)f[off + 2] << 8) | (unsigned)f[off + 3]);
     s_q[idx].len = plen;
     for (i = 0; i < (unsigned)plen; i++)
         s_q[idx].payload[i] = f[off + UDP_HDR_LEN + i];
@@ -169,18 +171,11 @@ int net_stack_rx(const uint8_t *f, unsigned long len)
     return NET_CLASS_UDP;
 }
 
-int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *src_port, int *trunc)
+static int udp_emit(const struct udp_slot *s, uint8_t *buf, unsigned long cap, uint32_t *src_ip,
+                    uint16_t *src_port, int *trunc)
 {
-    struct udp_slot *s;
     unsigned i;
     unsigned long n;
-    if (s_qcount == 0)
-    {
-        if (trunc)
-            *trunc = 0;
-        return -(NET_ERR_EMPTY);
-    }
-    s = &s_q[s_qhead];
     if (cap < s->len)
     {
         n = cap;
@@ -195,8 +190,6 @@ int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *sr
             *src_port = s->src_port;
         if (trunc)
             *trunc = 1;
-        s_qhead = (s_qhead + 1u) % NET_UDP_QDEPTH;
-        s_qcount--;
         return -(NET_ERR_TRUNC);
     }
     if (s->len > 0 && !buf)
@@ -207,12 +200,13 @@ int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *sr
             *src_port = s->src_port;
         if (trunc)
             *trunc = 1;
-        s_qhead = (s_qhead + 1u) % NET_UDP_QDEPTH;
-        s_qcount--;
         return -(NET_ERR_TRUNC);
     }
-    for (i = 0; i < (unsigned)s->len; i++)
-        buf[i] = s->payload[i];
+    if (buf)
+    {
+        for (i = 0; i < (unsigned)s->len; i++)
+            buf[i] = s->payload[i];
+    }
     if (src_ip)
         *src_ip = s->src_ip;
     if (src_port)
@@ -220,7 +214,60 @@ int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *sr
     if (trunc)
         *trunc = 0;
     n = s->len;
+    return (int)n;
+}
+
+int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *src_port, int *trunc)
+{
+    struct udp_slot s;
+    if (s_qcount == 0)
+    {
+        if (trunc)
+            *trunc = 0;
+        return -(NET_ERR_EMPTY);
+    }
+    s = s_q[s_qhead];
     s_qhead = (s_qhead + 1u) % NET_UDP_QDEPTH;
     s_qcount--;
-    return (int)n;
+    return udp_emit(&s, buf, cap, src_ip, src_port, trunc);
+}
+
+int net_udp_recv_from(uint16_t dport, uint8_t *buf, unsigned long cap, uint32_t *src_ip,
+                      uint16_t *src_port, int *trunc)
+{
+    unsigned k, j;
+    struct udp_slot s;
+    for (k = 0; k < s_qcount; k++)
+    {
+        unsigned idx = (s_qhead + k) % NET_UDP_QDEPTH;
+        if (s_q[idx].dst_port != dport)
+            continue;
+        s = s_q[idx];
+        for (j = k; j + 1u < s_qcount; j++)
+            s_q[(s_qhead + j) % NET_UDP_QDEPTH] = s_q[(s_qhead + j + 1u) % NET_UDP_QDEPTH];
+        s_qcount--;
+        return udp_emit(&s, buf, cap, src_ip, src_port, trunc);
+    }
+    if (trunc)
+        *trunc = 0;
+    return -(NET_ERR_EMPTY);
+}
+
+void net_udp_drop_if(int (*drop)(uint16_t dport))
+{
+    unsigned rd, wr = 0;
+    unsigned total;
+    if (!drop)
+        return;
+    total = s_qcount;
+    for (rd = 0; rd < total; rd++)
+    {
+        unsigned ridx = (s_qhead + rd) % NET_UDP_QDEPTH;
+        if (drop(s_q[ridx].dst_port))
+            continue;
+        if (wr != rd)
+            s_q[(s_qhead + wr) % NET_UDP_QDEPTH] = s_q[ridx];
+        wr++;
+    }
+    s_qcount = wr;
 }

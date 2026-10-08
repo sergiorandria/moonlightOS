@@ -20,6 +20,11 @@
  * Later tasks include arp_cache.h for the canonical MAC/IP constants. */
 #include "../userspace/net/arp_cache.c"
 
+static int t_carve_drop7(uint16_t dport)
+{
+    return dport == 7;
+}
+
 /* Task 3: DNS codec (same single-TU pattern). */
 #include "../userspace/net/dns.c"
 
@@ -327,6 +332,83 @@ int main(void)
             memset(big, 0, sizeof(big));
             CHECK(net_stack_rx(big, sizeof(big)) == NET_CLASS_DROP);
             CHECK(net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        }
+    }
+    /* ---- SDD 2026-10-08 net-blocking-recv Task 1: per-socket queue carve ---- */
+    {
+        static const uint8_t p53[] = {'D', 'N', 'S', '5', '3'};
+        static const uint8_t p7[] = {'E', 'C', 'H', 'O', '7', 'X', '9'};
+        uint8_t frame[1514];
+        uint8_t buf[32];
+        unsigned long flen = 0;
+        uint32_t sip = 0;
+        uint16_t sport = 0;
+        int trunc = -1;
+        int n;
+        net_stack_init();
+        net_arp_init();
+        CHECK(net_stack_udp_send(0x0A000202u, 53, 4001, p53, sizeof(p53), frame, &flen) == 0);
+        CHECK(net_stack_rx(frame, flen) == NET_CLASS_UDP);
+        CHECK(net_stack_udp_send(0x0A000202u, 7, 4002, p7, sizeof(p7), frame, &flen) == 0);
+        CHECK(net_stack_rx(frame, flen) == NET_CLASS_UDP);
+        /* Cross-socket invisibility: port 9999 sees nothing, queue intact. */
+        trunc = -1;
+        CHECK(net_udp_recv_from(9999, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        CHECK(trunc == 0);
+        /* Selective drain: port 7 first, then port 53. */
+        trunc = -1;
+        sip = 0;
+        sport = 0;
+        n = net_udp_recv_from(7, buf, sizeof(buf), &sip, &sport, &trunc);
+        CHECK(n == (int)sizeof(p7));
+        CHECK(trunc == 0);
+        CHECK(sport == 4002);
+        CHECK(memcmp(buf, p7, sizeof(p7)) == 0);
+        trunc = -1;
+        sip = 0;
+        sport = 0;
+        n = net_udp_recv_from(53, buf, sizeof(buf), &sip, &sport, &trunc);
+        CHECK(n == (int)sizeof(p53));
+        CHECK(trunc == 0);
+        CHECK(sport == 4001);
+        CHECK(memcmp(buf, p53, sizeof(p53)) == 0);
+        CHECK(net_udp_recv_from(53, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        /* drop_if: re-enqueue both, drop port 7 only. */
+        CHECK(net_stack_udp_send(0x0A000202u, 53, 4001, p53, sizeof(p53), frame, &flen) == 0);
+        CHECK(net_stack_rx(frame, flen) == NET_CLASS_UDP);
+        CHECK(net_stack_udp_send(0x0A000202u, 7, 4002, p7, sizeof(p7), frame, &flen) == 0);
+        CHECK(net_stack_rx(frame, flen) == NET_CLASS_UDP);
+        net_udp_drop_if(t_carve_drop7);
+        trunc = -1;
+        CHECK(net_udp_recv_from(7, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        CHECK(trunc == 0);
+        trunc = -1;
+        n = net_udp_recv_from(53, buf, sizeof(buf), &sip, &sport, &trunc);
+        CHECK(n == (int)sizeof(p53));
+        CHECK(trunc == 0);
+        CHECK(memcmp(buf, p53, sizeof(p53)) == 0);
+        CHECK(net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        /* trunc/empty contract incl cap==0. */
+        CHECK(net_stack_udp_send(0x0A000202u, 7, 4002, p7, sizeof(p7), frame, &flen) == 0);
+        CHECK(net_stack_rx(frame, flen) == NET_CLASS_UDP);
+        trunc = -1;
+        CHECK(net_udp_recv_from(7, buf, 0, &sip, &sport, &trunc) == -(NET_ERR_TRUNC));
+        CHECK(trunc == 1);
+        CHECK(net_udp_recv_from(7, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        CHECK(trunc == 0);
+        CHECK(net_stack_udp_send(0x0A000202u, 7, 4002, p7, sizeof(p7), frame, &flen) == 0);
+        CHECK(net_stack_rx(frame, flen) == NET_CLASS_UDP);
+        trunc = -1;
+        CHECK(net_udp_recv_from(7, buf, 4, &sip, &sport, &trunc) == -(NET_ERR_TRUNC));
+        CHECK(trunc == 1);
+        CHECK(memcmp(buf, p7, 4) == 0);
+        /* Oversize frame drops, queue stays empty. */
+        {
+            static uint8_t big[1600];
+            memset(big, 0, sizeof(big));
+            CHECK(net_stack_rx(big, sizeof(big)) == NET_CLASS_DROP);
+            CHECK(net_udp_recv_from(53, buf, sizeof(buf), &sip, &sport, &trunc) ==
+                  -(NET_ERR_EMPTY));
         }
     }
     /* ---- Task 3: DNS codec (query build + first-A parse) ---- */

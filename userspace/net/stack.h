@@ -54,5 +54,8 @@ int net_stack_udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port,
                        const uint8_t *payload, unsigned long len, uint8_t *frame_out,
                        unsigned long *frame_len);
 int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *src_port, int *trunc);
+int net_udp_recv_from(uint16_t dport, uint8_t *buf, unsigned long cap, uint32_t *src_ip,
+                      uint16_t *src_port, int *trunc);
+void net_udp_drop_if(int (*drop)(uint16_t dport));
 
 #endif /* NET_STACK_H */
