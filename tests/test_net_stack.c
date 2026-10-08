@@ -520,6 +520,34 @@ int main(void)
         CHECK(net_dns_parse_a(dns_noans, sizeof(dns_noans), &ip) == -(NET_ERR_EMPTY));
         CHECK(net_dns_parse_a(dns_garbage, sizeof(dns_garbage), &ip) == -(NET_ERR_TRUNC));
     }
+    /* ICMP echo (RFC 792): request build, reply swap, id/seq match. */
+    {
+        uint8_t req[14 + 20 + 8 + 4];
+        uint8_t rep[sizeof(req)];
+        unsigned long reqlen = 0, replen = 0;
+        uint8_t pay[4] = {0xDEu, 0xADu, 0xBEu, 0xEFu};
+        uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
+        CHECK(net_icmp_build_request(gwmac, 0x0A00020Fu, 0x1234u, 0x0001u, pay, sizeof(pay), req,
+                                     &reqlen) == 0);
+        CHECK(reqlen == sizeof(req));
+        CHECK(req[12] == 0x08u && req[13] == 0x00u); /* ethertype IPv4 */
+        CHECK(req[14 + 9] == IP_PROTO_ICMP);
+        CHECK(req[14 + 20] == ICMP_ECHO_REQUEST && req[14 + 21] == 0u);
+        CHECK(req[14 + 24] == 0x12u && req[14 + 25] == 0x34u); /* id */
+        CHECK(req[14 + 26] == 0x00u && req[14 + 27] == 0x01u); /* seq */
+        CHECK(net_ip_checksum(req + 14, 20) == 0u);
+        CHECK(net_icmp_checksum(req + 34, 12) == 0u);
+        CHECK(net_stack_icmp_reply(req, reqlen, rep, &replen) == 0);
+        CHECK(replen == reqlen);
+        CHECK(rep[14 + 20] == ICMP_ECHO_REPLY);
+        CHECK(net_ip_checksum(rep + 14, 20) == 0u);
+        CHECK(net_icmp_checksum(rep + 34, 12) == 0u);
+        CHECK(memcmp(rep + 42, pay, sizeof(pay)) == 0); /* payload preserved */
+        CHECK(net_ping_match(rep, replen, 0x1234u, 0x0001u) == 0);
+        CHECK(net_ping_match(rep, replen, 0x1235u, 0x0001u) < 0);   /* id mismatch */
+        CHECK(net_ping_match(rep, replen, 0x1234u, 0x0002u) < 0);   /* seq mismatch */
+        CHECK(net_stack_icmp_reply(rep, replen, req, &reqlen) < 0); /* reply != request */
+    }
     puts("PASS: test_net_stack");
     return 0;
 }

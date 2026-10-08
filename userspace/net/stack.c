@@ -185,6 +185,55 @@ int net_stack_rx(const uint8_t *f, unsigned long len)
     return NET_CLASS_UDP;
 }
 
+/* Build an echo reply for an inbound request to self (caller transmits).
+ * Returns 0 with *outlen set, or -1 (not a for-self request). */
+int net_stack_icmp_reply(const uint8_t *f, unsigned long len, uint8_t *out, unsigned long *outlen)
+{
+    unsigned ihl, off, i;
+    uint16_t tot, ck;
+    uint8_t m[6];
+    if (!f || !out || !outlen || !icmp_hdr_ok(f, len))
+        return -1;
+    ihl = ip_ihl_bytes(f, len);
+    off = ETH_HDR_LEN + ihl;
+    if (f[off] != ICMP_ECHO_REQUEST)
+        return -1;
+    if (len > (unsigned long)ETH_FRAME_MAX)
+        return -1;
+    tot = (uint16_t)(((unsigned)f[ETH_HDR_LEN + 2] << 8) | (unsigned)f[ETH_HDR_LEN + 3]);
+    if ((unsigned long)ETH_HDR_LEN + (unsigned long)tot > len)
+        return -1;
+    if (stack_ip_at(f, ETH_HDR_LEN + 16) != (uint32_t)NET_IP_SELF)
+        return -1;
+    for (i = 0; i < (unsigned)(ETH_HDR_LEN + tot); i++)
+        out[i] = f[i];
+    for (i = 0; i < 6u; i++)
+    {
+        m[i] = out[i];
+        out[i] = out[6 + i];
+        out[6 + i] = m[i];
+    }
+    for (i = 0; i < 4u; i++)
+    {
+        m[i] = out[ETH_HDR_LEN + 12 + i];
+        out[ETH_HDR_LEN + 12 + i] = out[ETH_HDR_LEN + 16 + i];
+        out[ETH_HDR_LEN + 16 + i] = m[i];
+    }
+    out[off] = ICMP_ECHO_REPLY;
+    out[ETH_HDR_LEN + 10] = 0u;
+    out[ETH_HDR_LEN + 11] = 0u;
+    ck = net_ip_checksum(out + ETH_HDR_LEN, ihl);
+    out[ETH_HDR_LEN + 10] = (uint8_t)(ck >> 8);
+    out[ETH_HDR_LEN + 11] = (uint8_t)(ck & 0xFFu);
+    out[off + 2] = 0u;
+    out[off + 3] = 0u;
+    ck = net_icmp_checksum(out + off, (unsigned)((unsigned long)tot - (unsigned long)ihl));
+    out[off + 2] = (uint8_t)(ck >> 8);
+    out[off + 3] = (uint8_t)(ck & 0xFFu);
+    *outlen = (unsigned long)ETH_HDR_LEN + (unsigned long)tot;
+    return 0;
+}
+
 static int udp_emit(const struct udp_slot *s, uint8_t *buf, unsigned long cap, uint32_t *src_ip,
                     uint16_t *src_port, int *trunc)
 {

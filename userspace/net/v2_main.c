@@ -748,6 +748,12 @@ static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
                         *rx_ok_done = 1;
                     }
                 }
+                else if (cls == NET_CLASS_ICMP)
+                {
+                    unsigned long replen = 0;
+                    if (net_stack_icmp_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF, &replen) == 0)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, replen);
+                }
                 else if (cls == NET_CLASS_ARP)
                 {
                     uint32_t rip = 0;
@@ -806,6 +812,95 @@ static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
     net_queue_drain(tmp, tcap);
     net_sock_close(sid);
     u_puts("NET: dns err=-3\n");
+}
+
+/* Boot self-ping (ICMP slice): one echo request to the gateway after
+ * the DNS proof, ~2s self-polled wait matching id/seq. Prints
+ * "NET: ping <ms>ms" (rdtime ticks @10MHz) or "NET: ping timeout";
+ * never parks. tmp doubles as build scratch + RX copy, sequentially. */
+static void net_boot_ping(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
+                          int *rx_ok_done)
+{
+    uint8_t dmac[6];
+    uint8_t pay[4] = {0xA5u, 0x5Au, 0xA5u, 0x5Au};
+    unsigned long flen = 0;
+    uint64_t t0;
+    int p;
+    if (!w || !tmp || tcap < (unsigned long)NET_PKT_MAX || !rx_seen || !rx_ok_done)
+        return; /* defensive: never print, never park */
+    if (net_arp_lookup(NET_IP_GW, dmac) != 0)
+        return; /* no route yet: silent, loop answers pings anyway */
+    if (net_icmp_build_request(dmac, NET_IP_GW, 1u, 1u, pay, sizeof(pay), tmp, &flen) != 0)
+        return;
+    if (net_tx_frame(w, tmp, flen) != 0)
+        return;
+    t0 = u_rdtime();
+    for (p = 0; p < NET_POLL_BOUND; p++)
+    { /* bound: NET_POLL_BOUND */
+        if (w->rxu->idx != *rx_seen)
+        {
+            unsigned long wlen = (unsigned long)w->rxu->ring[*rx_seen % 2u].len;
+            uint32_t isr;
+            net_fence();
+            (*rx_seen)++;
+            isr = net_r(w->regs, NET_R_ISTATUS);
+            if (isr)
+                net_w(w->regs, NET_R_IACK, isr);
+            net_fence();
+            if (wlen >= (unsigned long)NET_VIRTIO_HDR + 14u &&
+                wlen <= (unsigned long)NET_VIRTIO_HDR + (unsigned long)NET_PKT_MAX)
+            {
+                unsigned long pktlen = wlen - (unsigned long)NET_VIRTIO_HDR;
+                unsigned long i;
+                int cls;
+                for (i = 0; i < pktlen; i++) /* bound: 1514 */
+                    tmp[i] = w->rxf[NET_RX_PAY_OFF + i];
+                cls = net_stack_rx(tmp, pktlen);
+                if (cls == NET_CLASS_UDP)
+                {
+                    if (!*rx_ok_done)
+                    {
+                        u_puts("NET: rx ok\n");
+                        *rx_ok_done = 1;
+                    }
+                }
+                else if (cls == NET_CLASS_ICMP)
+                {
+                    unsigned long replen = 0;
+                    if (net_ping_match(tmp, pktlen, 1u, 1u) == 0)
+                    {
+                        uint64_t ms = (u_rdtime() - t0) / 10000u;
+                        u_puts("NET: ping ");
+                        u_putu((unsigned long)ms);
+                        u_puts("ms\n");
+                        return;
+                    }
+                    if (net_stack_icmp_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF, &replen) == 0)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, replen);
+                }
+                else if (cls == NET_CLASS_ARP)
+                {
+                    uint32_t rip = 0;
+                    uint8_t rmac[6];
+                    if (net_arp_need_reply(&rip, rmac) &&
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
+                            (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
+                                           (unsigned long)NET_ARP_FRAME_LEN);
+                }
+            }
+            w->rxa->ring[w->rxa->idx % 2u] = 0u;
+            net_fence();
+            w->rxa->idx++;
+            net_fence();
+            net_w(w->regs, NET_R_QNOTIFY, 0u);
+            net_fence();
+        }
+        u_yield();
+        if (u_rdtime() - t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
+            break;
+    }
+    u_puts("NET: ping timeout\n");
 }
 
 /* Phase-2 bring-up: probe, negotiate, DMA, link, RX post, one gratuitous
@@ -1056,6 +1151,7 @@ void net_main(void)
     rx_seen = 0;
     rx_ok_done = 0;
     net_boot_dns(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
+    net_boot_ping(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
 
     park_valid = 0;
     park_ip = 0;
@@ -1573,6 +1669,15 @@ void net_main(void)
                              * occupied park: drop newest, silent. */
                         }
                     }
+                }
+                else if (cls == NET_CLASS_ICMP)
+                {
+                    /* Answer echo requests for our IP (reply built from
+                     * the copied request; checksums recomputed). */
+                    unsigned long replen = 0;
+                    if (net_stack_icmp_reply(rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen) ==
+                        0)
+                        (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
                 }
                 else if (cls == NET_CLASS_ARP)
                 {
