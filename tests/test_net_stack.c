@@ -680,6 +680,91 @@ int main(void)
         CHECK(NET_IP_DNS == 0x0A000203u);
         CHECK(NET_IP_SUBNET == 0xFFFFFF00u);
     }
+    /* TCP handshake (lwIP-grounded: SYN/SYN-ACK/ACK, single TCB). */
+    {
+        struct net_tcp_conn c;
+        uint8_t syn[14 + 20 + 24];
+        uint8_t sa[14 + 20 + 24];
+        uint8_t rep[14 + 20 + 20];
+        unsigned long synlen = 0, replen = 0;
+        uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
+        unsigned i;
+        CHECK(net_tcp_syn(&c, gwmac, 0x0A000202u, 80u, 49152u, 0x01020304u, syn, &synlen) == 0);
+        CHECK(c.state == NET_TCP_SYN_SENT && c.iss == 0x01020304u);
+        CHECK(synlen == sizeof(syn));
+        CHECK(syn[14 + 20 + 13] == (TCP_SYN & 0xFFu));
+        CHECK(net_ip_checksum(syn + 14, 20) == 0u);
+        CHECK(net_tcp_checksum(NET_IP_SELF, 0x0A000202u, syn + 34, 24) == 0u);
+        /* Craft matching SYN-ACK (peer seq 0x0A0B0C0D). */
+        for (i = 0; i < sizeof(sa); i++)
+            sa[i] = syn[i];
+        for (i = 0; i < 6u; i++)
+        {
+            sa[i] = syn[6 + i];
+            sa[6 + i] = syn[i];
+        }
+        for (i = 0; i < 4u; i++) /* swap IP src/dst */
+        {
+            uint8_t t = sa[26 + i];
+            sa[26 + i] = sa[30 + i];
+            sa[30 + i] = t;
+        }
+        sa[34] = 0u;
+        sa[35] = 80u; /* sport = server */
+        sa[36] = 0xC0u;
+        sa[37] = 0x00u; /* dport = 49152 */
+        sa[14 + 20 + 13] = (uint8_t)(TCP_SYN | TCP_ACK);
+        sa[38] = 0x0Au;
+        sa[39] = 0x0Bu;
+        sa[40] = 0x0Cu;
+        sa[41] = 0x0Du; /* peer seq */
+        sa[42] = 0x01u;
+        sa[43] = 0x02u;
+        sa[44] = 0x03u;
+        sa[45] = 0x05u; /* ack = iss+1 */
+        sa[24] = 0u;
+        sa[25] = 0u;
+        {
+            uint16_t ipck = net_ip_checksum(sa + 14, 20);
+            sa[24] = (uint8_t)(ipck >> 8);
+            sa[25] = (uint8_t)(ipck & 0xFFu);
+        }
+        sa[52] = 0u;
+        sa[53] = 0u;
+        {
+            uint16_t ck = net_tcp_checksum(0x0A000202u, NET_IP_SELF, sa + 34, 24);
+            sa[52] = (uint8_t)(ck >> 8);
+            sa[53] = (uint8_t)(ck & 0xFFu);
+        }
+        CHECK(net_tcp_input(&c, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(c.state == NET_TCP_ESTABLISHED && c.irs == 0x0A0B0C0Du);
+        CHECK(replen == 14u + 20u + 20u);
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
+        CHECK(rep[42] == 0x0Au && rep[45] == 0x0Eu); /* ack = irs+1 */
+        CHECK(net_tcp_checksum(NET_IP_SELF, 0x0A000202u, rep + 34, 20) == 0u);
+        /* Wrong ack: dropped, state holds. */
+        sa[45] = 0x09u;
+        {
+            uint16_t ck = net_tcp_checksum(0x0A000202u, NET_IP_SELF, sa + 34, 24);
+            sa[52] = (uint8_t)(ck >> 8);
+            sa[53] = (uint8_t)(ck & 0xFFu);
+        }
+        c.state = NET_TCP_SYN_SENT;
+        c.snd_nxt = c.iss + 1u;
+        CHECK(net_tcp_input(&c, sa, sizeof(sa), rep, &replen) == 0);
+        CHECK(c.state == NET_TCP_SYN_SENT);
+        /* RST aborts to CLOSED. */
+        sa[14 + 20 + 13] = (uint8_t)(TCP_RST | TCP_ACK);
+        sa[52] = 0u;
+        sa[53] = 0u;
+        {
+            uint16_t ck = net_tcp_checksum(0x0A000202u, NET_IP_SELF, sa + 34, 24);
+            sa[52] = (uint8_t)(ck >> 8);
+            sa[53] = (uint8_t)(ck & 0xFFu);
+        }
+        CHECK(net_tcp_input(&c, sa, sizeof(sa), rep, &replen) == 0);
+        CHECK(c.state == NET_TCP_CLOSED);
+    }
     puts("PASS: test_net_stack");
     return 0;
 }

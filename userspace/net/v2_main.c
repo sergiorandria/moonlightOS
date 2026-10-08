@@ -383,17 +383,6 @@ static void net_rpc_reply(unsigned long dst, uint64_t w0, uint64_t w1)
     u_send(dst, rep, 4);
 }
 
-/* Socket id usable by this sender: in range, open, owned by the
- * kernel-stamped tid. Same-TU view of sock.c (included above). */
-static int net_sock_owned(long id, unsigned long owner)
-{
-    if (id < 0 || id >= (long)NET_SOCK_MAX)
-        return 0;
-    if (!net_socks[(int)id].used)
-        return 0;
-    return net_socks[(int)id].owner == (unsigned)owner;
-}
-
 /* Deferred-reply liveness gate (design Sec 6): the waiter owner proved
  * alive when it sent S_RECV, but may have closed or lost the socket
  * since. Re-check ownership immediately before SENDing: a closed or
@@ -410,10 +399,22 @@ static int net_owner_live(long sid, unsigned owner)
 
 /* Deferred [w0, w1, 0, 0] announcement via ASEND (never blocks; the
  * return code is informational: a dead or deaf owner just queues or
- * overflows while the loop continues). */
+ * overflows while the loop continues). Validates that the destination
+ * still owns the socket before sending to avoid stale replies (when
+ * w1 encodes a socket ID, e.g., S_TIMEOUT). */
 static void net_wake_reply(unsigned long dst, uint64_t w0, uint64_t w1)
 {
     uint64_t rep[4];
+    /* Validate destination still owns the socket before sending.
+     * For S_TIMEOUT replies, w1 contains the socket ID.
+     * For S_ERR/S_DATA replies, socket validation is implicit from
+     * the waiter table cleared on close. */
+    if (w0 == (uint64_t)S_TIMEOUT)
+    {
+        long sid = (long)w1; /* Socket ID in w1 for S_TIMEOUT */
+        if (!net_owner_live(sid, (unsigned)dst))
+            return; /* Socket closed or owner changed; drop reply */
+    }
     rep[0] = w0;
     rep[1] = w1;
     rep[2] = 0;
@@ -452,13 +453,18 @@ static int net_sdata_send(unsigned long dst, long rslot, const uint8_t *payload,
     unsigned long k;
     uint8_t *fr;
     uint64_t ann[4];
+    int grant_ok;
     if (u_invoke(V2_INV_MAP, rslot, (long)NET_SCRATCH_MAP_VPN, 0) != 0)
         return -1;
     fr = (uint8_t *)NET_SCRATCH_VA;
     for (k = 0; k < n; k++) /* bound: 1472 */
         fr[k] = payload[k];
+    /* Grant before UNMAP: if GRANT fails, we can UNMAP cleanly without
+     * losing the data. This prevents the race where UNMAP succeeds but
+     * GRANT fails, leaving the client with an empty slot. */
+    grant_ok = (u_invoke(V2_INV_GRANT, rslot, (long)dst, (long)NET_SDATA_SLOT) == 0);
     u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
-    if (u_invoke(V2_INV_GRANT, rslot, (long)dst, (long)NET_SDATA_SLOT) != 0)
+    if (!grant_ok)
         return -2;
     ann[0] = (uint64_t)S_DATA;
     ann[1] = (uint64_t)n;
@@ -1090,6 +1096,108 @@ static void net_boot_ping(struct net_wire *w, uint8_t *tmp, unsigned long tcap, 
     u_puts("NET: ping timeout\n");
 }
 
+/* Boot active open (TCP slice): one SYN to the gateway port 80 after the
+ * self-ping, ~2s self-polled wait matching SYN-ACK by ports/ack. Prints
+ * "NET: tcp open", "NET: tcp rst" (SLIRP refuses closed ports: still a
+ * live round-trip), or "NET: tcp timeout"; never parks. The TCB stays
+ * file-live so the service loop can feed it late arrivals. */
+static struct net_tcp_conn tcp_boot;
+static int tcp_boot_live;
+
+static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
+                         int *rx_ok_done)
+{
+    uint8_t dmac[6];
+    uint32_t iss;
+    unsigned long flen = 0;
+    uint64_t t0;
+    int p;
+    if (!w || !tmp || tcap < (unsigned long)NET_PKT_MAX || !rx_seen || !rx_ok_done)
+        return; /* defensive: never print, never park */
+    tcp_boot.state = NET_TCP_CLOSED;
+    tcp_boot_live = 0;
+    if (net_arp_lookup(NET_IP_GW, dmac) != 0)
+        return; /* no route yet: silent, loop answers pings anyway */
+    iss = u_rdtime();
+    if (net_tcp_syn(&tcp_boot, dmac, NET_IP_GW, 80u, 49152u, iss, tmp, &flen) != 0)
+        return;
+    if (net_tx_frame(w, tmp, flen) != 0)
+        return;
+    tcp_boot_live = 1;
+    t0 = u_rdtime();
+    for (p = 0; p < NET_POLL_BOUND; p++)
+    { /* bound: NET_POLL_BOUND */
+        if (w->rxu->idx != *rx_seen)
+        {
+            unsigned long wlen = (unsigned long)w->rxu->ring[*rx_seen % 2u].len;
+            uint32_t isr;
+            net_fence();
+            (*rx_seen)++;
+            isr = net_r(w->regs, NET_R_ISTATUS);
+            if (isr)
+                net_w(w->regs, NET_R_IACK, isr);
+            net_fence();
+            if (wlen >= (unsigned long)NET_VIRTIO_HDR + 14u &&
+                wlen <= (unsigned long)NET_VIRTIO_HDR + (unsigned long)NET_PKT_MAX)
+            {
+                unsigned long pktlen = wlen - (unsigned long)NET_VIRTIO_HDR;
+                unsigned long i;
+                int cls;
+                unsigned long replen = 0;
+                int rc;
+                for (i = 0; i < pktlen; i++) /* bound: 1514 */
+                    tmp[i] = w->rxf[NET_RX_PAY_OFF + i];
+                cls = net_stack_rx(tmp, pktlen);
+                if (cls == NET_CLASS_UDP)
+                {
+                    if (!*rx_ok_done)
+                    {
+                        u_puts("NET: rx ok\n");
+                        *rx_ok_done = 1;
+                    }
+                }
+                else if (cls == NET_CLASS_TCP)
+                {
+                    rc = net_tcp_input(&tcp_boot, tmp, pktlen, w->txf + NET_TX_PAY_OFF, &replen);
+                    if (rc == 1)
+                    {
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, replen);
+                        u_puts("NET: tcp open\n");
+                        return;
+                    }
+                    if (tcp_boot.state == NET_TCP_CLOSED)
+                    {
+                        u_puts("NET: tcp rst\n");
+                        tcp_boot_live = 0;
+                        return;
+                    }
+                }
+                else if (cls == NET_CLASS_ARP)
+                {
+                    uint32_t rip = 0;
+                    uint8_t rmac[6];
+                    if (net_arp_need_reply(&rip, rmac) &&
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
+                            (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
+                                           (unsigned long)NET_ARP_FRAME_LEN);
+                }
+            }
+            w->rxa->ring[w->rxa->idx % 2u] = 0u;
+            net_fence();
+            w->rxa->idx++;
+            net_fence();
+            net_w(w->regs, NET_R_QNOTIFY, 0u);
+            net_fence();
+        }
+        u_yield();
+        if (u_rdtime() - t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
+            break;
+    }
+    u_puts("NET: tcp timeout\n");
+    tcp_boot_live = 0;
+}
+
 /* Phase-2 bring-up: probe, negotiate, DMA, link, RX post, one gratuitous
  * ARP. Fills the caller's wire context on success; returns only on
  * success (any failure parks inside net_no_link or the IRQ-timeout
@@ -1343,6 +1451,7 @@ void net_main(void)
     net_boot_dhcp(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
     net_boot_dns(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
     net_boot_ping(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
+    net_boot_tcp(&wire, rxcopy, sizeof(rxcopy), &rx_seen, &rx_ok_done);
 
     park_valid = 0;
     park_ip = 0;
@@ -1869,6 +1978,21 @@ void net_main(void)
                     if (net_stack_icmp_reply(rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen) ==
                         0)
                         (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
+                }
+                else if (cls == NET_CLASS_TCP)
+                {
+                    /* Feed the boot TCB while live (handshake completion
+                     * or RST after the open attempt; data drops inside). */
+                    if (tcp_boot_live)
+                    {
+                        unsigned long replen = 0;
+                        int trc = net_tcp_input(&tcp_boot, rxcopy, pktlen,
+                                                wire.txf + NET_TX_PAY_OFF, &replen);
+                        if (trc == 1)
+                            (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
+                        if (tcp_boot.state == NET_TCP_CLOSED)
+                            tcp_boot_live = 0;
+                    }
                 }
                 else if (cls == NET_CLASS_ARP)
                 {

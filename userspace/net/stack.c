@@ -90,13 +90,13 @@ int net_stack_udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port,
     frame_out[12] = 0x08;
     frame_out[13] = 0x00;
     ip_len = IP_MIN + (unsigned long)UDP_HDR_LEN + len;
-    frame_out[14] = 0x45;
-    frame_out[15] = 0x00;
+    frame_out[14] = IP_VER_IHL;
+    frame_out[15] = IP_TOS_DSCP;
     frame_out[16] = (uint8_t)(ip_len >> 8);
     frame_out[17] = (uint8_t)(ip_len & 0xFFu);
     frame_out[18] = 0x12;
     frame_out[19] = 0x34;
-    frame_out[20] = 0x40;
+    frame_out[20] = IP_TTL_DEFAULT;
     frame_out[21] = 0x00;
     frame_out[22] = 64;
     frame_out[23] = IP_PROTO_UDP;
@@ -108,16 +108,17 @@ int net_stack_udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port,
     frame_out[24] = (uint8_t)(ck >> 8);
     frame_out[25] = (uint8_t)(ck & 0xFFu);
     ulen = UDP_HDR_LEN + (unsigned)len;
+    /* UDP header: offset 34 = ETH_HDR_LEN(14) + IP_MIN(20) + UDP_OFF_SRC(0) */
     frame_out[34] = (uint8_t)(src_port >> 8);
     frame_out[35] = (uint8_t)(src_port & 0xFFu);
     frame_out[36] = (uint8_t)(dst_port >> 8);
     frame_out[37] = (uint8_t)(dst_port & 0xFFu);
     frame_out[38] = (uint8_t)(ulen >> 8);
     frame_out[39] = (uint8_t)(ulen & 0xFFu);
-    frame_out[40] = 0;
+    frame_out[40] = 0; /* UDP checksum placeholder */
     frame_out[41] = 0;
     for (i = 0; i < (unsigned)len; i++)
-        frame_out[42 + i] = payload[i];
+        frame_out[42 + i] = payload[i]; /* Payload starts at offset 42 */
     ck = net_udp_checksum(sip, dst_ip, frame_out + ETH_HDR_LEN + IP_MIN, ulen);
     frame_out[40] = (uint8_t)(ck >> 8);
     frame_out[41] = (uint8_t)(ck & 0xFFu);
@@ -175,12 +176,17 @@ int net_stack_rx(const uint8_t *f, unsigned long len)
     if (s_qcount >= NET_UDP_QDEPTH)
         return NET_CLASS_UDP;
     idx = (s_qhead + s_qcount) % NET_UDP_QDEPTH;
+    /* Fill slot atomically before incrementing count to avoid race
+     * with concurrent net_udp_recv_from shifts (single-threaded
+     * net ELF, but defense-in-depth for future expansion). */
     s_q[idx].src_ip = sip;
     s_q[idx].src_port = (uint16_t)(((unsigned)f[off] << 8) | (unsigned)f[off + 1]);
     s_q[idx].dst_port = (uint16_t)(((unsigned)f[off + 2] << 8) | (unsigned)f[off + 3]);
     s_q[idx].len = plen;
     for (i = 0; i < (unsigned)plen; i++)
         s_q[idx].payload[i] = f[off + UDP_HDR_LEN + i];
+    /* Memory barrier to ensure slot is visible before count increment */
+    __asm__ volatile("" ::: "memory");
     s_qcount++;
     return NET_CLASS_UDP;
 }
@@ -307,8 +313,11 @@ int net_udp_recv_from(uint16_t dport, uint8_t *buf, unsigned long cap, uint32_t 
             continue;
         udp_slot_copy(&s, &s_q[idx]);
         for (j = k; j + 1u < s_qcount; j++)
-            udp_slot_copy(&s_q[(s_qhead + j) % NET_UDP_QDEPTH],
-                          &s_q[(s_qhead + j + 1u) % NET_UDP_QDEPTH]);
+        {
+            unsigned src_idx = (s_qhead + j) % NET_UDP_QDEPTH;
+            unsigned dst_idx = (s_qhead + j + 1u) % NET_UDP_QDEPTH;
+            udp_slot_copy(&s_q[dst_idx], &s_q[src_idx]);
+        }
         s_qcount--;
         return udp_emit(&s, buf, cap, src_ip, src_port, trunc);
     }

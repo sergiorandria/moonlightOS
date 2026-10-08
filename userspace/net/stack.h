@@ -20,6 +20,10 @@
 #define NET_CLASS_IPV4 5
 #define NET_CLASS_IPV6 6
 
+/* Error codes for UDP receive operations.
+ * NET_ERR_EMPTY: No matching datagram in the queue (non-blocking receive).
+ * NET_ERR_TRUNC: Destination buffer too small; datagram truncated and dropped.
+ * Positive return values indicate bytes received (caller should check trunc flag). */
 #define NET_ERR_EMPTY 1
 #define NET_ERR_TRUNC 2
 
@@ -53,8 +57,12 @@ int net_stack_rx(const uint8_t *f, unsigned long len);
 int net_stack_udp_send(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port,
                        const uint8_t *payload, unsigned long len, uint8_t *frame_out,
                        unsigned long *frame_len);
+/* net_udp_recv: Receive from any port. Returns bytes received or negative error code.
+ * Sets trunc=1 if datagram was truncated (partial data copied, rest dropped). */
 int net_udp_recv(uint8_t *buf, unsigned long cap, uint32_t *src_ip, uint16_t *src_port, int *trunc);
 int net_stack_icmp_reply(const uint8_t *f, unsigned long len, uint8_t *out, unsigned long *outlen);
+/* net_udp_recv_from: Receive from specific port. Returns bytes received or negative error code.
+ * Sets trunc=1 if datagram was truncated (partial data copied, rest dropped). */
 int net_udp_recv_from(uint16_t dport, uint8_t *buf, unsigned long cap, uint32_t *src_ip,
                       uint16_t *src_port, int *trunc);
 void net_udp_drop_if(int (*drop)(uint16_t dport));
