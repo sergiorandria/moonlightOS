@@ -25,6 +25,76 @@ static int t_carve_drop7(uint16_t dport)
     return dport == 7;
 }
 
+static int t_tcp_drop8080(uint16_t dport)
+{
+    return dport == 8080;
+}
+
+/* Seam Task 3: build an RX TCP frame (eth + IP/20 + TCP/20 + payload)
+ * with valid checksums. Returns the total frame length. */
+static unsigned t3_mk_tcp(uint8_t *f, const uint8_t *smac, uint32_t sip, uint16_t sport,
+                          uint16_t dport, uint32_t seq, uint32_t ack, uint8_t flags,
+                          const uint8_t *pay, unsigned paylen)
+{
+    unsigned tot, i;
+    uint16_t ck;
+    tot = 20u + 20u + paylen;
+    for (i = 0; i < 6; i++) /* bound: 6 */
+    {
+        f[i] = NET_MAC_SELF[i];
+        f[6 + i] = smac[i];
+    }
+    f[12] = 0x08u;
+    f[13] = 0x00u;
+    f[14] = 0x45u;
+    f[15] = 0x00u;
+    f[16] = (uint8_t)(tot >> 8);
+    f[17] = (uint8_t)(tot & 0xFFu);
+    f[18] = 0x12u;
+    f[19] = 0x34u;
+    f[20] = 0x40u;
+    f[21] = 0x00u;
+    f[22] = 64u;
+    f[23] = IP_PROTO_TCP;
+    f[24] = 0u;
+    f[25] = 0u;
+    f[26] = (uint8_t)(sip >> 24);
+    f[27] = (uint8_t)(sip >> 16);
+    f[28] = (uint8_t)(sip >> 8);
+    f[29] = (uint8_t)sip;
+    f[30] = (uint8_t)(NET_IP_SELF >> 24);
+    f[31] = (uint8_t)(NET_IP_SELF >> 16);
+    f[32] = (uint8_t)(NET_IP_SELF >> 8);
+    f[33] = (uint8_t)NET_IP_SELF;
+    ck = net_ip_checksum(f + 14, 20);
+    f[24] = (uint8_t)(ck >> 8);
+    f[25] = (uint8_t)(ck & 0xFFu);
+    f[34] = (uint8_t)(sport >> 8);
+    f[35] = (uint8_t)sport;
+    f[36] = (uint8_t)(dport >> 8);
+    f[37] = (uint8_t)dport;
+    f[38] = (uint8_t)(seq >> 24);
+    f[39] = (uint8_t)(seq >> 16);
+    f[40] = (uint8_t)(seq >> 8);
+    f[41] = (uint8_t)seq;
+    f[42] = (uint8_t)(ack >> 24);
+    f[43] = (uint8_t)(ack >> 16);
+    f[44] = (uint8_t)(ack >> 8);
+    f[45] = (uint8_t)ack;
+    f[46] = (uint8_t)(5u << 4);
+    f[47] = flags;
+    f[48] = 0x08u;
+    f[49] = 0x00u;
+    f[50] = 0u;
+    f[51] = 0u;
+    for (i = 0; i < paylen; i++) /* bound: 537 */
+        f[54 + i] = pay[i];
+    ck = net_tcp_checksum(sip, (uint32_t)NET_IP_SELF, f + 34, 20u + paylen);
+    f[50] = (uint8_t)(ck >> 8);
+    f[51] = (uint8_t)(ck & 0xFFu);
+    return 14u + tot;
+}
+
 /* Task 3: DNS codec (same single-TU pattern). */
 #include "../userspace/net/dns.c"
 
@@ -96,6 +166,18 @@ int main(void)
         tcp[17] = 40; /* tot = 40 */
         tcp[23] = IP_PROTO_TCP;
         tcp[14 + 20 + 12] = 0x50; /* data offset 5 */
+        /* Task 3: RX validates IP/TCP checksums (UDP precedent), so the
+         * classify-level zeroed frame must carry valid checksums. */
+        {
+            uint16_t ipck = net_ip_checksum(tcp + 14, 20);
+            tcp[24] = (uint8_t)(ipck >> 8);
+            tcp[25] = (uint8_t)(ipck & 0xFFu);
+        }
+        {
+            uint16_t ck = net_tcp_checksum(0u, 0u, tcp + 34, 20);
+            tcp[50] = (uint8_t)(ck >> 8);
+            tcp[51] = (uint8_t)(ck & 0xFFu);
+        }
         CHECK(net_stack_init() == 0);
         CHECK(net_stack_rx(tcp, sizeof(tcp)) == NET_CLASS_TCP);
     }
@@ -956,6 +1038,219 @@ int main(void)
         CHECK(net_sock_send(b2, hello, sizeof(hello)) < 0);
         CHECK(net_sock_close(b2) == 0);
         CHECK(net_sock_tcp_bound() < 0);
+    }
+    /* ---- Seam Task 3: TCP RX demux + waiter wakeup ---- */
+    {
+        static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
+        static const uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
+        static uint8_t big[537];
+        uint8_t fr[14 + 20 + 20 + 537];
+        uint8_t buf[600];
+        uint8_t syn[14 + 20 + 24];
+        uint8_t sa[14 + 20 + 24];
+        uint8_t rep[14 + 20 + 20];
+        unsigned long synlen = 0, replen = 0;
+        unsigned flen;
+        int a, b2;
+        struct net_tcp_conn *t;
+        uint8_t dmac[6];
+        uint32_t rip;
+        uint32_t iss = 0x01020304u;
+        uint32_t peer = 0x0A0B0C0Du;
+        uint32_t rcv0, snd0;
+        unsigned wowner = 0;
+        int rsock = -9;
+        unsigned rowner = 0;
+        uint32_t sip = 0;
+        uint16_t sport = 0;
+        int trunc = -1;
+        int n;
+        unsigned i;
+        for (i = 0; i < sizeof(big); i++) /* bound: 537 */
+            big[i] = 0x41u;
+        net_stack_init();
+        net_arp_init();
+        rip = (uint32_t)NET_IP_GW;
+        CHECK(net_arp_lookup(rip, dmac) == 0);
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        b2 = net_sock_open(NET_SOCK_UDP, 8053, 2);
+        CHECK(b2 >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        /* Drive A to ESTABLISHED (canned SYN-ACK, Task 2 shape). */
+        CHECK(net_sock_tcp_syn(a, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        for (i = 0; i < sizeof(sa); i++) /* bound: 58 */
+            sa[i] = syn[i];
+        for (i = 0; i < 6u; i++) /* bound: 6 */
+        {
+            sa[i] = syn[6 + i];
+            sa[6 + i] = syn[i];
+        }
+        for (i = 0; i < 4u; i++) /* bound: 4 */
+        {
+            uint8_t tmpb = sa[26 + i];
+            sa[26 + i] = sa[30 + i];
+            sa[30 + i] = tmpb;
+        }
+        sa[34] = 0u;
+        sa[35] = 80u;
+        sa[36] = 0x1Fu;
+        sa[37] = 0x90u;
+        sa[14 + 20 + 13] = (uint8_t)(TCP_SYN | TCP_ACK);
+        sa[38] = 0x0Au;
+        sa[39] = 0x0Bu;
+        sa[40] = 0x0Cu;
+        sa[41] = 0x0Du;
+        sa[42] = 0x01u;
+        sa[43] = 0x02u;
+        sa[44] = 0x03u;
+        sa[45] = 0x05u;
+        sa[24] = 0u;
+        sa[25] = 0u;
+        {
+            uint16_t ipck = net_ip_checksum(sa + 14, 20);
+            sa[24] = (uint8_t)(ipck >> 8);
+            sa[25] = (uint8_t)(ipck & 0xFFu);
+        }
+        sa[52] = 0u;
+        sa[53] = 0u;
+        {
+            uint16_t ck = net_tcp_checksum(rip, (uint32_t)NET_IP_SELF, sa + 34, 24);
+            sa[52] = (uint8_t)(ck >> 8);
+            sa[53] = (uint8_t)(ck & 0xFFu);
+        }
+        CHECK(net_sock_tcp_input(a, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(t->state == NET_TCP_ESTABLISHED && t->irs == peer);
+        rcv0 = t->rcv_nxt;
+        snd0 = t->snd_nxt;
+        CHECK(rcv0 == peer + 1u);
+        /* In-order PSH/ACK with an armed waiter: demuxed to A, queued,
+         * rcv_nxt advances (snd_nxt moves on TX only, RFC 793), the UDP
+         * socket never sees it, and the waiter match fires (the host
+         * image of the v2_main S_DATA wakeup). */
+        CHECK(net_waiter_arm(a, 1, 1000, 50) == 0);
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv0, snd0, (uint8_t)(TCP_PSH | TCP_ACK),
+                         hello, sizeof(hello));
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        CHECK(t->rcv_nxt == rcv0 + sizeof(hello));
+        CHECK(t->snd_nxt == snd0);
+        trunc = -1;
+        CHECK(net_udp_recv_from(8053, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        CHECK(trunc == 0);
+        CHECK(net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        CHECK(net_waiter_match(8080, &wowner) == a);
+        CHECK(wowner == 1);
+        /* Waiter consumes exactly once (v2_main clears after ASEND):
+         * payload intact, then no second wake. */
+        trunc = -1;
+        sip = 0;
+        sport = 0;
+        n = net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc);
+        CHECK(n == (int)sizeof(hello));
+        CHECK(trunc == 0);
+        CHECK(sip == rip);
+        CHECK(sport == 80u);
+        CHECK(memcmp(buf, hello, sizeof(hello)) == 0);
+        net_waiter_clear(a);
+        CHECK(net_waiter_match(8080, &wowner) < 0);
+        CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        /* Parked ACK covers the new rcv_nxt (pure ACK, checksummed);
+         * cleared exactly once. */
+        {
+            unsigned long alen = 0;
+            const uint8_t *ackf = net_tcp_ack_tx(&alen);
+            CHECK(ackf != 0 && alen == 14u + 20u + 20u);
+            CHECK(ackf[14 + 20 + 13] == (uint8_t)TCP_ACK);
+            CHECK(ackf[34] == 0x1Fu && ackf[35] == 0x90u);
+            CHECK(ackf[36] == 0u && ackf[37] == 80u);
+            CHECK(ackf[42] == (uint8_t)(t->rcv_nxt >> 24) && ackf[45] == (uint8_t)t->rcv_nxt);
+            CHECK(net_ip_checksum(ackf + 14, 20) == 0u);
+            CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, ackf + 34, 20) == 0u);
+            net_tcp_ack_clear();
+            ackf = net_tcp_ack_tx(&alen);
+            CHECK(ackf == 0 && alen == 0);
+        }
+        /* Duplicate of the accepted segment: dropped, no double delivery. */
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        CHECK(t->rcv_nxt == rcv0 + sizeof(hello));
+        CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        /* OOO gap: dropped with duplicate-ACK parked, rcv_nxt holds. */
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv0 + (uint32_t)sizeof(hello) + 7u, snd0,
+                         (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        CHECK(t->rcv_nxt == rcv0 + sizeof(hello));
+        CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        {
+            unsigned long alen = 0;
+            const uint8_t *ackf = net_tcp_ack_tx(&alen);
+            CHECK(ackf != 0 && alen == 14u + 20u + 20u);
+            CHECK(ackf[45] == (uint8_t)t->rcv_nxt);
+            net_tcp_ack_clear();
+        }
+        /* Oversize (> MSS 536) segment: fail-closed, no advance. */
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0,
+                         (uint8_t)(TCP_PSH | TCP_ACK), big, sizeof(big));
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        CHECK(t->rcv_nxt == rcv0 + sizeof(hello));
+        CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        /* Unbound dport: classified TCP, never queued. */
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 9999u, rcv0, snd0,
+                         (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        CHECK(net_tcp_recv_from(9999, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        CHECK(t->rcv_nxt == rcv0 + sizeof(hello));
+        /* Expiry fires once (fake ticks); post-expiry RX wakes nothing
+         * (data still queues for a later poll, but no waiter fires). */
+        CHECK(net_waiter_arm(a, 1, 2000, 50) == 0);
+        CHECK(net_waiter_expire(2049, &rsock, &rowner) < 0);
+        CHECK(net_waiter_expire(2051, &rsock, &rowner) == a);
+        CHECK(rsock == a && rowner == 1);
+        CHECK(net_waiter_expire(2051, &rsock, &rowner) < 0);
+        CHECK(net_waiter_match(8080, &wowner) < 0);
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0,
+                         (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        CHECK(net_waiter_match(8080, &wowner) < 0);
+        trunc = -1;
+        n = net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc);
+        CHECK(n == (int)sizeof(hello));
+        CHECK(trunc == 0);
+        CHECK(memcmp(buf, hello, sizeof(hello)) == 0);
+        /* Queue-full drops newest: 4 chained 1B segments queue in order,
+         * the 5th drops, rcv_nxt covers only the 4 kept. */
+        {
+            uint32_t base = t->rcv_nxt;
+            uint8_t one[1];
+            unsigned k;
+            for (k = 0; k < 5; k++) /* bound: 5 */
+            {
+                one[0] = (uint8_t)('0' + k);
+                flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, base + k, snd0,
+                                 (uint8_t)(TCP_PSH | TCP_ACK), one, sizeof(one));
+                CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+            }
+            CHECK(t->rcv_nxt == base + 4u);
+            for (k = 0; k < 4; k++) /* bound: 4 */
+            {
+                trunc = -1;
+                n = net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc);
+                CHECK(n == 1);
+                CHECK(trunc == 0);
+                CHECK(buf[0] == (uint8_t)('0' + k));
+            }
+            CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        }
+        /* S_CLOSE drains only that socket's stream bytes. */
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0,
+                         (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        net_tcp_ack_clear();
+        CHECK(net_sock_close(a) == 0);
+        net_tcp_drop_if(t_tcp_drop8080);
+        CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        CHECK(net_sock_tcp_bound() < 0);
+        CHECK(net_sock_close(b2) == 0);
     }
     puts("PASS: test_net_stack");
     return 0;

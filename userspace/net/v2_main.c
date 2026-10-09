@@ -104,14 +104,18 @@
  *     in-order segment via the send seam for TCP when ESTABLISHED;
  *     a TCP payload on CLOSED/SYN_SENT answers S_ERR, never a frame.
  *   S_TRYRECV [S_TRYRECV, sock, 0, 0]  -> [S_DATA, len, 0, 0] (+ payload in
- *     the client-RSVP frame, NET_SDATA_SLOT) / [S_EMPTY, 0,0,0].
+ *     the client-RSVP frame, NET_SDATA_SLOT) / [S_EMPTY, 0,0,0]. The
+ *     dequeue is kind-aware: UDP sockets read the datagram carve, TCP
+ *     sockets the stream queue demuxed by stack.c (cross-kind traffic
+ *     stays invisible).
  *   S_RECV [S_RECV, sock, timeout_ticks, 0] -> immediate hit answers S_DATA
- *     at once (waiter never activates); a miss with timeout 0 answers
- *     S_EMPTY (single no-wait check, never parks); a miss with timeout > 0
- *     arms that socket's waiter and answers later -- S_DATA on arrival via
- *     fire-and-forget ASEND, S_TIMEOUT [S_TIMEOUT, sock, 0, 0] on rdtime
- *     expiry (waiter cleared exactly once, no double reply).
+ *     at once (waiter never activates, either queue); a miss with timeout
+ *     0 answers S_EMPTY (single no-wait check, never parks); a miss with
+ *     timeout > 0 arms that socket's waiter and answers later -- S_DATA on
+ *     arrival via fire-and-forget ASEND, S_TIMEOUT [S_TIMEOUT, sock, 0, 0]
+ *     on rdtime expiry (waiter cleared exactly once, no double reply).
  *   S_CLOSE   [S_CLOSE, sock, 0, 0]    -> [S_OK, sock, 0, 0] / [S_ERR, 0,0,0]
+ *     (also discards that socket's queued stream bytes, same drop-if).
  * QX gate: the kernel rendezvous already required sender QX cross-qube
  * (same gate as T_FWD; a denied take fails the u_recv itself). The server
  * additionally honors only these known tags with full takes (n >= 4).
@@ -1747,8 +1751,14 @@ void net_main(void)
                 {
                     int trunc = 0;
                     long ngot;
-                    ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy), 0, 0,
-                                             &trunc);
+                    /* Kind-aware dequeue (Task 3 demux): TCP sockets
+                     * read the stream queue, UDP the datagram carve. */
+                    if (net_socks[(int)sid].kind == (uint8_t)NET_SOCK_TCP)
+                        ngot = net_tcp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy),
+                                                 0, 0, &trunc);
+                    else
+                        ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy),
+                                                 0, 0, &trunc);
                     if (ngot == -(NET_ERR_EMPTY))
                     {
                         net_rpc_reply(snd, (uint64_t)S_EMPTY, 0);
@@ -1794,8 +1804,14 @@ void net_main(void)
                 {
                     int trunc = 0;
                     long ngot;
-                    ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy), 0, 0,
-                                             &trunc);
+                    /* Kind-aware immediate hit (Task 3 demux): TCP
+                     * sockets poll the stream queue, UDP the carve. */
+                    if (net_socks[(int)sid].kind == (uint8_t)NET_SOCK_TCP)
+                        ngot = net_tcp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy),
+                                                 0, 0, &trunc);
+                    else
+                        ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy),
+                                                 0, 0, &trunc);
                     if (ngot == -(NET_ERR_EMPTY))
                     {
                         if (to == 0)
@@ -1828,8 +1844,9 @@ void net_main(void)
             {
                 /* S_CLOSE [S_CLOSE, sock, 0, 0]: disarm the socket's
                  * waiter, free the entry, and discard only that socket's
-                 * queued datagrams (bound-port drop-if) so the fair-share
-                 * pool slot returns; other sockets' traffic is untouched. */
+                 * queued datagrams / stream bytes (bound-port drop-if on
+                 * both queues) so the fair-share pool slot returns; other
+                 * sockets' traffic is untouched. */
                 long sid = (long)buf[1];
                 if (!net_sock_owned(sid, snd))
                 {
@@ -1841,6 +1858,7 @@ void net_main(void)
                     net_waiter_clear((int)sid);
                     net_sock_close((int)sid);
                     net_udp_drop_if(net_drop_port_eq);
+                    net_tcp_drop_if(net_drop_port_eq);
                     net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)sid);
                 }
             }
@@ -2033,19 +2051,106 @@ void net_main(void)
                 }
                 else if (cls == NET_CLASS_TCP)
                 {
-                    /* Feed the bound TCB while live (client handshake
-                     * completion or RST; data drops inside tcp.h until
-                     * Task 3 demuxes by dport).
-                     * An RST abort back to CLOSED disarms the waiter via
-                     * the seam; the socket stays for an explicit close
-                     * (a CLOSED bind never blocks the next TCP open). */
+                    /* Bound-TCB feed (Task 3 demux): net_stack_rx above
+                     * already classified + demuxed by dport -- unbound
+                     * ports never queue (silent drop), in-order
+                     * ESTABLISHED data is queued with an ACK parked, and
+                     * OOO/duplicates park a duplicate ACK. While the TCB
+                     * is not ESTABLISHED the handshake/RST leg below runs
+                     * (SYN-ACK check + RST abort live in tcp.h via the
+                     * seam); the ESTABLISHED leg only flushes the parked
+                     * ACK and wakes an armed waiter (S_DATA via ASEND on
+                     * one dequeue, waiter cleared -- a late duplicate can
+                     * never double-reply). An RST abort back to CLOSED
+                     * disarms the waiter via the seam; the socket stays
+                     * for an explicit close (a CLOSED bind never blocks
+                     * the next TCP open). */
                     int bs = net_sock_tcp_bound();
                     if (bs >= 0)
                     {
-                        unsigned long replen = 0;
-                        int trc = net_sock_tcp_input(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen);
-                        if (trc == 1)
-                            (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
+                        struct net_tcp_conn *bt = net_sock_tcp(bs);
+                        if (bt && bt->state != NET_TCP_ESTABLISHED)
+                        {
+                            unsigned long replen = 0;
+                            int trc = net_sock_tcp_input(bs, rxcopy, pktlen,
+                                                         wire.txf + NET_TX_PAY_OFF, &replen);
+                            if (trc == 1)
+                                (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
+                        }
+                        else if (bt)
+                        {
+                            unsigned long alen = 0;
+                            const uint8_t *ackf = net_tcp_ack_tx(&alen);
+                            unsigned tihl;
+                            uint16_t tlocal = 0;
+                            if (ackf && alen >= (unsigned long)ETH_HDR_LEN + (unsigned long)IP_MIN +
+                                                 (unsigned long)TCP_HDR_MIN &&
+                                alen <= (unsigned long)NET_PKT_MAX)
+                            {
+                                unsigned long k;
+                                for (k = 0; k < alen; k++) /* bound: 1514 */
+                                    (wire.txf + NET_TX_PAY_OFF)[k] = ackf[k];
+                                (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, alen);
+                            }
+                            net_tcp_ack_clear();
+                            /* Waiter wakeup for the new arrival (the UDP
+                             * discipline above, TCP queue): an armed
+                             * waiter on this frame's port consumes exactly
+                             * one queued segment and is cleared. A stale
+                             * waiter (socket closed or re-owned since the
+                             * arm) is cleared with the segment left
+                             * queued, never SENDing. The reply path is
+                             * ASEND: even a vanished owner cannot wedge
+                             * the loop. */
+                            tihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
+                            if (tihl >= 20u)
+                                tlocal = (uint16_t)(((unsigned)rxcopy[14 + tihl + 2] << 8) |
+                                                    (unsigned)rxcopy[14 + tihl + 3]);
+                            if (tihl >= 20u)
+                            {
+                                unsigned wowner = 0;
+                                int wsid = net_waiter_match(tlocal, &wowner);
+                                if (wsid >= 0)
+                                {
+                                    if (!net_owner_live((long)wsid, wowner))
+                                    {
+                                        net_waiter_clear(wsid);
+                                    }
+                                    else
+                                    {
+                                        int wtrunc = 0;
+                                        long wgot;
+                                        wgot = net_tcp_recv_from(tlocal, rxcopy, sizeof(rxcopy), 0,
+                                                                 0, &wtrunc);
+                                        if (wgot == -(NET_ERR_EMPTY))
+                                        {
+                                            /* Lost race (queue full dropped
+                                             * the arrival): waiter stays
+                                             * armed for the next arrival;
+                                             * nothing is misdelivered. */
+                                        }
+                                        else if (wgot >= 0 && !wtrunc)
+                                        {
+                                            net_waiter_clear(wsid);
+                                            if (net_sdata_send((unsigned long)wowner, reply_slot,
+                                                               rxcopy, (unsigned long)wgot,
+                                                               1) != 0)
+                                            {
+                                                net_wake_reply((unsigned long)wowner,
+                                                               (uint64_t)S_ERR, 0);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            /* TRUNC unreachable (1514 cap >
+                                             * 536 max); waiter cleared,
+                                             * segment dropped. */
+                                            net_waiter_clear(wsid);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
                 else if (cls == NET_CLASS_ARP)
