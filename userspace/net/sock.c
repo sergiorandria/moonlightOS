@@ -1,11 +1,47 @@
 /* userspace/net/sock.c - Socket table with port demux. UDP + TCP. */
 #include "sock.h"
 
+#include "tcp.h" /* single-TCB bind + MSS/state constants (RFC 793 handshake) */
+
 /* 1-slot fair-share: each open socket owns one slot carved from the
  * 4-slot datagram queue, so the 5th concurrent open fails. */
 #define NET_SOCK_FAIR_MAX 4
 
 static net_sock_t net_socks[NET_SOCK_MAX];
+
+/* Single-TCB bind (seam design Sec 3, lwIP single-TCB shape): one live TCB
+ * shared by every TCP socket. It binds to the socket id at TCP open (state
+ * CLOSED) and releases at close; while bound to a live socket no second
+ * TCP open succeeds (fail closed, additive to the fair-share bound above).
+ * The boot SYN proof (v2_main net_boot_tcp) and the S_OPEN/S_SEND RPC legs
+ * drive the same bind (same MSS 536 via tcp.h, same rdtime ISS source at
+ * the caller). */
+static struct net_tcp_conn net_tcb;
+static int net_tcb_sock = -1; /* bound socket id, -1 when free */
+
+/* Last TCP segment emitted by net_sock_send (the send seam has no frame
+ * out-param, so the frame parks here; total <= 1514, payload <= 536). The
+ * wire TX path copies it out via net_sock_tcp_tx before transmitting. */
+static uint8_t net_tcp_tx[1514];
+static unsigned long net_tcp_tx_len;
+
+/* Bound TCB for a socket, or 0 when the socket is unused, non-TCP, or not
+ * the bind holder. Callers drive the RFC 793 handshake (net_tcp_syn /
+ * net_tcp_input) or the sock wrappers on the returned TCB. */
+struct net_tcp_conn *net_sock_tcp(int id)
+{
+    if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
+        return 0;
+    if (id != net_tcb_sock)
+        return 0;
+    return &net_tcb;
+}
+
+/* Socket id holding the single TCB, or -1 when free. */
+int net_sock_tcp_bound(void)
+{
+    return net_tcb_sock;
+}
 
 /* One waiter per socket slot, indexed by sock_id. Absolute deadline
  * (now+timeout); expiry uses wrap-safe unsigned compare. */
@@ -27,6 +63,17 @@ int net_sock_open(unsigned kind, uint16_t port, unsigned owner)
     unsigned used = 0;
     if (kind != NET_SOCK_UDP && kind != NET_SOCK_TCP)
         return -1;
+    if (kind == NET_SOCK_TCP)
+    {
+        /* Single live TCB guard (additive to fair-share): while the TCB
+         * is live (bound to an open socket past CLOSED) a second
+         * concurrent TCP open fails closed, never aliasing the TCB.
+         * CLOSED-bound sockets do not block Task-1 fair-share vectors:
+         * the bind moves to the new opener at alloc below. */
+        if (net_tcb_sock >= 0 && net_tcb_sock < NET_SOCK_MAX && net_socks[net_tcb_sock].used &&
+            net_socks[net_tcb_sock].kind == NET_SOCK_TCP && net_tcb.state != NET_TCP_CLOSED)
+            return -1;
+    }
     for (i = 0; i < NET_SOCK_MAX; i++)
     {
         if (!net_socks[i].used)
@@ -45,6 +92,19 @@ int net_sock_open(unsigned kind, uint16_t port, unsigned owner)
         net_socks[i].kind = (uint8_t)kind;
         net_socks[i].port = port;
         net_socks[i].owner = owner;
+        if (kind == NET_SOCK_TCP)
+        {
+            /* Bind the single TCB, CLOSED until the SYN leg arms it. */
+            net_tcb_sock = (int)i;
+            net_tcb.state = NET_TCP_CLOSED;
+            net_tcb.iss = 0u;
+            net_tcb.irs = 0u;
+            net_tcb.snd_nxt = 0u;
+            net_tcb.rcv_nxt = 0u;
+            net_tcb.lport = port;
+            net_tcb.rport = 0u;
+            net_tcb.rip = 0u;
+        }
         return (int)i;
     }
     return -1;
@@ -56,6 +116,12 @@ int net_sock_close(int id)
         return -1;
     if (!net_socks[id].used)
         return -1;
+    if (id == net_tcb_sock)
+    {
+        /* Release the single TCB for the next TCP open. */
+        net_tcb_sock = -1;
+        net_tcb.state = NET_TCP_CLOSED;
+    }
     net_socks[id].used = 0;
     net_socks[id].kind = NET_SOCK_NONE;
     net_socks[id].port = 0;
@@ -84,16 +150,155 @@ int net_sock_owned(long id, unsigned long owner)
     return net_socks[id].owner == owner;
 }
 
-/* Phase 1 stub: UDP sockets use net_stack_udp_send directly; TCP is not
- * yet implemented. This API seam exists for future phase work. Always
- * returns -1 (intentional LSP violation, documented in sock.h). */
-int net_sock_send(int id, const uint8_t *buf, unsigned long len)
+/* Active open through the bind: builds the SYN with the socket's bound
+ * port as lport (MSS 536 + ISS flow through tcp.h: the same SYN the boot
+ * proof emits, with the caller-supplied ISS source). */
+int net_sock_tcp_syn(int id, const uint8_t *dmac, uint32_t rip, uint16_t rport, uint32_t iss, uint8_t *out,
+                     unsigned long *outlen)
 {
-    (void)buf;
-    (void)len;
+    uint16_t lport;
     if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
         return -1;
-    return -1;
+    if (net_socks[id].kind != NET_SOCK_TCP || id != net_tcb_sock)
+        return -1;
+    lport = net_socks[id].port;
+    return net_tcp_syn(&net_tcb, dmac, rip, rport, lport, iss, out, outlen);
+}
+
+/* Handshake/data input through the bind: feeds one RX frame to the bound
+ * TCB (SYN-ACK check + RST abort live in tcp.h). An abort back to CLOSED
+ * disarms the socket's waiter, so no waiter is left armed on a dead
+ * connection. Returns net_tcp_input's 1 (ACK emitted) / 0 (drop). */
+int net_sock_tcp_input(int id, const uint8_t *f, unsigned long len, uint8_t *out, unsigned long *outlen)
+{
+    int rc;
+    if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
+        return -1;
+    if (net_socks[id].kind != NET_SOCK_TCP || id != net_tcb_sock)
+        return -1;
+    rc = net_tcp_input(&net_tcb, f, len, out, outlen);
+    if (net_tcb.state == NET_TCP_CLOSED)
+        net_waiter_clear(id);
+    return rc;
+}
+
+/* In-order TCP data segment (one slice, PSH|ACK): seq = snd_nxt, ack =
+ * rcv_nxt, payload capped at TCP_MSS_DEFAULT 536 (total frame
+ * 14+20+20+len <= 590 <= 1514, same wire bound as the SYN path). The
+ * destination MAC resolves via ARP; a miss fails closed with no frame and
+ * no sequence advance. Advances snd_nxt by len on success. */
+static int tcp_data_build(struct net_tcp_conn *c, const uint8_t *buf, unsigned long len, uint8_t *out,
+                          unsigned long *outlen)
+{
+    uint8_t dmac[6];
+    unsigned long total;
+    unsigned long ip_len;
+    unsigned i;
+    uint16_t ck;
+    if (!c || (len > 0 && !buf) || !out || !outlen)
+        return -1;
+    if (len > (unsigned long)TCP_MSS_DEFAULT)
+        return -1;
+    total = (unsigned long)14 + 20u + (unsigned long)TCP_HDR_MIN + len;
+    if (total > 1514UL)
+        return -1;
+    if (net_arp_lookup(c->rip, dmac) != 0)
+        return -1;
+    for (i = 0; i < 6u; i++) /* bound: 6 */
+    {
+        out[i] = dmac[i];
+        out[6 + i] = NET_MAC_SELF[i];
+    }
+    out[12] = 0x08u;
+    out[13] = 0x00u;
+    ip_len = 20u + (unsigned long)TCP_HDR_MIN + len;
+    out[14] = 0x45u;
+    out[15] = 0x00u;
+    out[16] = (uint8_t)(ip_len >> 8);
+    out[17] = (uint8_t)(ip_len & 0xFFu);
+    out[18] = 0x12u;
+    out[19] = 0x34u;
+    out[20] = 0x40u;
+    out[21] = 0x00u;
+    out[22] = 64u;
+    out[23] = IP_PROTO_TCP;
+    out[24] = 0u;
+    out[25] = 0u;
+    out[26] = (uint8_t)(NET_IP_SELF >> 24);
+    out[27] = (uint8_t)(NET_IP_SELF >> 16);
+    out[28] = (uint8_t)(NET_IP_SELF >> 8);
+    out[29] = (uint8_t)NET_IP_SELF;
+    out[30] = (uint8_t)(c->rip >> 24);
+    out[31] = (uint8_t)(c->rip >> 16);
+    out[32] = (uint8_t)(c->rip >> 8);
+    out[33] = (uint8_t)c->rip;
+    ck = net_ip_checksum(out + 14, 20);
+    out[24] = (uint8_t)(ck >> 8);
+    out[25] = (uint8_t)(ck & 0xFFu);
+    out[34] = (uint8_t)(c->lport >> 8);
+    out[35] = (uint8_t)c->lport;
+    out[36] = (uint8_t)(c->rport >> 8);
+    out[37] = (uint8_t)c->rport;
+    out[38] = (uint8_t)(c->snd_nxt >> 24);
+    out[39] = (uint8_t)(c->snd_nxt >> 16);
+    out[40] = (uint8_t)(c->snd_nxt >> 8);
+    out[41] = (uint8_t)c->snd_nxt;
+    out[42] = (uint8_t)(c->rcv_nxt >> 24);
+    out[43] = (uint8_t)(c->rcv_nxt >> 16);
+    out[44] = (uint8_t)(c->rcv_nxt >> 8);
+    out[45] = (uint8_t)c->rcv_nxt;
+    out[46] = (uint8_t)(5u << 4);
+    out[47] = (uint8_t)(TCP_PSH | TCP_ACK);
+    out[48] = 0x08u;
+    out[49] = 0x00u; /* window 2048, same as the SYN path */
+    out[50] = 0u;
+    out[51] = 0u;
+    for (i = 0; i < (unsigned)len; i++) /* bound: 536 */
+        out[54 + i] = buf[i];
+    ck = net_tcp_checksum((uint32_t)NET_IP_SELF, c->rip, out + 34, (unsigned)((unsigned long)TCP_HDR_MIN + len));
+    out[50] = (uint8_t)(ck >> 8);
+    out[51] = (uint8_t)(ck & 0xFFu);
+    *outlen = total;
+    c->snd_nxt += (uint32_t)len;
+    return 0;
+}
+
+/* Unified send seam (design Sec 3): UDP keeps the direct path
+ * (net_stack_udp_send with the caller's routing; no per-socket route is
+ * stored in the table, so this leg stays fail-closed -1 and the v2_main
+ * S_SEND payload phase still calls net_stack_udp_send for UDP). TCP
+ * requires the bound TCB in ESTABLISHED (ownership is enforced by the
+ * RPC layer via net_sock_owned before this seam runs) and a capped
+ * payload, then emits one in-order segment into the parked TX frame
+ * (copy out via net_sock_tcp_tx). Any gate failure emits nothing.
+ * Returns payload bytes accepted, or -1. */
+int net_sock_send(int id, const uint8_t *buf, unsigned long len)
+{
+    unsigned long flen = 0;
+    if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
+        return -1;
+    if (net_socks[id].kind != NET_SOCK_TCP)
+        return -1;
+    if (id != net_tcb_sock || net_tcb.state != NET_TCP_ESTABLISHED)
+        return -1;
+    if (len < 1 || len > (unsigned long)TCP_MSS_DEFAULT)
+        return -1;
+    if (!buf)
+        return -1;
+    if (tcp_data_build(&net_tcb, buf, len, net_tcp_tx, &flen) != 0)
+        return -1;
+    net_tcp_tx_len = flen;
+    return (int)len;
+}
+
+/* Parked TX frame from the last successful TCP net_sock_send: sets
+ * *len_out and returns the frame bytes, or 0/0 when nothing was ever
+ * emitted. The wire TX path copies the frame before transmitting. */
+const uint8_t *net_sock_tcp_tx(unsigned long *len_out)
+{
+    if (len_out)
+        *len_out = net_tcp_tx_len;
+    return net_tcp_tx_len ? net_tcp_tx : 0;
 }
 
 int net_waiter_arm(int sock_id, unsigned owner, uint64_t now, uint64_t timeout)

@@ -94,9 +94,15 @@
 
 /* Net socket RPC tags on ep 6 (spec Sec 2, above T_DONE):
  *   S_OPEN    [S_OPEN, kind, port, 0]  -> [S_OK, id, 0, 0] / [S_ERR, 0,0,0]
+ *     (kind TCP binds the single TCB, CLOSED until the SYN leg arms it;
+ *     a second TCP open while the TCB is live answers S_ERR, never
+ *     aliasing it)
  *   S_SEND    [S_SEND, sock, ip, port] -> [S_OK, 0,0,0] (routing phase only)
  *     then a literal [T_FWD, slot, len, h] payload announcement from the
  *     same sender ("announced like T_FWD": same MAP/verify discipline).
+ *     The payload phase emits via net_stack_udp_send for UDP, or one
+ *     in-order segment via the send seam for TCP when ESTABLISHED;
+ *     a TCP payload on CLOSED/SYN_SENT answers S_ERR, never a frame.
  *   S_TRYRECV [S_TRYRECV, sock, 0, 0]  -> [S_DATA, len, 0, 0] (+ payload in
  *     the client-RSVP frame, NET_SDATA_SLOT) / [S_EMPTY, 0,0,0].
  *   S_RECV [S_RECV, sock, timeout_ticks, 0] -> immediate hit answers S_DATA
@@ -1099,10 +1105,11 @@ static void net_boot_ping(struct net_wire *w, uint8_t *tmp, unsigned long tcap, 
 /* Boot active open (TCP slice): one SYN to the gateway port 80 after the
  * self-ping, ~2s self-polled wait matching SYN-ACK by ports/ack. Prints
  * "NET: tcp open", "NET: tcp rst" (SLIRP refuses closed ports: still a
- * live round-trip), or "NET: tcp timeout"; never parks. The TCB stays
- * file-live so the service loop can feed it late arrivals. */
-static struct net_tcp_conn tcp_boot;
-static int tcp_boot_live;
+ * live round-trip), or "NET: tcp timeout"; never parks. The single TCB
+ * binds to a boot TCP socket through the sock seam (same MSS 536 via
+ * tcp.h, same rdtime ISS source); the socket stays open on success so
+ * the service loop keeps feeding the live TCB, and closes (releasing
+ * the TCB) on RST/timeout so later S_OPEN TCP clients are not wedged. */
 
 static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
                          int *rx_ok_done)
@@ -1112,18 +1119,28 @@ static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
     unsigned long flen = 0;
     uint64_t t0;
     int p;
+    int bs;
     if (!w || !tmp || tcap < (unsigned long)NET_PKT_MAX || !rx_seen || !rx_ok_done)
         return; /* defensive: never print, never park */
-    tcp_boot.state = NET_TCP_CLOSED;
-    tcp_boot_live = 0;
+    bs = net_sock_open((unsigned)NET_SOCK_TCP, 49152u, 0u);
+    if (bs < 0)
+        return; /* table full: silent, loop answers pings anyway */
     if (net_arp_lookup(NET_IP_GW, dmac) != 0)
+    {
+        net_sock_close(bs);
         return; /* no route yet: silent, loop answers pings anyway */
+    }
     iss = u_rdtime();
-    if (net_tcp_syn(&tcp_boot, dmac, NET_IP_GW, 80u, 49152u, iss, tmp, &flen) != 0)
+    if (net_sock_tcp_syn(bs, dmac, NET_IP_GW, 80u, iss, tmp, &flen) != 0)
+    {
+        net_sock_close(bs);
         return;
+    }
     if (net_tx_frame(w, tmp, flen) != 0)
+    {
+        net_sock_close(bs);
         return;
-    tcp_boot_live = 1;
+    }
     t0 = u_rdtime();
     for (p = 0; p < NET_POLL_BOUND; p++)
     { /* bound: NET_POLL_BOUND */
@@ -1158,17 +1175,17 @@ static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
                 }
                 else if (cls == NET_CLASS_TCP)
                 {
-                    rc = net_tcp_input(&tcp_boot, tmp, pktlen, w->txf + NET_TX_PAY_OFF, &replen);
+                    rc = net_sock_tcp_input(bs, tmp, pktlen, w->txf + NET_TX_PAY_OFF, &replen);
                     if (rc == 1)
                     {
                         (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, replen);
                         u_puts("NET: tcp open\n");
-                        return;
+                        return; /* socket stays open: loop feeds the live TCB */
                     }
-                    if (tcp_boot.state == NET_TCP_CLOSED)
+                    if (!net_sock_tcp(bs) || net_sock_tcp(bs)->state == NET_TCP_CLOSED)
                     {
                         u_puts("NET: tcp rst\n");
-                        tcp_boot_live = 0;
+                        net_sock_close(bs);
                         return;
                     }
                 }
@@ -1195,7 +1212,7 @@ static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
             break;
     }
     u_puts("NET: tcp timeout\n");
-    tcp_boot_live = 0;
+    net_sock_close(bs);
 }
 
 /* Phase-2 bring-up: probe, negotiate, DMA, link, RX post, one gratuitous
@@ -1593,6 +1610,37 @@ void net_main(void)
                         u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
                         net_rpc_reply(snd, (uint64_t)S_ERR, 0);
                     }
+                    else if (net_socks[sid].kind == (uint8_t)NET_SOCK_TCP)
+                    {
+                        /* TCP send seam: the peer is fixed at SYN time, so
+                         * the routing phase's ip/port are ignored. The
+                         * seam gates ESTABLISHED + MSS 536 and parks one
+                         * in-order segment; anything else answers S_ERR
+                         * with no frame. Runs pre-unmap (pay is mapped). */
+                        const uint8_t *txp;
+                        unsigned long k;
+                        rc = net_sock_send(sid, pay, len);
+                        u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
+                        if (rc < 0)
+                        {
+                            net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                        }
+                        else
+                        {
+                            txp = net_sock_tcp_tx(&flen);
+                            if (!txp || flen == 0 || flen > (unsigned long)NET_PKT_MAX)
+                            {
+                                net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                            }
+                            else
+                            {
+                                for (k = 0; k < flen; k++) /* bound: 1514 */
+                                    (wire.txf + NET_TX_PAY_OFF)[k] = txp[k];
+                                (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, flen);
+                                net_rpc_reply(snd, (uint64_t)S_OK, 0);
+                            }
+                        }
+                    }
                     else
                     {
                         sport = net_socks[sid].port;
@@ -1620,13 +1668,16 @@ void net_main(void)
             }
             else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_OPEN)
             {
-                /* S_OPEN [S_OPEN, kind, port, 0]: UDP only; duplicate bind
-                 * and a full fair-share pool fail via error reply, never
-                 * a wedge. Owner is the kernel-stamped sender tid. */
+                /* S_OPEN [S_OPEN, kind, port, 0]: UDP or TCP table entry;
+                 * duplicate bind and a full fair-share pool fail via
+                 * error reply, never a wedge. A TCP open binds the
+                 * single TCB (CLOSED until the SYN leg arms it); a
+                 * second TCP open while the TCB is live fails closed.
+                 * Owner is the kernel-stamped sender tid. */
                 uint64_t kind = buf[1];
                 uint64_t portw = buf[2];
                 int id;
-                if (kind != (uint64_t)NET_SOCK_UDP || (portw >> 16) != 0)
+                if ((kind != (uint64_t)NET_SOCK_UDP && kind != (uint64_t)NET_SOCK_TCP) || (portw >> 16) != 0)
                 {
                     net_rpc_reply(snd, (uint64_t)S_ERR, 0);
                 }
@@ -1981,17 +2032,19 @@ void net_main(void)
                 }
                 else if (cls == NET_CLASS_TCP)
                 {
-                    /* Feed the boot TCB while live (handshake completion
-                     * or RST after the open attempt; data drops inside). */
-                    if (tcp_boot_live)
+                    /* Feed the bound TCB while live (boot handshake
+                     * completion or RST after the open attempt; data
+                     * drops inside tcp.h until Task 3 demuxes by dport).
+                     * An RST abort back to CLOSED disarms the waiter via
+                     * the seam; the socket stays for an explicit close
+                     * (a CLOSED bind never blocks the next TCP open). */
+                    int bs = net_sock_tcp_bound();
+                    if (bs >= 0)
                     {
                         unsigned long replen = 0;
-                        int trc = net_tcp_input(&tcp_boot, rxcopy, pktlen,
-                                                wire.txf + NET_TX_PAY_OFF, &replen);
+                        int trc = net_sock_tcp_input(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen);
                         if (trc == 1)
                             (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
-                        if (tcp_boot.state == NET_TCP_CLOSED)
-                            tcp_boot_live = 0;
                     }
                 }
                 else if (cls == NET_CLASS_ARP)

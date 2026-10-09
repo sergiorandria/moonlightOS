@@ -779,6 +779,184 @@ int main(void)
         CHECK(net_tcp_input(&c, sa, sizeof(sa), rep, &replen) == 0);
         CHECK(c.state == NET_TCP_CLOSED);
     }
+    /* ---- Seam Task 2: single-TCB bind + send seam ---- */
+    {
+        static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
+        static uint8_t big[537];
+        int a, b2, u;
+        struct net_tcp_conn *t;
+        uint8_t syn[14 + 20 + 24];
+        uint8_t sa[14 + 20 + 24];
+        uint8_t rep[14 + 20 + 20];
+        uint8_t dmac[6];
+        unsigned long synlen = 0, replen = 0, txlen = 0, l2 = 0;
+        const uint8_t *tx = 0;
+        uint32_t rip;
+        uint32_t iss = 0x01020304u;
+        uint32_t peer = 0x0A0B0C0Du;
+        uint32_t snd0;
+        unsigned i;
+        unsigned wowner = 0;
+        for (i = 0; i < sizeof(big); i++) /* bound: 537 */
+            big[i] = 0x41u;
+        net_stack_init();
+        rip = (uint32_t)NET_IP_GW;
+        CHECK(net_arp_lookup(rip, dmac) == 0);
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        /* Bind: exactly one TCB, CLOSED at open. */
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(net_sock_tcp_bound() == a);
+        CHECK(net_sock_tcp(-1) == 0);
+        tx = net_sock_tcp_tx(&txlen);
+        /* UDP leg unchanged: no route stored, the direct path owns UDP. */
+        u = net_sock_open(NET_SOCK_UDP, 5050, 1);
+        CHECK(u >= 0);
+        CHECK(net_sock_tcp(u) == 0);
+        CHECK(net_sock_send(u, hello, sizeof(hello)) < 0);
+        CHECK(net_sock_close(u) == 0);
+        /* CLOSED gate: no frame, no sequence advance. */
+        CHECK(net_sock_send(a, hello, sizeof(hello)) < 0);
+        tx = net_sock_tcp_tx(&l2);
+        CHECK(l2 == txlen);
+        /* Active open through the bind (MSS 536 + ISS via tcp.h, as boot). */
+        CHECK(net_sock_tcp_syn(a, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        CHECK(t->state == NET_TCP_SYN_SENT && t->snd_nxt == iss + 1u);
+        CHECK(synlen == sizeof(syn));
+        CHECK(net_sock_tcp_syn(-1, dmac, rip, 80u, iss, syn, &synlen) < 0);
+        snd0 = t->snd_nxt;
+        CHECK(net_sock_send(a, hello, sizeof(hello)) < 0);
+        CHECK(t->snd_nxt == snd0);
+        tx = net_sock_tcp_tx(&l2);
+        CHECK(l2 == txlen);
+        /* Canned SYN-ACK: ESTABLISHED + pure ACK. */
+        for (i = 0; i < sizeof(sa); i++) /* bound: 58 */
+            sa[i] = syn[i];
+        for (i = 0; i < 6u; i++) /* bound: 6 */
+        {
+            sa[i] = syn[6 + i];
+            sa[6 + i] = syn[i];
+        }
+        for (i = 0; i < 4u; i++) /* bound: 4 */
+        {
+            uint8_t tmpb = sa[26 + i];
+            sa[26 + i] = sa[30 + i];
+            sa[30 + i] = tmpb;
+        }
+        sa[34] = 0u;
+        sa[35] = 80u;
+        sa[36] = 0x1Fu;
+        sa[37] = 0x90u;
+        sa[14 + 20 + 13] = (uint8_t)(TCP_SYN | TCP_ACK);
+        sa[38] = 0x0Au;
+        sa[39] = 0x0Bu;
+        sa[40] = 0x0Cu;
+        sa[41] = 0x0Du;
+        sa[42] = 0x01u;
+        sa[43] = 0x02u;
+        sa[44] = 0x03u;
+        sa[45] = 0x05u;
+        sa[24] = 0u;
+        sa[25] = 0u;
+        {
+            uint16_t ipck = net_ip_checksum(sa + 14, 20);
+            sa[24] = (uint8_t)(ipck >> 8);
+            sa[25] = (uint8_t)(ipck & 0xFFu);
+        }
+        sa[52] = 0u;
+        sa[53] = 0u;
+        {
+            uint16_t ck = net_tcp_checksum(rip, NET_IP_SELF, sa + 34, 24);
+            sa[52] = (uint8_t)(ck >> 8);
+            sa[53] = (uint8_t)(ck & 0xFFu);
+        }
+        CHECK(net_sock_tcp_input(a, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(t->state == NET_TCP_ESTABLISHED && t->irs == peer);
+        CHECK(replen == 14u + 20u + 20u);
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
+        CHECK(rep[42] == 0x0Au && rep[45] == 0x0Eu);
+        /* Single live TCB: second concurrent TCP open fails closed. */
+        b2 = net_sock_open(NET_SOCK_TCP, 8081, 2);
+        CHECK(b2 < 0);
+        CHECK(net_sock_demux(8081) < 0);
+        /* ESTABLISHED send: one in-order segment, MSS-capped. */
+        CHECK(net_sock_send(a, hello, sizeof(hello)) == (int)sizeof(hello));
+        CHECK(t->snd_nxt == snd0 + 5u);
+        tx = net_sock_tcp_tx(&txlen);
+        CHECK(tx != 0 && txlen == 14u + 20u + 20u + sizeof(hello));
+        CHECK(tx[12] == 0x08u && tx[13] == 0x00u);
+        CHECK(tx[14 + 9] == IP_PROTO_TCP);
+        CHECK(tx[34] == 0x1Fu && tx[35] == 0x90u);
+        CHECK(tx[36] == 0u && tx[37] == 80u);
+        CHECK(tx[38] == 0x01u && tx[39] == 0x02u && tx[40] == 0x03u && tx[41] == 0x05u);
+        CHECK(tx[42] == 0x0Au && tx[45] == 0x0Eu);
+        CHECK(tx[14 + 20 + 13] == (uint8_t)(TCP_PSH | TCP_ACK));
+        CHECK(net_ip_checksum(tx + 14, 20) == 0u);
+        CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, tx + 34, 20 + sizeof(hello)) == 0u);
+        CHECK(memcmp(tx + 54, hello, sizeof(hello)) == 0);
+        CHECK(net_sock_send(a, big, sizeof(big)) < 0);
+        CHECK(t->snd_nxt == snd0 + 5u);
+        /* Close releases the single TCB for the next socket. */
+        CHECK(net_sock_close(a) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+        /* RST in SYN_SENT aborts to CLOSED and disarms the waiter. */
+        b2 = net_sock_open(NET_SOCK_TCP, 8081, 2);
+        CHECK(b2 >= 0);
+        CHECK(net_sock_tcp_bound() == b2);
+        t = net_sock_tcp(b2);
+        CHECK(t != 0 && t->state == NET_TCP_CLOSED);
+        CHECK(net_sock_tcp_syn(b2, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        CHECK(t->state == NET_TCP_SYN_SENT);
+        for (i = 0; i < sizeof(sa); i++) /* bound: 58 */
+            sa[i] = syn[i];
+        for (i = 0; i < 6u; i++) /* bound: 6 */
+        {
+            sa[i] = syn[6 + i];
+            sa[6 + i] = syn[i];
+        }
+        for (i = 0; i < 4u; i++) /* bound: 4 */
+        {
+            uint8_t tmpb = sa[26 + i];
+            sa[26 + i] = sa[30 + i];
+            sa[30 + i] = tmpb;
+        }
+        sa[34] = 0u;
+        sa[35] = 80u;
+        sa[36] = 0x1Fu;
+        sa[37] = 0x91u;
+        sa[14 + 20 + 13] = (uint8_t)(TCP_RST | TCP_ACK);
+        sa[38] = 0x0Au;
+        sa[39] = 0x0Bu;
+        sa[40] = 0x0Cu;
+        sa[41] = 0x0Du;
+        sa[42] = 0x01u;
+        sa[43] = 0x02u;
+        sa[44] = 0x03u;
+        sa[45] = 0x05u;
+        sa[24] = 0u;
+        sa[25] = 0u;
+        {
+            uint16_t ipck = net_ip_checksum(sa + 14, 20);
+            sa[24] = (uint8_t)(ipck >> 8);
+            sa[25] = (uint8_t)(ipck & 0xFFu);
+        }
+        sa[52] = 0u;
+        sa[53] = 0u;
+        {
+            uint16_t ck = net_tcp_checksum(rip, NET_IP_SELF, sa + 34, 24);
+            sa[52] = (uint8_t)(ck >> 8);
+            sa[53] = (uint8_t)(ck & 0xFFu);
+        }
+        CHECK(net_waiter_arm(b2, 2, 1000, 50) == 0);
+        CHECK(net_sock_tcp_input(b2, sa, sizeof(sa), rep, &replen) == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(net_waiter_match(8081, &wowner) < 0);
+        CHECK(net_sock_send(b2, hello, sizeof(hello)) < 0);
+        CHECK(net_sock_close(b2) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
     puts("PASS: test_net_stack");
     return 0;
 }
