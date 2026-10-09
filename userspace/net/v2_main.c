@@ -1107,9 +1107,9 @@ static void net_boot_ping(struct net_wire *w, uint8_t *tmp, unsigned long tcap, 
  * "NET: tcp open", "NET: tcp rst" (SLIRP refuses closed ports: still a
  * live round-trip), or "NET: tcp timeout"; never parks. The single TCB
  * binds to a boot TCP socket through the sock seam (same MSS 536 via
- * tcp.h, same rdtime ISS source); the socket stays open on success so
- * the service loop keeps feeding the live TCB, and closes (releasing
- * the TCB) on RST/timeout so later S_OPEN TCP clients are not wedged. */
+ * tcp.h, same rdtime ISS source); the socket closes on every outcome
+ * (open, RST, timeout), releasing the TCB so later S_OPEN TCP clients
+ * are never wedged by the owner-0 probe socket. */
 
 static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
                          int *rx_ok_done)
@@ -1180,7 +1180,8 @@ static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
                     {
                         (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, replen);
                         u_puts("NET: tcp open\n");
-                        return; /* socket stays open: loop feeds the live TCB */
+                        net_sock_close(bs); /* proof done: release the TCB for S_OPEN clients */
+                        return;
                     }
                     if (!net_sock_tcp(bs) || net_sock_tcp(bs)->state == NET_TCP_CLOSED)
                     {
@@ -2032,9 +2033,9 @@ void net_main(void)
                 }
                 else if (cls == NET_CLASS_TCP)
                 {
-                    /* Feed the bound TCB while live (boot handshake
-                     * completion or RST after the open attempt; data
-                     * drops inside tcp.h until Task 3 demuxes by dport).
+                    /* Feed the bound TCB while live (client handshake
+                     * completion or RST; data drops inside tcp.h until
+                     * Task 3 demuxes by dport).
                      * An RST abort back to CLOSED disarms the waiter via
                      * the seam; the socket stays for an explicit close
                      * (a CLOSED bind never blocks the next TCP open). */
