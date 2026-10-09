@@ -6,14 +6,14 @@
 #include <stdio.h>
 #include <string.h>
 
-#define CHECK(c)                                                                                   \
-    do                                                                                             \
-    {                                                                                              \
-        if (!(c))                                                                                  \
-        {                                                                                          \
-            printf("FAIL line %d: %s\n", __LINE__, #c);                                            \
-            return 1;                                                                              \
-        }                                                                                          \
+#define CHECK(c)                                                                                                       \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        if (!(c))                                                                                                      \
+        {                                                                                                              \
+            printf("FAIL line %d: %s\n", __LINE__, #c);                                                                \
+            return 1;                                                                                                  \
+        }                                                                                                              \
     } while (0)
 
 /* Task 2: ARP table implementation (same single-TU pattern as sock.c/stack.c).
@@ -31,8 +31,8 @@ static int t_carve_drop7(uint16_t dport)
 /* DHCP client (same single-TU pattern). */
 #include "../userspace/net/dhcp.c"
 
-static void t2_mk_arp(uint8_t *f, const uint8_t *dmac, const uint8_t *smac, unsigned op,
-                      const uint8_t *sha, uint32_t spa, const uint8_t *tha, uint32_t tpa)
+static void t2_mk_arp(uint8_t *f, const uint8_t *dmac, const uint8_t *smac, unsigned op, const uint8_t *sha,
+                      uint32_t spa, const uint8_t *tha, uint32_t tpa)
 {
     unsigned i;
     for (i = 0; i < 6; i++)
@@ -99,12 +99,11 @@ int main(void)
         CHECK(net_stack_init() == 0);
         CHECK(net_stack_rx(tcp, sizeof(tcp)) == NET_CLASS_TCP);
     }
-    /* ---- Task 1: socket table with port demux ---- */
+    /* ---- Task 1: socket table with port demux (UDP + TCP) ---- */
     {
         int id;
         int ids[4];
         unsigned i;
-        CHECK(net_sock_open(NET_SOCK_TCP, 80, 5) < 0);
         id = net_sock_open(NET_SOCK_UDP, 53, 5);
         CHECK(id >= 0);
         CHECK(net_sock_open(NET_SOCK_UDP, 53, 6) < 0);
@@ -127,6 +126,31 @@ int main(void)
         id = net_sock_open(NET_SOCK_UDP, 2000, 5);
         CHECK(id >= 0);
         CHECK(net_sock_close(id) == 0);
+        /* TCP sockets are first-class table entries (same fair-share). */
+        {
+            int tid;
+            int tids[4];
+            unsigned j;
+            unsigned owner = 0;
+            tid = net_sock_open(NET_SOCK_TCP, 8080, 1);
+            CHECK(tid >= 0);
+            CHECK(net_sock_open(NET_SOCK_TCP, 8080, 2) < 0);
+            CHECK(net_sock_open(99, 8100, 1) < 0);
+            CHECK(net_sock_demux(8080) == tid);
+            CHECK(net_sock_owned(tid, 1));
+            CHECK(net_waiter_arm(tid, 1, 100, 50) == 0);
+            CHECK(net_waiter_match(8080, &owner) == tid);
+            CHECK(net_sock_close(tid) == 0);
+            CHECK(net_waiter_match(8080, &owner) < 0);
+            for (j = 0; j < 4; j++) /* bound: 4 */
+            {
+                tids[j] = net_sock_open(NET_SOCK_TCP, (uint16_t)(9000 + j), 1);
+                CHECK(tids[j] >= 0);
+            }
+            CHECK(net_sock_open(NET_SOCK_TCP, 9004, 1) < 0);
+            for (j = 0; j < 4; j++) /* bound: 4 */
+                CHECK(net_sock_close(tids[j]) == 0);
+        }
     }
     CHECK(net_sock_send(0, ip, 4) < 0);
     /* RFC-style fixed vectors: IPv4 header checksum (field zeroed). */
@@ -138,15 +162,13 @@ int main(void)
     /* UDP pseudo-header checksum: odd 21B segment (13B "Hello, world!"
      * payload, trailing byte padded as high-order octet). */
     {
-        static const uint8_t seg[21] = {0x12, 0x34, 0x00, 0x35, 0x00, 0x15, 0x00,
-                                        0x00, 0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C,
-                                        0x20, 0x77, 0x6F, 0x72, 0x6C, 0x64, 0x21};
+        static const uint8_t seg[21] = {0x12, 0x34, 0x00, 0x35, 0x00, 0x15, 0x00, 0x00, 0x48, 0x65, 0x6C,
+                                        0x6C, 0x6F, 0x2C, 0x20, 0x77, 0x6F, 0x72, 0x6C, 0x64, 0x21};
         CHECK(net_udp_checksum(0x0A00020Fu, 0x0A000202u, seg, sizeof(seg)) == 0x93FEu);
     }
     /* UDP pseudo-header checksum: even 12B segment (4B "test" payload). */
     {
-        static const uint8_t seg[12] = {0x12, 0x34, 0x00, 0x35, 0x00, 0x0C,
-                                        0x00, 0x00, 0x74, 0x65, 0x73, 0x74};
+        static const uint8_t seg[12] = {0x12, 0x34, 0x00, 0x35, 0x00, 0x0C, 0x00, 0x00, 0x74, 0x65, 0x73, 0x74};
         CHECK(net_udp_checksum(0x0A00020Fu, 0x0A000202u, seg, sizeof(seg)) == 0xED82u);
     }
     /* ---- Task 2: ARP table (seed/learn/reply/expiry/evict) ---- */
@@ -189,10 +211,10 @@ int main(void)
         CHECK(net_arp_need_reply(&rip, rmac) == 0);
         /* Built reply byte-matches the vector. */
         {
-            static const uint8_t expect[42] = {
-                0x02, 0x00, 0x00, 0x00, 0x00, 0x04, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0x08, 0x06,
-                0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x02, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
-                0x0A, 0x00, 0x02, 0x0F, 0x02, 0x00, 0x00, 0x00, 0x00, 0x04, 0x0A, 0x00, 0x02, 0x04};
+            static const uint8_t expect[42] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x04, 0x52, 0x54, 0x00, 0x12, 0x34,
+                                               0x56, 0x08, 0x06, 0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x02,
+                                               0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0x0A, 0x00, 0x02, 0x0F, 0x02,
+                                               0x00, 0x00, 0x00, 0x00, 0x04, 0x0A, 0x00, 0x02, 0x04};
             CHECK(net_arp_build_reply(frame, sizeof(frame), out) == 42);
             CHECK(memcmp(out, expect, sizeof(expect)) == 0);
         }
@@ -209,8 +231,7 @@ int main(void)
         CHECK(out[20] == 0x00 && out[21] == 0x01);
         CHECK(memcmp(out + 22, NET_MAC_SELF, 6) == 0);
         CHECK(out[28] == 0x0A && out[29] == 0x00 && out[30] == 0x02 && out[31] == 0x0F);
-        CHECK(out[32] == 0 && out[33] == 0 && out[34] == 0 && out[35] == 0 && out[36] == 0 &&
-              out[37] == 0);
+        CHECK(out[32] == 0 && out[33] == 0 && out[34] == 0 && out[35] == 0 && out[36] == 0 && out[37] == 0);
         CHECK(out[38] == 0x0A && out[39] == 0x00 && out[40] == 0x02 && out[41] == 0x02);
         CHECK(net_arp_build_request(NET_IP_GW, NULL) < 0);
         /* Expiry after 60s ticks (boundary still valid). */
@@ -249,13 +270,12 @@ int main(void)
     }
     /* ---- Task 3: UDP send builder + RX queue + dispatch ---- */
     {
-        static const uint8_t hello[13] = {0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C, 0x20,
-                                          0x77, 0x6F, 0x72, 0x6C, 0x64, 0x21};
-        static const uint8_t expect[55] = {
-            0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0x08, 0x00,
-            0x45, 0x00, 0x00, 0x29, 0x12, 0x34, 0x40, 0x00, 0x40, 0x11, 0x10, 0x80, 0x0A, 0x00,
-            0x02, 0x0F, 0x0A, 0x00, 0x02, 0x02, 0xC0, 0x00, 0x00, 0x35, 0x00, 0x15, 0xE6, 0x31,
-            0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x77, 0x6F, 0x72, 0x6C, 0x64, 0x21};
+        static const uint8_t hello[13] = {0x48, 0x65, 0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x77, 0x6F, 0x72, 0x6C, 0x64, 0x21};
+        static const uint8_t expect[55] = {0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 0x52, 0x54, 0x00, 0x12, 0x34,
+                                           0x56, 0x08, 0x00, 0x45, 0x00, 0x00, 0x29, 0x12, 0x34, 0x40, 0x00,
+                                           0x40, 0x11, 0x10, 0x80, 0x0A, 0x00, 0x02, 0x0F, 0x0A, 0x00, 0x02,
+                                           0x02, 0xC0, 0x00, 0x00, 0x35, 0x00, 0x15, 0xE6, 0x31, 0x48, 0x65,
+                                           0x6C, 0x6C, 0x6F, 0x2C, 0x20, 0x77, 0x6F, 0x72, 0x6C, 0x64, 0x21};
         uint8_t frame[1514];
         uint8_t buf[32];
         unsigned long flen = 0;
@@ -278,8 +298,7 @@ int main(void)
         {
             static uint8_t bigpay[1473];
             memset(bigpay, 0x41, sizeof(bigpay));
-            CHECK(net_stack_udp_send(0x0A000202u, 53, 49152, bigpay, sizeof(bigpay), frame,
-                                     &flen) == -2);
+            CHECK(net_stack_udp_send(0x0A000202u, 53, 49152, bigpay, sizeof(bigpay), frame, &flen) == -2);
         }
         net_stack_init();
         net_arp_init();
@@ -410,8 +429,7 @@ int main(void)
             static uint8_t big[1600];
             memset(big, 0, sizeof(big));
             CHECK(net_stack_rx(big, sizeof(big)) == NET_CLASS_DROP);
-            CHECK(net_udp_recv_from(53, buf, sizeof(buf), &sip, &sport, &trunc) ==
-                  -(NET_ERR_EMPTY));
+            CHECK(net_udp_recv_from(53, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
         }
     }
     /* ---- SDD 2026-10-08 net-blocking-recv Task 2: waiter table ---- */
@@ -463,19 +481,16 @@ int main(void)
     }
     /* ---- Task 3: DNS codec (query build + first-A parse) ---- */
     {
-        static const uint8_t dns_q_expect[29] = {0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
-                                                 0x00, 0x00, 0x00, 0x00, 0x07, 0x65, 0x78, 0x61,
-                                                 0x6D, 0x70, 0x6C, 0x65, 0x03, 0x63, 0x6F, 0x6D,
-                                                 0x00, 0x00, 0x01, 0x00, 0x01};
-        static const uint8_t dns_resp[45] = {0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00,
-                                             0x00, 0x00, 0x00, 0x07, 0x65, 0x78, 0x61, 0x6D, 0x70,
-                                             0x6C, 0x65, 0x03, 0x63, 0x6F, 0x6D, 0x00, 0x00, 0x01,
-                                             0x00, 0x01, 0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00,
+        static const uint8_t dns_q_expect[29] = {0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                                                 0x00, 0x00, 0x07, 0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65,
+                                                 0x03, 0x63, 0x6F, 0x6D, 0x00, 0x00, 0x01, 0x00, 0x01};
+        static const uint8_t dns_resp[45] = {0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                                             0x07, 0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65, 0x03, 0x63, 0x6F, 0x6D,
+                                             0x00, 0x00, 0x01, 0x00, 0x01, 0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00,
                                              0x00, 0x0E, 0x10, 0x00, 0x04, 0x5D, 0xB8, 0xD8, 0x22};
-        static const uint8_t dns_noans[29] = {0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00,
-                                              0x00, 0x00, 0x00, 0x00, 0x07, 0x65, 0x78, 0x61,
-                                              0x6D, 0x70, 0x6C, 0x65, 0x03, 0x63, 0x6F, 0x6D,
-                                              0x00, 0x00, 0x01, 0x00, 0x01};
+        static const uint8_t dns_noans[29] = {0x12, 0x34, 0x81, 0x80, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+                                              0x00, 0x00, 0x07, 0x65, 0x78, 0x61, 0x6D, 0x70, 0x6C, 0x65,
+                                              0x03, 0x63, 0x6F, 0x6D, 0x00, 0x00, 0x01, 0x00, 0x01};
         static const uint8_t dns_garbage[3] = {0x00, 0x01, 0x02};
         uint8_t q[512];
         uint8_t tc[45];
@@ -530,8 +545,7 @@ int main(void)
         unsigned long reqlen = 0, replen = 0;
         uint8_t pay[4] = {0xDEu, 0xADu, 0xBEu, 0xEFu};
         uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
-        CHECK(net_icmp_build_request(gwmac, 0x0A00020Fu, 0x1234u, 0x0001u, pay, sizeof(pay), req,
-                                     &reqlen) == 0);
+        CHECK(net_icmp_build_request(gwmac, 0x0A00020Fu, 0x1234u, 0x0001u, pay, sizeof(pay), req, &reqlen) == 0);
         CHECK(reqlen == sizeof(req));
         CHECK(req[12] == 0x08u && req[13] == 0x00u); /* ethertype IPv4 */
         CHECK(req[14 + 9] == IP_PROTO_ICMP);

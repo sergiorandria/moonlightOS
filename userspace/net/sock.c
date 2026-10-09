@@ -1,4 +1,4 @@
-/* userspace/net/sock.c - Socket table with port demux. UDP only; TCP refused. */
+/* userspace/net/sock.c - Socket table with port demux. UDP + TCP. */
 #include "sock.h"
 
 /* 1-slot fair-share: each open socket owns one slot carved from the
@@ -25,7 +25,7 @@ int net_sock_open(unsigned kind, uint16_t port, unsigned owner)
 {
     unsigned i;
     unsigned used = 0;
-    if (kind != NET_SOCK_UDP)
+    if (kind != NET_SOCK_UDP && kind != NET_SOCK_TCP)
         return -1;
     for (i = 0; i < NET_SOCK_MAX; i++)
     {
