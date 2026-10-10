@@ -2168,6 +2168,41 @@ void net_main(void)
                         }
                         else if (bt)
                         {
+                            /* RST-first (slice Sec 2, RFC 793 section 3.5):
+                             * an RST arriving in ESTABLISHED must abort at
+                             * once, not converge later via retry exhaustion.
+                             * Check the flags byte first (bounds-checked,
+                             * same pattern as the non-ESTABLISHED leg) and
+                             * feed RST frames to the seam: a genuine RST
+                             * aborts to CLOSED and disarms the waiter (woken
+                             * here exactly once with S_ERR, dead owner
+                             * clears without SENDing); a spoofed RST fails
+                             * the seam's peer/checksum gates with the state
+                             * held. Fall-through below is then a no-op after
+                             * a genuine abort (ack_cover rejects
+                             * non-ESTABLISHED, no ACK parks for RST frames,
+                             * the waiter is cleared) and the normal flow
+                             * after a spoofed one. Silent either way (the
+                             * boot probe owns "NET: tcp rst"). */
+                            {
+                                unsigned rihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
+                                unsigned roff = 14u + rihl;
+                                int is_rst = 0;
+                                if (rihl >= 20u && pktlen >= (unsigned long)(roff + 14u) &&
+                                    (rxcopy[roff + 13] & (uint8_t)TCP_RST) != 0)
+                                    is_rst = 1;
+                                if (is_rst)
+                                {
+                                    int was_live = (bt->state != NET_TCP_CLOSED);
+                                    unsigned wowner = 0;
+                                    int wcap = (net_waiter_match(bt->lport, &wowner) == bs);
+                                    unsigned long replen = 0;
+                                    (void)net_sock_tcp_input(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen);
+                                    if (was_live && bt->state == NET_TCP_CLOSED && wcap &&
+                                        net_owner_live((long)bs, wowner))
+                                        net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
+                                }
+                            }
                             /* Covering-ACK disarm (slice Sec 2): the frame's
                              * ack field covers our one outstanding segment
                              * (ack == snd_nxt) iff the peer got it, so the

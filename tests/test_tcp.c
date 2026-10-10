@@ -456,6 +456,25 @@ int main(void)
         CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
         CHECK(net_sock_close(c4) == 0);
         CHECK(net_sock_tcp_bound() < 0);
+        /* RST in ESTABLISHED aborts at once (the loop feeds RST frames to
+         * the seam first): CLOSED, retry disarmed, waiter disarmed for the
+         * single S_ERR wake. */
+        c4 = net_sock_open(NET_SOCK_TCP, 8097, 3);
+        CHECK(c4 >= 0);
+        t = net_sock_tcp(c4);
+        CHECK(t != 0);
+        CHECK(net_sock_tcp_syn(c4, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0xA1u);
+        CHECK(net_sock_tcp_input(c4, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        CHECK(net_waiter_arm(c4, 3, 1000, 50) == 0);
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8097u, t->rcv_nxt, t->snd_nxt, (uint8_t)(TCP_RST | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(c4, fr, flen, rep, &rl2) == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
+        CHECK(net_waiter_match(8097, &wowner) < 0);
+        CHECK(net_sock_close(c4) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
     }
 
     /* ---- Fair-share: 4 concurrent opens hold all slots ---- */
