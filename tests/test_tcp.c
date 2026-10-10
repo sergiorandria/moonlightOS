@@ -298,6 +298,69 @@ int main(void)
     CHECK(net_sock_close(b2) == 0);
     CHECK(net_sock_tcp_bound() < 0);
 
+    /* ---- Active close: S_CLOSE equivalent enters FIN_WAIT (RFC 793 section 3.5) ---- */
+    {
+        int c2, c3;
+        uint32_t sndf;
+        unsigned long flen2 = 0;
+        const uint8_t *fin;
+        CHECK(net_sock_fin_close(-1) < 0);
+        c2 = net_sock_open(NET_SOCK_TCP, 8090, 3);
+        CHECK(c2 >= 0);
+        t = net_sock_tcp(c2);
+        CHECK(t != 0 && t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_count == 0u && t->retry_deadline == 0u);
+        CHECK(net_sock_fin_close(c2) < 0); /* CLOSED gate: nothing emitted */
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(net_sock_tcp_syn(c2, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0x9Au);
+        CHECK(net_sock_tcp_input(c2, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        sndf = t->snd_nxt;
+        /* S_CLOSE equivalent: FIN parks, FIN_WAIT holds the bind. */
+        CHECK(net_sock_fin_close(c2) == 0);
+        CHECK(t->state == NET_TCP_FIN_WAIT);
+        CHECK(t->retry_count == 0u && t->retry_deadline == 0u);
+        CHECK(t->snd_nxt == sndf + 1u); /* FIN consumes one sequence number */
+        fin = net_sock_tcp_tx(&flen2);
+        CHECK(fin != 0 && flen2 == 14u + 20u + 20u);
+        CHECK(fin[14 + 20 + 13] == (uint8_t)(TCP_FIN | TCP_ACK));
+        CHECK(fin[38] == (uint8_t)(sndf >> 24) && fin[39] == (uint8_t)(sndf >> 16) && fin[40] == (uint8_t)(sndf >> 8) &&
+              fin[41] == (uint8_t)sndf);
+        CHECK(fin[42] == (uint8_t)(t->rcv_nxt >> 24) && fin[43] == (uint8_t)(t->rcv_nxt >> 16) &&
+              fin[44] == (uint8_t)(t->rcv_nxt >> 8) && fin[45] == (uint8_t)t->rcv_nxt);
+        CHECK(net_ip_checksum(fin + 14, 20) == 0u);
+        CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, fin + 34, 20) == 0u);
+        CHECK(net_sock_tcp_bound() == c2); /* bind held in FIN_WAIT */
+        CHECK(net_sock_open(NET_SOCK_TCP, 8091, 4) < 0);
+        CHECK(net_sock_send(c2, hello, sizeof(hello)) < 0); /* FIN_WAIT: no new data */
+        /* RST in FIN_WAIT aborts to CLOSED and disarms the waiter. */
+        CHECK(net_waiter_arm(c2, 3, 1000, 50) == 0);
+        sa[14 + 20 + 13] = (uint8_t)(TCP_RST | TCP_ACK);
+        sa[52] = 0u;
+        sa[53] = 0u;
+        {
+            uint32_t rsp = (uint32_t)(((uint32_t)sa[26] << 24) | ((uint32_t)sa[27] << 16) | ((uint32_t)sa[28] << 8) |
+                                      (uint32_t)sa[29]);
+            uint16_t ck = net_tcp_checksum(rsp, (uint32_t)NET_IP_SELF, sa + 34, 24);
+            sa[52] = (uint8_t)(ck >> 8);
+            sa[53] = (uint8_t)(ck & 0xFFu);
+        }
+        CHECK(net_sock_tcp_input(c2, sa, sizeof(sa), rep, &replen) == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_count == 0u && t->retry_deadline == 0u);
+        CHECK(net_waiter_match(8090, &wowner) < 0);
+        CHECK(net_sock_close(c2) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+        /* Reopened socket starts with zeroed retry state (no leaked deadline). */
+        c3 = net_sock_open(NET_SOCK_TCP, 8092, 3);
+        CHECK(c3 >= 0);
+        t = net_sock_tcp(c3);
+        CHECK(t != 0 && t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_count == 0u && t->retry_deadline == 0u);
+        CHECK(net_sock_close(c3) == 0);
+    }
+
     /* ---- Fair-share: 4 concurrent opens hold all slots ---- */
     {
         int ids[4];

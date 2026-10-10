@@ -1,6 +1,7 @@
-/* userspace/net/tcp.h - TCP handshake (RFC 793, lwIP-grounded: single
- * TCB, active open, RST abort). Pure C, libc-free for freestanding use.
- * Data/stream support is explicitly out of scope for this slice. */
+/* userspace/net/tcp.h - TCP handshake + active close (RFC 793, lwIP-grounded:
+ * single TCB, active open, RST abort, FIN_WAIT). Pure C, libc-free for
+ * freestanding use. Data/stream support is explicitly out of scope for
+ * this slice. */
 #ifndef NET_TCP_H
 #define NET_TCP_H
 
@@ -22,6 +23,7 @@
 #define NET_TCP_CLOSED 0
 #define NET_TCP_SYN_SENT 1
 #define NET_TCP_ESTABLISHED 2
+#define NET_TCP_FIN_WAIT 3 /* active close: our FIN sent, peer ACK pending */
 
 static inline int tcp_hdr_ok(const uint8_t *f, unsigned long len)
 {
@@ -90,6 +92,8 @@ struct net_tcp_conn
     uint16_t lport;
     uint16_t rport;
     uint32_t rip;
+    uint64_t retry_deadline; /* rdtime ticks; 0 = unarmed (TX pass arms it) */
+    unsigned retry_count;    /* bounded retransmits used (cap owned by retry loop) */
 };
 
 /* Active open: init TCB + build SYN with MSS option. */
@@ -110,6 +114,8 @@ static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint3
     c->lport = lport;
     c->rport = rport;
     c->rip = rip;
+    c->retry_deadline = 0u;
+    c->retry_count = 0u;
     total = (unsigned long)ETH_HDR_LEN + 20u + (unsigned long)TCP_HDR_MIN +
             (unsigned long)TCP_SYN_HDR_OPT;
     if (total > 1514UL)
@@ -177,8 +183,12 @@ static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint3
 }
 
 /* SYN_SENT input: RST aborts to CLOSED; matching SYN-ACK advances to
- * ESTABLISHED with a pure ACK in out (returns 1). Anything else drops
- * (returns 0). ESTABLISHED/CLOSED input drops: no data support yet. */
+ * ESTABLISHED with a pure ACK in out (returns 1). RST at any live state
+ * (RFC 793 section 3.5: the FIN_WAIT active-close leg included) aborts
+ * to CLOSED and zeroes the retry state; the sock seam disarms the
+ * waiter. Anything else drops (returns 0). ESTABLISHED/FIN_WAIT non-RST
+ * input drops here: stream RX lives in stack.c, peer-ACK close is a
+ * later slice. CLOSED input drops. */
 static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsigned long len,
                                 uint8_t *out, unsigned long *outlen)
 {
@@ -189,7 +199,7 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
     unsigned long total;
     if (!c || !f || !out || !outlen)
         return -1;
-    if (c->state != NET_TCP_SYN_SENT)
+    if (c->state == NET_TCP_CLOSED)
         return 0;
     if (!tcp_hdr_ok(f, len))
         return 0;
@@ -212,8 +222,12 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
     if (flags & (unsigned)TCP_RST)
     {
         c->state = NET_TCP_CLOSED;
+        c->retry_deadline = 0u;
+        c->retry_count = 0u;
         return 0;
     }
+    if (c->state != NET_TCP_SYN_SENT)
+        return 0;
     if (!(flags & (unsigned)TCP_SYN) || !(flags & (unsigned)TCP_ACK))
         return 0;
     seq = (uint32_t)(((uint32_t)f[off + 4] << 24) | ((uint32_t)f[off + 5] << 16) |

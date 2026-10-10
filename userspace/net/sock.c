@@ -104,6 +104,8 @@ int net_sock_open(unsigned kind, uint16_t port, unsigned owner)
             net_tcb.lport = port;
             net_tcb.rport = 0u;
             net_tcb.rip = 0u;
+            net_tcb.retry_deadline = 0u;
+            net_tcb.retry_count = 0u;
         }
         return (int)i;
     }
@@ -121,6 +123,8 @@ int net_sock_close(int id)
         /* Release the single TCB for the next TCP open. */
         net_tcb_sock = -1;
         net_tcb.state = NET_TCP_CLOSED;
+        net_tcb.retry_deadline = 0u;
+        net_tcb.retry_count = 0u;
     }
     net_socks[id].used = 0;
     net_socks[id].kind = NET_SOCK_NONE;
@@ -263,6 +267,85 @@ static int tcp_data_build(struct net_tcp_conn *c, const uint8_t *buf, unsigned l
     return 0;
 }
 
+/* Header-only FIN|ACK (active close, RFC 793 section 3.5: seq = snd_nxt, ack =
+ * rcv_nxt, no payload; total 14+20+20 = 54 <= 1514, same wire bound as
+ * the data path). The destination MAC resolves via ARP; a miss fails
+ * closed with no frame and no sequence advance. Advances snd_nxt by 1:
+ * FIN consumes one sequence number, so the covering peer ACK (next
+ * slice) is the post-FIN snd_nxt. */
+static int tcp_fin_build(struct net_tcp_conn *c, uint8_t *out, unsigned long *outlen)
+{
+    uint8_t dmac[6];
+    unsigned long total;
+    unsigned long ip_len;
+    unsigned i;
+    uint16_t ck;
+    if (!c || !out || !outlen)
+        return -1;
+    total = (unsigned long)14 + 20u + (unsigned long)TCP_HDR_MIN;
+    if (total > 1514UL)
+        return -1;
+    if (net_arp_lookup(c->rip, dmac) != 0)
+        return -1;
+    for (i = 0; i < 6u; i++) /* bound: 6 */
+    {
+        out[i] = dmac[i];
+        out[6 + i] = NET_MAC_SELF[i];
+    }
+    out[12] = 0x08u;
+    out[13] = 0x00u;
+    ip_len = 20u + (unsigned long)TCP_HDR_MIN;
+    out[14] = 0x45u;
+    out[15] = 0x00u;
+    out[16] = (uint8_t)(ip_len >> 8);
+    out[17] = (uint8_t)(ip_len & 0xFFu);
+    out[18] = 0x12u;
+    out[19] = 0x34u;
+    out[20] = 0x40u;
+    out[21] = 0x00u;
+    out[22] = 64u;
+    out[23] = IP_PROTO_TCP;
+    out[24] = 0u;
+    out[25] = 0u;
+    out[26] = (uint8_t)(NET_IP_SELF >> 24);
+    out[27] = (uint8_t)(NET_IP_SELF >> 16);
+    out[28] = (uint8_t)(NET_IP_SELF >> 8);
+    out[29] = (uint8_t)NET_IP_SELF;
+    out[30] = (uint8_t)(c->rip >> 24);
+    out[31] = (uint8_t)(c->rip >> 16);
+    out[32] = (uint8_t)(c->rip >> 8);
+    out[33] = (uint8_t)c->rip;
+    ck = net_ip_checksum(out + 14, 20);
+    out[24] = (uint8_t)(ck >> 8);
+    out[25] = (uint8_t)(ck & 0xFFu);
+    out[34] = (uint8_t)(c->lport >> 8);
+    out[35] = (uint8_t)c->lport;
+    out[36] = (uint8_t)(c->rport >> 8);
+    out[37] = (uint8_t)c->rport;
+    out[38] = (uint8_t)(c->snd_nxt >> 24);
+    out[39] = (uint8_t)(c->snd_nxt >> 16);
+    out[40] = (uint8_t)(c->snd_nxt >> 8);
+    out[41] = (uint8_t)c->snd_nxt;
+    out[42] = (uint8_t)(c->rcv_nxt >> 24);
+    out[43] = (uint8_t)(c->rcv_nxt >> 16);
+    out[44] = (uint8_t)(c->rcv_nxt >> 8);
+    out[45] = (uint8_t)c->rcv_nxt;
+    out[46] = (uint8_t)(5u << 4);
+    out[47] = (uint8_t)(TCP_FIN | TCP_ACK);
+    out[48] = 0x08u;
+    out[49] = 0x00u; /* window 2048, same as the SYN/data paths */
+    out[50] = 0u;
+    out[51] = 0u;
+    out[52] = 0u;
+    out[53] = 0u;
+    ck = net_tcp_checksum((uint32_t)NET_IP_SELF, c->rip, out + 34, (unsigned)TCP_HDR_MIN);
+    out[50] = (uint8_t)(ck >> 8);
+    out[51] = (uint8_t)(ck & 0xFFu);
+    *outlen = total;
+    c->snd_nxt += 1u;
+    return 0;
+}
+
 /* Unified send seam (design Sec 3): UDP keeps the direct path
  * (net_stack_udp_send with the caller's routing; no per-socket route is
  * stored in the table, so this leg stays fail-closed -1 and the v2_main
@@ -289,6 +372,34 @@ int net_sock_send(int id, const uint8_t *buf, unsigned long len)
         return -1;
     net_tcp_tx_len = flen;
     return (int)len;
+}
+
+/* Graceful-close seam (design Sec 2: the S_CLOSE-on-ESTABLISHED leg the
+ * RPC close handler calls instead of the abort release): ESTABLISHED
+ * emits one header-only FIN|ACK into the parked TX frame (copy out via
+ * net_sock_tcp_tx; the retry slice resends it verbatim and arms the
+ * deadline on the TX pass, so the deadline stays unarmed here) and
+ * enters FIN_WAIT with cleared retry state. The socket stays open and
+ * bound: a second concurrent TCP open still fails closed and S_SEND
+ * stays gated off. Any gate failure (bad id, unbound, non-TCP,
+ * non-ESTABLISHED, ARP miss) emits nothing and changes nothing.
+ * Returns 0 on FIN_WAIT entry, -1 otherwise. */
+int net_sock_fin_close(int id)
+{
+    unsigned long flen = 0;
+    if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
+        return -1;
+    if (net_socks[id].kind != NET_SOCK_TCP)
+        return -1;
+    if (id != net_tcb_sock || net_tcb.state != NET_TCP_ESTABLISHED)
+        return -1;
+    if (tcp_fin_build(&net_tcb, net_tcp_tx, &flen) != 0)
+        return -1;
+    net_tcp_tx_len = flen;
+    net_tcb.state = NET_TCP_FIN_WAIT;
+    net_tcb.retry_deadline = 0u;
+    net_tcb.retry_count = 0u;
+    return 0;
 }
 
 /* Parked TX frame from the last successful TCP net_sock_send: sets
