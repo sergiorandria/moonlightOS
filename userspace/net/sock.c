@@ -182,16 +182,22 @@ int net_sock_tcp_syn(int id, const uint8_t *dmac, uint32_t rip, uint16_t rport, 
 int net_sock_tcp_input(int id, const uint8_t *f, unsigned long len, uint8_t *out, unsigned long *outlen)
 {
     int rc;
+    int was_syn_sent;
     if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
         return -1;
     if (net_socks[id].kind != NET_SOCK_TCP || id != net_tcb_sock)
         return -1;
+    was_syn_sent = (net_tcb.state == NET_TCP_SYN_SENT);
     rc = net_tcp_input(&net_tcb, f, len, out, outlen);
-    if (rc == 1)
+    if (rc == 1 && was_syn_sent)
     {
         /* SYN-ACK accepted (SYN_SENT -> ESTABLISHED): the SYN retry budget
-         * is spent, so the fresh connection starts disarmed. The CLOSED
-         * abort below already disarmed via tcp.h; only success needs this. */
+         * is spent, so the fresh connection starts disarmed. Gated on the
+         * prior state, not just rc: the seam also routes FIN_WAIT inputs
+         * (v2_main non-ESTABLISHED leg), and a future 1-return from any
+         * other state (Task 3 peer-ACK close) must leave that state's
+         * retry budget alone. The CLOSED abort below already disarmed via
+         * tcp.h; only handshake success needs this. */
         net_tcb.retry_deadline = 0u;
         net_tcb.retry_count = 0u;
     }

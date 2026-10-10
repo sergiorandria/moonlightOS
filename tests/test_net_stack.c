@@ -188,8 +188,22 @@ static int t2_establish(int id, const uint8_t *dmac, uint32_t rip, uint32_t iss,
     ck = net_tcp_checksum(rip, (uint32_t)NET_IP_SELF, sa + 34, 24);
     sa[52] = (uint8_t)(ck >> 8);
     sa[53] = (uint8_t)(ck & 0xFFu);
+    /* Simulate the TX pass arming the SYN retry, then prove handshake
+     * success (rc == 1 from SYN_SENT) disarms it via the gated seam. */
+    {
+        struct net_tcp_conn *tc = net_sock_tcp(id);
+        if (!tc)
+            return -1;
+        tc->retry_deadline = 1000u;
+        tc->retry_count = 2u;
+    }
     if (net_sock_tcp_input(id, sa, 58u, rep, &rl) != 1)
         return -1;
+    {
+        struct net_tcp_conn *tc = net_sock_tcp(id);
+        if (!tc || tc->state != NET_TCP_ESTABLISHED || tc->retry_deadline != 0u || tc->retry_count != 0u)
+            return -1;
+    }
     *replen = rl;
     return 0;
 }
@@ -1478,6 +1492,11 @@ int main(void)
         CHECK(net_sock_tcp_ack_cover(a, t->snd_nxt) == 0); /* FIN_WAIT: Task 3 owns ACKs */
         CHECK(t->retry_deadline == 0u);
         CHECK(net_sock_tcp_retry_arm(a, t1, sp) == 0);
+        /* FIN_WAIT input through the seam (dropped SYN-ACK shape) never
+         * disarms the FIN retry Task 3 relies on. */
+        CHECK(net_sock_tcp_input(a, sa, sizeof(sa), rep, &replen) == 0);
+        CHECK(t->state == NET_TCP_FIN_WAIT);
+        CHECK(t->retry_deadline == t1 + sp && t->retry_count == 0u);
         trc = net_sock_tcp_retry_poll(t1 + sp, sp, &owner, &had);
         CHECK(trc == 1 && had == 0 && t->retry_count == 1u);
         tx = net_sock_tcp_tx(&txlen);
