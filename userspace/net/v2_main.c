@@ -1513,6 +1513,33 @@ void net_main(void)
         if (pend_valid && now - pend_t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
             pend_valid = 0;
 
+        /* TCP retransmit (slice Sec 2, RFC 793 section 3.7): per-pass due
+         * check on the parked frame (SYN, unacked PSH, FIN), on the same
+         * pass that pumps RX below. A resend transmits the parked bytes
+         * verbatim; exhaustion parks an RST|ACK, aborts the TCB to CLOSED,
+         * and wakes the armed waiter once with S_ERR via ASEND (the poll
+         * already cleared it, so this fires exactly once; the socket stays
+         * open for an explicit close). Arming happens on the TX passes
+         * above, never here, so resends never reset the retry budget. */
+        {
+            unsigned r_owner = 0;
+            int r_wait = 0;
+            int trc = net_sock_tcp_retry_poll(now, (uint64_t)NET_IRQ_TIMEOUT_TICKS, &r_owner, &r_wait);
+            if (trc == 1 || trc == 2)
+            {
+                unsigned long rlen = 0;
+                const uint8_t *rtx = net_sock_tcp_tx(&rlen);
+                if (rtx && rlen >= 14u && rlen <= (unsigned long)NET_PKT_MAX)
+                    (void)net_tx_frame(&wire, rtx, rlen);
+                if (trc == 2 && r_wait)
+                {
+                    int bs = net_sock_tcp_bound();
+                    if (bs >= 0 && net_owner_live((long)bs, r_owner))
+                        net_wake_reply((unsigned long)r_owner, (uint64_t)S_ERR, 0);
+                }
+            }
+        }
+
         /* Queued firewall message. V2_WAIT reports 0x10 without consuming,
          * so this u_recv takes without blocking. The T_FWD audit logic is
          * the unchanged phase-1 block, only nested under the bit (early
@@ -1632,6 +1659,15 @@ void net_main(void)
                         }
                         else
                         {
+                            /* Arm the retry deadline (slice Sec 2): the seam
+                             * just parked a fresh in-order segment with a
+                             * cleared budget, so the per-pass poll below
+                             * resends it verbatim past the deadline until
+                             * a covering ACK disarms (same pass) or the
+                             * 5th expiry RST-aborts. Arms even when the TX
+                             * below misses: the parked frame is what the
+                             * poll resends. */
+                            (void)net_sock_tcp_retry_arm(sid, now, (uint64_t)NET_IRQ_TIMEOUT_TICKS);
                             txp = net_sock_tcp_tx(&flen);
                             if (!txp || flen == 0 || flen > (unsigned long)NET_PKT_MAX)
                             {
@@ -2077,19 +2113,38 @@ void net_main(void)
                         if (bt && bt->state != NET_TCP_ESTABLISHED)
                         {
                             unsigned long replen = 0;
-                            int trc = net_sock_tcp_input(bs, rxcopy, pktlen,
-                                                         wire.txf + NET_TX_PAY_OFF, &replen);
+                            int trc = net_sock_tcp_input(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen);
                             if (trc == 1)
                                 (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
                         }
                         else if (bt)
                         {
+                            /* Covering-ACK disarm (slice Sec 2): the frame's
+                             * ack field covers our one outstanding segment
+                             * (ack == snd_nxt) iff the peer got it, so the
+                             * retry disarms and the connection stops
+                             * retransmitting. Parses before the waiter
+                             * dequeue below reuses rxcopy as scratch.
+                             * FIN_WAIT ACKs are Task 3 (peer-ACK close). */
+                            {
+                                unsigned tihl0 = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
+                                unsigned toff = 14u + tihl0;
+                                if (tihl0 >= 20u && pktlen >= (unsigned long)(toff + 12u))
+                                {
+                                    uint32_t tack =
+                                        (uint32_t)(((uint32_t)rxcopy[toff + 8] << 24) |
+                                                   ((uint32_t)rxcopy[toff + 9] << 16) |
+                                                   ((uint32_t)rxcopy[toff + 10] << 8) | (uint32_t)rxcopy[toff + 11]);
+                                    (void)net_sock_tcp_ack_cover(bs, tack);
+                                }
+                            }
                             unsigned long alen = 0;
                             const uint8_t *ackf = net_tcp_ack_tx(&alen);
                             unsigned tihl;
                             uint16_t tlocal = 0;
-                            if (ackf && alen >= (unsigned long)ETH_HDR_LEN + (unsigned long)IP_MIN +
-                                                 (unsigned long)TCP_HDR_MIN &&
+                            if (ackf &&
+                                alen >=
+                                    (unsigned long)ETH_HDR_LEN + (unsigned long)IP_MIN + (unsigned long)TCP_HDR_MIN &&
                                 alen <= (unsigned long)NET_PKT_MAX)
                             {
                                 unsigned long k;
