@@ -183,12 +183,13 @@ static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint3
  * ESTABLISHED with a pure ACK in out (returns 1). ESTABLISHED input: a
  * peer FIN enters CLOSE_WAIT (RFC 793 section 3.5 passive close) with a
  * pure ACK in out (returns 1); the FIN consumes rcv_nxt + 1 and is never
- * queued as data, so bytes queued before the FIN stay deliverable. The
- * close is simplified (same spirit as the FIN_WAIT any-FIN match): any
- * peer FIN flag closes, even out-of-window. A FIN segment's own payload
- * (if any) is not queued by this seam -- header-only FINs are the norm
- * (the sock/v2_main legs emit them) -- so rcv_nxt advances by exactly 1
- * and a retransmitted data tail can still recover. The retry budget is
+ * queued as data, so bytes queued before the FIN stay deliverable. Strict
+ * in-order: only a FIN with seq == rcv_nxt closes; an off-window FIN
+ * drops with ESTABLISHED held (no state change, no reply), so a spoofed
+ * FIN cannot tear the connection down or solicit a wrong ACK. Out of
+ * scope (Task 1 ruling): a FIN segment's own payload is not queued by
+ * this seam -- vectors queue PSH bytes first, then send a header-only
+ * FIN -- so rcv_nxt advances by exactly 1 on entry. The retry budget is
  * untouched (an outstanding segment stays armed under the single-flight
  * poll). FIN_WAIT input: the peer's ACK covering our FIN
  * (ack == snd_nxt: FIN consumed one sequence
@@ -256,10 +257,15 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
     }
     if (c->state == NET_TCP_ESTABLISHED && (flags & (unsigned)TCP_FIN))
     {
-        /* Passive-close entry (RFC 793 section 3.5): the peer FIN is
-         * consumed (rcv_nxt + 1, never queued as data) and ACKed at once
-         * with a pure ACK in out (returns 1). Simplified close: any FIN
-         * flag closes, even out-of-window (see the header comment). */
+        /* Passive-close entry (RFC 793 section 3.5): an in-order peer FIN
+         * (seq == rcv_nxt, same offsets as the SYN_SENT leg) is consumed
+         * (rcv_nxt + 1, never queued as data) and ACKed at once with a
+         * pure ACK in out (returns 1). An off-window FIN drops with
+         * ESTABLISHED held: no state change, no reply, nothing parked. */
+        seq = (uint32_t)(((uint32_t)f[off + 4] << 24) | ((uint32_t)f[off + 5] << 16) | ((uint32_t)f[off + 6] << 8) |
+                         (uint32_t)f[off + 7]);
+        if (seq != c->rcv_nxt)
+            return 0;
         c->rcv_nxt += 1u;
         c->state = NET_TCP_CLOSE_WAIT;
         total = (unsigned long)ETH_HDR_LEN + 20u + (unsigned long)TCP_HDR_MIN;

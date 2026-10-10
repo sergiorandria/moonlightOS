@@ -481,9 +481,10 @@ int main(void)
      * (RFC 793 section 3.5, single-TCB slice): an in-order peer FIN enters
      * CLOSE_WAIT with rcv_nxt + 1 and an immediate pure ACK parked (rc 1);
      * bytes queued before the FIN stay deliverable intact; S_SEND in
-     * CLOSE_WAIT fails closed with snd_nxt untouched. Simplified close:
-     * an out-of-window FIN closes anyway (bore-or-close, same spirit as
-     * the FIN_WAIT any-FIN match). ---- */
+     * CLOSE_WAIT fails closed with snd_nxt untouched. Strict in-order:
+     * an off-window FIN drops with ESTABLISHED held (no close, no reply).
+     * Piggybacked FIN payload is out of scope: vectors queue PSH bytes
+     * first, then send a header-only FIN. ---- */
     {
         int c5;
         uint32_t rcv0, snd0;
@@ -541,7 +542,7 @@ int main(void)
         }
         CHECK(net_sock_close(c5) == 0);
         CHECK(net_sock_tcp_bound() < 0);
-        /* Bore-or-close: an out-of-window FIN still enters CLOSE_WAIT. */
+        /* Off-window FIN drops: ESTABLISHED held, nothing emitted. */
         c5 = net_sock_open(NET_SOCK_TCP, 8099, 3);
         CHECK(c5 >= 0);
         t = net_sock_tcp(c5);
@@ -552,10 +553,12 @@ int main(void)
         CHECK(t->state == NET_TCP_ESTABLISHED);
         rcv0 = t->rcv_nxt;
         snd0 = t->snd_nxt;
+        rl3 = 0;
         flen = t_mk_tcp(fr, gwmac, rip, 80u, 8099u, rcv0 + 7u, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
-        CHECK(net_sock_tcp_input(c5, fr, flen, rep, &rl3) == 1);
-        CHECK(t->state == NET_TCP_CLOSE_WAIT);
-        CHECK(t->rcv_nxt == rcv0 + 1u);
+        CHECK(net_sock_tcp_input(c5, fr, flen, rep, &rl3) == 0);
+        CHECK(rl3 == 0);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        CHECK(t->rcv_nxt == rcv0);
         CHECK(t->snd_nxt == snd0);
         CHECK(net_sock_close(c5) == 0);
         CHECK(net_sock_tcp_bound() < 0);
