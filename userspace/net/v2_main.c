@@ -290,9 +290,7 @@ struct net_wire
  * (kernel/user.c, no guard page): rxcopy 1514 + park_pay 1472 + wire and
  * scalars ≈ 3.1KB, callees add < 256B worst case. Enforced at build time
  * with 640B slack; shrink locals if this ever fires. */
-_Static_assert(sizeof(struct net_wire) + (unsigned long)NET_PKT_MAX +
-                       (unsigned long)NET_UDP_PARK_PAY + 640u <=
-                   4096u,
+_Static_assert(sizeof(struct net_wire) + (unsigned long)NET_PKT_MAX + (unsigned long)NET_UDP_PARK_PAY + 640u <= 4096u,
                "net_main frame exceeds ustack_net");
 
 static long u_ecall3(long sys, long a0, long a1, long a2)
@@ -376,8 +374,7 @@ static long u_asend(unsigned long ep, const uint64_t *p, unsigned long n)
     return u_ecall3(V2_ASEND, (long)ep, (long)p, (long)n);
 }
 
-static long u_invoke(long op, long a1, long a2,
-                     long a3); /* defined below; used by net_sdata_send */
+static long u_invoke(long op, long a1, long a2, long a3); /* defined below; used by net_sdata_send */
 
 /* T_DONE-style rendezvous reply: blocks until the requester RECVs
  * (backpressure, same as T_DONE). Call only for honored requests whose
@@ -457,8 +454,7 @@ static int net_drop_port_eq(uint16_t dport)
  * -2 on grant failure (client RSVP slot occupied: protocol violation;
  * the datagram was already dequeued and drops fail-closed). The caller
  * answers S_ERR on nonzero for synchronous legs. */
-static int net_sdata_send(unsigned long dst, long rslot, const uint8_t *payload, unsigned long n,
-                          int use_asend)
+static int net_sdata_send(unsigned long dst, long rslot, const uint8_t *payload, unsigned long n, int use_asend)
 {
     unsigned long k;
     uint8_t *fr;
@@ -489,8 +485,8 @@ static int net_sdata_send(unsigned long dst, long rslot, const uint8_t *payload,
 
 /* RECV returns words-written in a0, kernel-stamped sender in a1,
  * sender qube in a2, truncation flag in a3 (explicit, never silent). */
-static long u_recv(unsigned long ep, uint64_t *buf, unsigned long cap, unsigned long *sender,
-                   unsigned long *qube, unsigned long *ovf)
+static long u_recv(unsigned long ep, uint64_t *buf, unsigned long cap, unsigned long *sender, unsigned long *qube,
+                   unsigned long *ovf)
 {
     register long r_a0 asm("a0") = (long)ep;
     register long r_a1 asm("a1") = (long)buf;
@@ -557,8 +553,7 @@ static void net_w64(volatile uint32_t *regs, uint32_t lo_off, uint64_t v)
 
 /* Set up one modern split virtqueue (caller-owned memory inside a DMA
  * frame). Returns 1 on success, 0 on any transport refusal. */
-static int net_queue(volatile uint32_t *regs, uint32_t q, uint64_t desc_pa, uint64_t avail_pa,
-                     uint64_t used_pa)
+static int net_queue(volatile uint32_t *regs, uint32_t q, uint64_t desc_pa, uint64_t avail_pa, uint64_t used_pa)
 {
     uint32_t max;
     net_w(regs, NET_R_QSEL, q);
@@ -698,8 +693,7 @@ static void net_queue_drain(uint8_t *tmp, unsigned long tcap)
  * never parks. tmp must be >= NET_PKT_MAX (the caller's rxcopy); only
  * scalars live in this frame. */
 #define NET_DNS_PORT 53u
-static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
-                         int *rx_ok_done)
+static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen, int *rx_ok_done)
 {
     uint16_t txid;
     uint16_t sport;
@@ -725,8 +719,7 @@ static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
         net_sock_close(sid);
         return;
     }
-    rc = net_stack_udp_send(NET_IP_DNS, (uint16_t)NET_DNS_PORT, sport, tmp, qlen,
-                            w->txf + NET_TX_PAY_OFF, &flen);
+    rc = net_stack_udp_send(NET_IP_DNS, (uint16_t)NET_DNS_PORT, sport, tmp, qlen, w->txf + NET_TX_PAY_OFF, &flen);
     if (rc != 0 || net_tx_frame(w, w->txf + NET_TX_PAY_OFF, flen) != 0)
     {
         u_puts("NET: dns err=-2\n");
@@ -778,10 +771,8 @@ static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
                     uint32_t rip = 0;
                     uint8_t rmac[6];
                     if (net_arp_need_reply(&rip, rmac) &&
-                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
-                            (int)NET_ARP_FRAME_LEN)
-                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
-                                           (unsigned long)NET_ARP_FRAME_LEN);
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) == (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, (unsigned long)NET_ARP_FRAME_LEN);
                 }
             }
             w->rxa->ring[w->rxa->idx % 2u] = 0u;
@@ -840,8 +831,7 @@ static void net_boot_dns(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
  * SLIRP values (never parks). On ACK the lease applies to the live
  * address state and a gratuitous ARP re-announces when the IP changed.
  * tmp must be >= NET_PKT_MAX; only scalars live in this frame. */
-static void net_boot_dhcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
-                          int *rx_ok_done)
+static void net_boot_dhcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen, int *rx_ok_done)
 {
     uint32_t xid;
     unsigned long flen = 0;
@@ -906,10 +896,8 @@ static void net_boot_dhcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, 
                     uint32_t rip = 0;
                     uint8_t rmac[6];
                     if (net_arp_need_reply(&rip, rmac) &&
-                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
-                            (int)NET_ARP_FRAME_LEN)
-                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
-                                           (unsigned long)NET_ARP_FRAME_LEN);
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) == (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, (unsigned long)NET_ARP_FRAME_LEN);
                 }
             }
             w->rxa->ring[w->rxa->idx % 2u] = 0u;
@@ -979,10 +967,8 @@ static void net_boot_dhcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, 
                     uint32_t rip = 0;
                     uint8_t rmac[6];
                     if (net_arp_need_reply(&rip, rmac) &&
-                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
-                            (int)NET_ARP_FRAME_LEN)
-                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
-                                           (unsigned long)NET_ARP_FRAME_LEN);
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) == (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, (unsigned long)NET_ARP_FRAME_LEN);
                 }
             }
             w->rxa->ring[w->rxa->idx % 2u] = 0u;
@@ -1021,8 +1007,7 @@ static void net_boot_dhcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, 
  * the DNS proof, ~2s self-polled wait matching id/seq. Prints
  * "NET: ping <ms>ms" (rdtime ticks @10MHz) or "NET: ping timeout";
  * never parks. tmp doubles as build scratch + RX copy, sequentially. */
-static void net_boot_ping(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
-                          int *rx_ok_done)
+static void net_boot_ping(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen, int *rx_ok_done)
 {
     uint8_t dmac[6];
     uint8_t pay[4] = {0xA5u, 0x5Au, 0xA5u, 0x5Au};
@@ -1086,10 +1071,8 @@ static void net_boot_ping(struct net_wire *w, uint8_t *tmp, unsigned long tcap, 
                     uint32_t rip = 0;
                     uint8_t rmac[6];
                     if (net_arp_need_reply(&rip, rmac) &&
-                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
-                            (int)NET_ARP_FRAME_LEN)
-                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
-                                           (unsigned long)NET_ARP_FRAME_LEN);
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) == (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, (unsigned long)NET_ARP_FRAME_LEN);
                 }
             }
             w->rxa->ring[w->rxa->idx % 2u] = 0u;
@@ -1115,8 +1098,7 @@ static void net_boot_ping(struct net_wire *w, uint8_t *tmp, unsigned long tcap, 
  * (open, RST, timeout), releasing the TCB so later S_OPEN TCP clients
  * are never wedged by the owner-0 probe socket. */
 
-static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen,
-                         int *rx_ok_done)
+static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, uint16_t *rx_seen, int *rx_ok_done)
 {
     uint8_t dmac[6];
     uint32_t iss;
@@ -1199,10 +1181,8 @@ static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
                     uint32_t rip = 0;
                     uint8_t rmac[6];
                     if (net_arp_need_reply(&rip, rmac) &&
-                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) ==
-                            (int)NET_ARP_FRAME_LEN)
-                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF,
-                                           (unsigned long)NET_ARP_FRAME_LEN);
+                        net_arp_build_reply(tmp, pktlen, w->txf + NET_TX_PAY_OFF) == (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, (unsigned long)NET_ARP_FRAME_LEN);
                 }
             }
             w->rxa->ring[w->rxa->idx % 2u] = 0u;
@@ -1558,16 +1538,14 @@ void net_main(void)
              * S_OPEN/S_SEND/S_TRYRECV/S_RECV/S_CLOSE chain after it. Everything
              * else (short takes, unknown tags, unprivileged senders) is a
              * silent drop: no reply is ever sent. */
-            if (n >= 4 && (unsigned long)buf[0] == (unsigned long)T_FWD &&
-                sqb == (unsigned long)FW_QUBE)
+            if (n >= 4 && (unsigned long)buf[0] == (unsigned long)T_FWD && sqb == (unsigned long)FW_QUBE)
             {
                 unsigned long slot = (unsigned long)buf[1];
                 unsigned long len = (unsigned long)buf[2];
                 uint64_t h = buf[3];
                 const uint8_t *pkt;
                 uint64_t done[4];
-                if (slot == (unsigned long)NET_IN_SLOT && len >= 1 &&
-                    len <= (unsigned long)NET_PKT_MAX)
+                if (slot == (unsigned long)NET_IN_SLOT && len >= 1 && len <= (unsigned long)NET_PKT_MAX)
                 {
                     /* Live-grant check: INVALID means no granted cap behind the
                      * announcement (grant-without-announcement race) -> drop. */
@@ -1595,8 +1573,8 @@ void net_main(void)
                     }
                 }
             }
-            else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)T_FWD &&
-                     sqb != (unsigned long)FW_QUBE && pend_valid && snd == pend_snd)
+            else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)T_FWD && sqb != (unsigned long)FW_QUBE &&
+                     pend_valid && snd == pend_snd)
             {
                 /* S_SEND payload phase: a literal T_FWD announcement
                  * [slot, len, h] from the phase-1 sender ("announced like
@@ -1646,9 +1624,10 @@ void net_main(void)
                     {
                         /* TCP send seam: the peer is fixed at SYN time, so
                          * the routing phase's ip/port are ignored. The
-                         * seam gates ESTABLISHED + MSS 536 and parks one
-                         * in-order segment; anything else answers S_ERR
-                         * with no frame. Runs pre-unmap (pay is mapped). */
+                         * seam gates ESTABLISHED + MSS 536 + stop-and-wait
+                         * (a retry-armed TCB rejects the second send) and
+                         * parks one in-order segment; anything else answers
+                         * S_ERR with no frame. Runs pre-unmap (pay is mapped). */
                         const uint8_t *txp;
                         unsigned long k;
                         rc = net_sock_send(sid, pay, len);
@@ -1685,8 +1664,7 @@ void net_main(void)
                     else
                     {
                         sport = net_socks[sid].port;
-                        rc = net_stack_udp_send(dip, dport, sport, pay, len,
-                                                wire.txf + NET_TX_PAY_OFF, &flen);
+                        rc = net_stack_udp_send(dip, dport, sport, pay, len, wire.txf + NET_TX_PAY_OFF, &flen);
                         u_invoke(V2_INV_UNMAP, (long)NET_SCRATCH_MAP_VPN, 0, 0);
                         if (rc != 0)
                         {
@@ -1741,8 +1719,8 @@ void net_main(void)
                 long sid = (long)buf[1];
                 uint64_t ipw = buf[2];
                 uint64_t ptw = buf[3];
-                if (!net_sock_owned(sid, snd) || (ipw >> 32) != 0 || (uint32_t)ipw == 0 ||
-                    (ptw >> 16) != 0 || (uint16_t)ptw == 0)
+                if (!net_sock_owned(sid, snd) || (ipw >> 32) != 0 || (uint32_t)ipw == 0 || (ptw >> 16) != 0 ||
+                    (uint16_t)ptw == 0)
                 {
                     /* Unknown/foreign socket or malformed route: error,
                      * pending untouched, never a wedge. */
@@ -1790,11 +1768,9 @@ void net_main(void)
                     /* Kind-aware dequeue (Task 3 demux): TCP sockets
                      * read the stream queue, UDP the datagram carve. */
                     if (net_socks[(int)sid].kind == (uint8_t)NET_SOCK_TCP)
-                        ngot = net_tcp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy),
-                                                 0, 0, &trunc);
+                        ngot = net_tcp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy), 0, 0, &trunc);
                     else
-                        ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy),
-                                                 0, 0, &trunc);
+                        ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy), 0, 0, &trunc);
                     if (ngot == -(NET_ERR_EMPTY))
                     {
                         net_rpc_reply(snd, (uint64_t)S_EMPTY, 0);
@@ -1843,11 +1819,9 @@ void net_main(void)
                     /* Kind-aware immediate hit (Task 3 demux): TCP
                      * sockets poll the stream queue, UDP the carve. */
                     if (net_socks[(int)sid].kind == (uint8_t)NET_SOCK_TCP)
-                        ngot = net_tcp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy),
-                                                 0, 0, &trunc);
+                        ngot = net_tcp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy), 0, 0, &trunc);
                     else
-                        ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy),
-                                                 0, 0, &trunc);
+                        ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy), 0, 0, &trunc);
                     if (ngot == -(NET_ERR_EMPTY))
                     {
                         if (to == 0)
@@ -1878,10 +1852,15 @@ void net_main(void)
             }
             else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_CLOSE)
             {
-                /* S_CLOSE [S_CLOSE, sock, 0, 0]: disarm the socket's
-                 * waiter, free the entry, and discard only that socket's
-                 * queued datagrams / stream bytes (bound-port drop-if on
-                 * both queues) so the fair-share pool slot returns; other
+                /* S_CLOSE [S_CLOSE, sock, 0, 0]: three legs. A TCP socket
+                 * in ESTABLISHED closes gracefully (one FIN, FIN_WAIT held,
+                 * socket stays open for the RX-leg peer-ACK close). A TCP
+                 * socket already in FIN_WAIT answers S_OK idempotently (no
+                 * second FIN). Anything else (UDP, SYN_SENT/CLOSED TCP)
+                 * takes the abort release: disarm the socket's waiter, free
+                 * the entry, and discard only that socket's queued
+                 * datagrams / stream bytes (bound-port drop-if on both
+                 * queues) so the fair-share pool slot returns; other
                  * sockets' traffic is untouched. */
                 long sid = (long)buf[1];
                 if (!net_sock_owned(sid, snd))
@@ -1890,6 +1869,48 @@ void net_main(void)
                 }
                 else
                 {
+                    struct net_tcp_conn *ct = net_sock_tcp((int)sid);
+                    if (net_socks[(int)sid].kind == (uint8_t)NET_SOCK_TCP && ct != 0 &&
+                        ct->state == NET_TCP_ESTABLISHED)
+                    {
+                        /* Graceful active close (slice Sec 2): the socket
+                         * stays open, so no queue is drained and the waiter
+                         * is untouched. A parked unacked segment still owns
+                         * the single TX slot (fin_close rejects while the
+                         * retry is armed), as does an ARP miss: both answer
+                         * S_ERR with the connection untouched. Otherwise
+                         * the parked FIN transmits now and the retry arms,
+                         * mirroring the S_SEND TCP leg above. */
+                        const uint8_t *txp;
+                        unsigned long flen = 0;
+                        unsigned long k;
+                        if (net_sock_fin_close((int)sid) != 0)
+                        {
+                            net_rpc_reply(snd, (uint64_t)S_ERR, 0);
+                        }
+                        else
+                        {
+                            (void)net_sock_tcp_retry_arm((int)sid, now, (uint64_t)NET_IRQ_TIMEOUT_TICKS);
+                            txp = net_sock_tcp_tx(&flen);
+                            if (txp && flen >= 14u && flen <= (unsigned long)NET_PKT_MAX)
+                            {
+                                for (k = 0; k < flen; k++) /* bound: 1514 */
+                                    (wire.txf + NET_TX_PAY_OFF)[k] = txp[k];
+                                (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, flen);
+                            }
+                            net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)sid);
+                        }
+                    }
+                    else if (net_socks[(int)sid].kind == (uint8_t)NET_SOCK_TCP && ct != 0 &&
+                             ct->state == NET_TCP_FIN_WAIT)
+                    {
+                        /* Idempotent close: already FIN_WAIT (a FIN is in
+                         * flight or the peer-ACK race is settling); a
+                         * repeat S_CLOSE emits no second FIN and changes
+                         * nothing. */
+                        net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)sid);
+                    }
+                    else
                     {
                         unsigned kkind = net_socks[(int)sid].kind;
                         net_drop_port = net_socks[(int)sid].port; /* before close zeroes it */
@@ -1899,8 +1920,8 @@ void net_main(void)
                             net_tcp_drop_if(net_drop_port_eq);
                         else
                             net_udp_drop_if(net_drop_port_eq);
+                        net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)sid);
                     }
-                    net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)sid);
                 }
             }
             /* else: unknown tag/sender or short take: silent drop. */
@@ -1966,17 +1987,15 @@ void net_main(void)
                         unsigned long flen = 0;
                         int rc;
                         ihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
-                        dip =
-                            (uint32_t)(((uint32_t)rxcopy[30] << 24) | ((uint32_t)rxcopy[31] << 16) |
-                                       ((uint32_t)rxcopy[32] << 8) | (uint32_t)rxcopy[33]);
+                        dip = (uint32_t)(((uint32_t)rxcopy[30] << 24) | ((uint32_t)rxcopy[31] << 16) |
+                                         ((uint32_t)rxcopy[32] << 8) | (uint32_t)rxcopy[33]);
                         /* N1 gate: purge unbound-port datagrams dropped by
                          * the demux (no socket bound there). Port/addr
                          * views are captured before any dequeue overwrites
                          * rxcopy with the payload. */
                         net_udp_drop_if(net_port_unbound);
                         if (ihl >= 20u)
-                            local = (uint16_t)(((unsigned)rxcopy[14 + ihl + 2] << 8) |
-                                               (unsigned)rxcopy[14 + ihl + 3]);
+                            local = (uint16_t)(((unsigned)rxcopy[14 + ihl + 2] << 8) | (unsigned)rxcopy[14 + ihl + 3]);
                         /* Waiter match for the new arrival (design Sec 2):
                          * an armed waiter on this frame's port consumes
                          * exactly one queued datagram and is cleared, so a
@@ -1999,8 +2018,7 @@ void net_main(void)
                                 {
                                     int wtrunc = 0;
                                     long wgot;
-                                    wgot = net_udp_recv_from(local, rxcopy, sizeof(rxcopy), 0, 0,
-                                                             &wtrunc);
+                                    wgot = net_udp_recv_from(local, rxcopy, sizeof(rxcopy), 0, 0, &wtrunc);
                                     if (wgot == -(NET_ERR_EMPTY))
                                     {
                                         /* Lost race (queue full dropped the
@@ -2014,16 +2032,15 @@ void net_main(void)
                                     {
                                         net_waiter_clear(wsid);
                                         consumed = 1;
-                                        if (net_sdata_send((unsigned long)wowner, reply_slot,
-                                                           rxcopy, (unsigned long)wgot, 1) != 0)
+                                        if (net_sdata_send((unsigned long)wowner, reply_slot, rxcopy,
+                                                           (unsigned long)wgot, 1) != 0)
                                         {
                                             /* MAP failure (~impossible) or
                                              * RSVP occupied: datagram
                                              * already dequeued, dropped
                                              * fail-closed; tell the waiter
                                              * without blocking. */
-                                            net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR,
-                                                           0);
+                                            net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
                                         }
                                     }
                                     else
@@ -2039,8 +2056,7 @@ void net_main(void)
                             }
                         }
                         if (!consumed)
-                            ngot = net_udp_recv_from(local, rxcopy, sizeof(rxcopy), &sip, &sport,
-                                                     &trunc);
+                            ngot = net_udp_recv_from(local, rxcopy, sizeof(rxcopy), &sip, &sport, &trunc);
                         else
                         {
                             ngot = -(NET_ERR_EMPTY);
@@ -2069,8 +2085,7 @@ void net_main(void)
                                 park_len = (unsigned long)ngot;
                                 park_t0 = now;
                                 park_valid = 1;
-                                if (net_arp_build_request(sip, wire.txf + NET_TX_PAY_OFF) !=
-                                    (int)NET_ARP_FRAME_LEN)
+                                if (net_arp_build_request(sip, wire.txf + NET_TX_PAY_OFF) != (int)NET_ARP_FRAME_LEN)
                                     park_valid = 0; /* build failed: drop at once */
                                 else
                                     (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF,
@@ -2086,8 +2101,7 @@ void net_main(void)
                     /* Answer echo requests for our IP (reply built from
                      * the copied request; checksums recomputed). */
                     unsigned long replen = 0;
-                    if (net_stack_icmp_reply(rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen) ==
-                        0)
+                    if (net_stack_icmp_reply(rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen) == 0)
                         (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
                 }
                 else if (cls == NET_CLASS_TCP)
@@ -2097,9 +2111,10 @@ void net_main(void)
                      * ports never queue (silent drop), in-order
                      * ESTABLISHED data is queued with an ACK parked, and
                      * OOO/duplicates park a duplicate ACK. While the TCB
-                     * is not ESTABLISHED the handshake/RST leg below runs
-                     * (SYN-ACK check + RST abort live in tcp.h via the
-                     * seam); the ESTABLISHED leg only flushes the parked
+                     * is not ESTABLISHED the handshake/RST/close leg below runs
+                     * (SYN-ACK check, RST abort, and FIN_WAIT peer-ACK close
+                     * live in tcp.h via the seam, with a single S_ERR waiter
+                     * wake on the way to CLOSED); the ESTABLISHED leg only flushes the parked
                      * ACK and wakes an armed waiter (S_DATA via ASEND on
                      * one dequeue, waiter cleared -- a late duplicate can
                      * never double-reply). An RST abort back to CLOSED
@@ -2112,10 +2127,44 @@ void net_main(void)
                         struct net_tcp_conn *bt = net_sock_tcp(bs);
                         if (bt && bt->state != NET_TCP_ESTABLISHED)
                         {
+                            /* Task 3 close/abort wake (slice Sec 2): the seam
+                             * clears the waiter when input drives the TCB to
+                             * CLOSED (RST abort, or graceful peer-ACK/FIN-ACK
+                             * close), so capture the armed waiter BEFORE the
+                             * call (ports are table-unique, so a port match
+                             * on the bound socket is exact); after a live ->
+                             * CLOSED edge, wake it exactly once with S_ERR
+                             * via ASEND (a blocked reader must not hang on
+                             * a dead connection), gated on the dead-owner
+                             * check (a waiter whose socket closed or re-owned
+                             * since the arm clears without SENDing). A
+                             * graceful close (non-RST frame) additionally
+                             * prints the close (QEMU proof); an RST abort
+                             * stays silent (the boot probe already owns
+                             * "NET: tcp rst"). */
+                            int was_live = (bt->state != NET_TCP_CLOSED);
+                            unsigned wowner = 0;
+                            int wcap = (net_waiter_match(bt->lport, &wowner) == bs);
                             unsigned long replen = 0;
                             int trc = net_sock_tcp_input(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen);
                             if (trc == 1)
                                 (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
+                            if (was_live && bt->state == NET_TCP_CLOSED)
+                            {
+                                /* Graceful vs abort from the frame itself
+                                 * (bounds-checked TCP flags byte; the seam
+                                 * already validated the whole frame). */
+                                unsigned tihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
+                                unsigned toff = 14u + tihl;
+                                int is_rst = 0;
+                                if (tihl >= 20u && pktlen >= (unsigned long)(toff + 14u) &&
+                                    (rxcopy[toff + 13] & (uint8_t)TCP_RST) != 0)
+                                    is_rst = 1;
+                                if (!is_rst)
+                                    u_puts("NET: tcp close\n");
+                                if (wcap && net_owner_live((long)bs, wowner))
+                                    net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
+                            }
                         }
                         else if (bt)
                         {
@@ -2180,8 +2229,7 @@ void net_main(void)
                                     {
                                         int wtrunc = 0;
                                         long wgot;
-                                        wgot = net_tcp_recv_from(tlocal, rxcopy, sizeof(rxcopy), 0,
-                                                                 0, &wtrunc);
+                                        wgot = net_tcp_recv_from(tlocal, rxcopy, sizeof(rxcopy), 0, 0, &wtrunc);
                                         if (wgot == -(NET_ERR_EMPTY))
                                         {
                                             /* Lost race (queue full dropped
@@ -2192,12 +2240,10 @@ void net_main(void)
                                         else if (wgot >= 0 && !wtrunc)
                                         {
                                             net_waiter_clear(wsid);
-                                            if (net_sdata_send((unsigned long)wowner, reply_slot,
-                                                               rxcopy, (unsigned long)wgot,
-                                                               1) != 0)
+                                            if (net_sdata_send((unsigned long)wowner, reply_slot, rxcopy,
+                                                               (unsigned long)wgot, 1) != 0)
                                             {
-                                                net_wake_reply((unsigned long)wowner,
-                                                               (uint64_t)S_ERR, 0);
+                                                net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
                                             }
                                         }
                                         else
@@ -2220,10 +2266,8 @@ void net_main(void)
                     /* Answer requests for our IP (reply built from the
                      * copied request; 42B padded to 60B on TX). */
                     if (net_arp_need_reply(&rip, rmac) &&
-                        net_arp_build_reply(rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF) ==
-                            (int)NET_ARP_FRAME_LEN)
-                        (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF,
-                                           (unsigned long)NET_ARP_FRAME_LEN);
+                        net_arp_build_reply(rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF) == (int)NET_ARP_FRAME_LEN)
+                        (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, (unsigned long)NET_ARP_FRAME_LEN);
                     /* Parked-send flush: this learn may have resolved it.
                      * The flag clears before TX so the datagram sends
                      * (here) or times out (above) exactly once. A -1 here
@@ -2236,9 +2280,8 @@ void net_main(void)
                         {
                             unsigned long flen2 = 0;
                             park_valid = 0;
-                            if (net_stack_udp_send(park_ip, park_dport, park_sport, park_pay,
-                                                   park_len, wire.txf + NET_TX_PAY_OFF,
-                                                   &flen2) == 0)
+                            if (net_stack_udp_send(park_ip, park_dport, park_sport, park_pay, park_len,
+                                                   wire.txf + NET_TX_PAY_OFF, &flen2) == 0)
                                 (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, flen2);
                         }
                     }

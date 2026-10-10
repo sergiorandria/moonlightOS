@@ -451,7 +451,10 @@ static int tcp_rst_build(struct net_tcp_conn *c, uint8_t *out, unsigned long *ou
  * requires the bound TCB in ESTABLISHED (ownership is enforced by the
  * RPC layer via net_sock_owned before this seam runs) and a capped
  * payload, then emits one in-order segment into the parked TX frame
- * (copy out via net_sock_tcp_tx). Any gate failure emits nothing.
+ * (copy out via net_sock_tcp_tx). Stop-and-wait: a second S_SEND while
+ * the retry is armed (one segment already outstanding, covering ACK not
+ * yet seen) is rejected, never interleaving bytes; the covering ACK
+ * (ack_cover) disarms for the next send. Any gate failure emits nothing.
  * Returns payload bytes accepted, or -1. */
 int net_sock_send(int id, const uint8_t *buf, unsigned long len)
 {
@@ -461,6 +464,8 @@ int net_sock_send(int id, const uint8_t *buf, unsigned long len)
     if (net_socks[id].kind != NET_SOCK_TCP)
         return -1;
     if (id != net_tcb_sock || net_tcb.state != NET_TCP_ESTABLISHED)
+        return -1;
+    if (net_tcb.retry_deadline != 0u)
         return -1;
     if (len < 1 || len > (unsigned long)TCP_MSS_DEFAULT)
         return -1;

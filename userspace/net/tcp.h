@@ -64,15 +64,14 @@ static inline unsigned tcp_flags(const uint8_t *f, unsigned long len)
 
 /* TCP checksum: same one's complement over the pseudo-header as UDP
  * (cksum.h hardcodes proto 17, so TCP carries its own with proto 6). */
-static inline uint16_t net_tcp_checksum(uint32_t src_ip, uint32_t dst_ip, const uint8_t *seg,
-                                        unsigned slen)
+static inline uint16_t net_tcp_checksum(uint32_t src_ip, uint32_t dst_ip, const uint8_t *seg, unsigned slen)
 {
     uint32_t sum;
     unsigned i;
     if (!seg)
         return 0;
-    sum = ((src_ip >> 16) & 0xFFFFu) + (src_ip & 0xFFFFu) + ((dst_ip >> 16) & 0xFFFFu) +
-          (dst_ip & 0xFFFFu) + 6u + (uint32_t)(uint16_t)slen;
+    sum = ((src_ip >> 16) & 0xFFFFu) + (src_ip & 0xFFFFu) + ((dst_ip >> 16) & 0xFFFFu) + (dst_ip & 0xFFFFu) + 6u +
+          (uint32_t)(uint16_t)slen;
     for (i = 0; i + 1 < slen; i += 2)
         sum += (uint32_t)(((uint16_t)seg[i] << 8) | (uint16_t)seg[i + 1]);
     if (i < slen)
@@ -97,9 +96,8 @@ struct net_tcp_conn
 };
 
 /* Active open: init TCB + build SYN with MSS option. */
-static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint32_t rip,
-                              uint16_t rport, uint16_t lport, uint32_t iss, uint8_t *out,
-                              unsigned long *outlen)
+static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint32_t rip, uint16_t rport, uint16_t lport,
+                              uint32_t iss, uint8_t *out, unsigned long *outlen)
 {
     unsigned i;
     uint16_t ck;
@@ -116,8 +114,7 @@ static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint3
     c->rip = rip;
     c->retry_deadline = 0u;
     c->retry_count = 0u;
-    total = (unsigned long)ETH_HDR_LEN + 20u + (unsigned long)TCP_HDR_MIN +
-            (unsigned long)TCP_SYN_HDR_OPT;
+    total = (unsigned long)ETH_HDR_LEN + 20u + (unsigned long)TCP_HDR_MIN + (unsigned long)TCP_SYN_HDR_OPT;
     if (total > 1514UL)
         return -1;
     for (i = 0; i < 6u; i++)
@@ -174,8 +171,7 @@ static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint3
     out[55] = 4u;
     out[56] = (uint8_t)(TCP_MSS_DEFAULT >> 8);
     out[57] = (uint8_t)TCP_MSS_DEFAULT;
-    ck = net_tcp_checksum(NET_IP_SELF, rip, out + ETH_HDR_LEN + IP_MIN,
-                          (unsigned)(TCP_HDR_MIN + TCP_SYN_HDR_OPT));
+    ck = net_tcp_checksum(NET_IP_SELF, rip, out + ETH_HDR_LEN + IP_MIN, (unsigned)(TCP_HDR_MIN + TCP_SYN_HDR_OPT));
     out[50] = (uint8_t)(ck >> 8);
     out[51] = (uint8_t)(ck & 0xFFu);
     *outlen = total;
@@ -183,14 +179,22 @@ static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint3
 }
 
 /* SYN_SENT input: RST aborts to CLOSED; matching SYN-ACK advances to
- * ESTABLISHED with a pure ACK in out (returns 1). RST at any live state
+ * ESTABLISHED with a pure ACK in out (returns 1). FIN_WAIT input: the
+ * peer's ACK covering our FIN (ack == snd_nxt: FIN consumed one sequence
+ * number at build) or any peer FIN (including an early FIN-ACK sent
+ * before our FIN was ACKed: simultaneous close) completes the close
+ * exactly once to CLOSED with the retry budget disarmed; the sock seam
+ * clears the waiter and the loop wakes it once. Anything else in
+ * FIN_WAIT (stale ACK, stray data-shaped segment) drops with FIN_WAIT
+ * held, so the FIN retry keeps running. No reply frame is ever parked
+ * here: a bare close needs no wire answer, and duplicate peer FINs
+ * arriving after CLOSED drop at the top. RST at any live state
  * (RFC 793 section 3.5: the FIN_WAIT active-close leg included) aborts
  * to CLOSED and zeroes the retry state; the sock seam disarms the
- * waiter. Anything else drops (returns 0). ESTABLISHED/FIN_WAIT non-RST
- * input drops here: stream RX lives in stack.c, peer-ACK close is a
- * later slice. CLOSED input drops. */
-static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsigned long len,
-                                uint8_t *out, unsigned long *outlen)
+ * waiter. Anything else drops (returns 0). ESTABLISHED non-RST input
+ * drops here: stream RX lives in stack.c. CLOSED input drops. */
+static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsigned long len, uint8_t *out,
+                                unsigned long *outlen)
 {
     unsigned ihl, off, i;
     uint32_t sip, seq, ack;
@@ -215,8 +219,7 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
         return 0;
     if (net_ip_checksum(f + ETH_HDR_LEN, ihl) != 0)
         return 0;
-    if (net_tcp_checksum(sip, (uint32_t)NET_IP_SELF, f + off,
-                         (unsigned)(len - (unsigned long)off)) != 0)
+    if (net_tcp_checksum(sip, (uint32_t)NET_IP_SELF, f + off, (unsigned)(len - (unsigned long)off)) != 0)
         return 0;
     flags = (unsigned)f[off + 13];
     if (flags & (unsigned)TCP_RST)
@@ -226,14 +229,28 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
         c->retry_count = 0u;
         return 0;
     }
+    if (c->state == NET_TCP_FIN_WAIT)
+    {
+        /* Active-close completion (RFC 793 section 3.5 FIN-WAIT-1/2):
+         * ack parses like the SYN_SENT leg below (same offsets). */
+        ack = (uint32_t)(((uint32_t)f[off + 8] << 24) | ((uint32_t)f[off + 9] << 16) | ((uint32_t)f[off + 10] << 8) |
+                         (uint32_t)f[off + 11]);
+        if (((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt) || (flags & (unsigned)TCP_FIN))
+        {
+            c->state = NET_TCP_CLOSED;
+            c->retry_deadline = 0u;
+            c->retry_count = 0u;
+        }
+        return 0;
+    }
     if (c->state != NET_TCP_SYN_SENT)
         return 0;
     if (!(flags & (unsigned)TCP_SYN) || !(flags & (unsigned)TCP_ACK))
         return 0;
-    seq = (uint32_t)(((uint32_t)f[off + 4] << 24) | ((uint32_t)f[off + 5] << 16) |
-                     ((uint32_t)f[off + 6] << 8) | (uint32_t)f[off + 7]);
-    ack = (uint32_t)(((uint32_t)f[off + 8] << 24) | ((uint32_t)f[off + 9] << 16) |
-                     ((uint32_t)f[off + 10] << 8) | (uint32_t)f[off + 11]);
+    seq = (uint32_t)(((uint32_t)f[off + 4] << 24) | ((uint32_t)f[off + 5] << 16) | ((uint32_t)f[off + 6] << 8) |
+                     (uint32_t)f[off + 7]);
+    ack = (uint32_t)(((uint32_t)f[off + 8] << 24) | ((uint32_t)f[off + 9] << 16) | ((uint32_t)f[off + 10] << 8) |
+                     (uint32_t)f[off + 11]);
     if (ack != c->snd_nxt)
         return 0;
     c->irs = seq;
@@ -290,8 +307,7 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
     out[51] = 0u;
     out[52] = 0u;
     out[53] = 0u;
-    ck = net_tcp_checksum((uint32_t)NET_IP_SELF, sip, out + ETH_HDR_LEN + IP_MIN,
-                          (unsigned)TCP_HDR_MIN);
+    ck = net_tcp_checksum((uint32_t)NET_IP_SELF, sip, out + ETH_HDR_LEN + IP_MIN, (unsigned)TCP_HDR_MIN);
     out[50] = (uint8_t)(ck >> 8);
     out[51] = (uint8_t)(ck & 0xFFu);
     *outlen = total;

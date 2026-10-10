@@ -32,9 +32,8 @@ static int t_tcp_drop8080(uint16_t dport)
 
 /* Seam Task 3: build an RX TCP frame (eth + IP/20 + TCP/20 + payload)
  * with valid checksums. Returns the total frame length. */
-static unsigned t3_mk_tcp(uint8_t *f, const uint8_t *smac, uint32_t sip, uint16_t sport,
-                          uint16_t dport, uint32_t seq, uint32_t ack, uint8_t flags,
-                          const uint8_t *pay, unsigned paylen)
+static unsigned t3_mk_tcp(uint8_t *f, const uint8_t *smac, uint32_t sip, uint16_t sport, uint16_t dport, uint32_t seq,
+                          uint32_t ack, uint8_t flags, const uint8_t *pay, unsigned paylen)
 {
     unsigned tot, i;
     uint16_t ck;
@@ -1223,8 +1222,7 @@ int main(void)
          * socket never sees it, and the waiter match fires (the host
          * image of the v2_main S_DATA wakeup). */
         CHECK(net_waiter_arm(a, 1, 1000, 50) == 0);
-        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv0, snd0, (uint8_t)(TCP_PSH | TCP_ACK),
-                         hello, sizeof(hello));
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv0, snd0, (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
         CHECK(t->rcv_nxt == rcv0 + sizeof(hello));
         CHECK(t->snd_nxt == snd0);
@@ -1282,14 +1280,12 @@ int main(void)
             net_tcp_ack_clear();
         }
         /* Oversize (> MSS 536) segment: fail-closed, no advance. */
-        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0,
-                         (uint8_t)(TCP_PSH | TCP_ACK), big, sizeof(big));
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)(TCP_PSH | TCP_ACK), big, sizeof(big));
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
         CHECK(t->rcv_nxt == rcv0 + sizeof(hello));
         CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
         /* Unbound dport: classified TCP, never queued. */
-        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 9999u, rcv0, snd0,
-                         (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 9999u, rcv0, snd0, (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
         CHECK(net_tcp_recv_from(9999, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
         CHECK(t->rcv_nxt == rcv0 + sizeof(hello));
@@ -1301,8 +1297,8 @@ int main(void)
         CHECK(rsock == a && rowner == 1);
         CHECK(net_waiter_expire(2051, &rsock, &rowner) < 0);
         CHECK(net_waiter_match(8080, &wowner) < 0);
-        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0,
-                         (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+        flen =
+            t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
         CHECK(net_waiter_match(8080, &wowner) < 0);
         trunc = -1;
@@ -1319,8 +1315,8 @@ int main(void)
             for (k = 0; k < 5; k++) /* bound: 5 */
             {
                 one[0] = (uint8_t)('0' + k);
-                flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, base + k, snd0,
-                                 (uint8_t)(TCP_PSH | TCP_ACK), one, sizeof(one));
+                flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, base + k, snd0, (uint8_t)(TCP_PSH | TCP_ACK), one,
+                                 sizeof(one));
                 CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
             }
             CHECK(t->rcv_nxt == base + 4u);
@@ -1335,8 +1331,8 @@ int main(void)
             CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
         }
         /* S_CLOSE drains only that socket's stream bytes. */
-        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0,
-                         (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+        flen =
+            t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
         net_tcp_ack_clear();
         CHECK(net_sock_close(a) == 0);
@@ -1501,6 +1497,95 @@ int main(void)
         CHECK(trc == 1 && had == 0 && t->retry_count == 1u);
         tx = net_sock_tcp_tx(&txlen);
         CHECK(txlen == snaplen && memcmp(tx, snap, snaplen) == 0);
+        CHECK(net_sock_close(a) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
+    /* ---- FIN-retry Task 3: stop-and-wait S_SEND reject + FIN-exhaustion
+     * waiter S_ERR-once (RFC 793 sections 3.5/3.7; carried rulings: a
+     * second S_SEND while the retry is armed is rejected, never
+     * interleaving bytes; the 5th FIN expiry RST-aborts and captures the
+     * armed waiter exactly once) ---- */
+    {
+        static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
+        int a;
+        struct net_tcp_conn *t;
+        uint8_t syn[58], sa[58], rep[54];
+        unsigned long replen = 0, txlen = 0;
+        const uint8_t *tx = 0;
+        uint8_t dmac[6];
+        uint32_t rip;
+        uint32_t snd1;
+        uint64_t t0 = 20000u, sp = 50u;
+        unsigned owner = 0;
+        int had = 0, trc;
+        net_stack_init();
+        rip = (uint32_t)NET_IP_GW;
+        CHECK(net_arp_lookup(rip, dmac) == 0);
+        /* Stop-and-wait: S_SEND while a retry is armed is rejected. */
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t2_establish(a, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        CHECK(net_sock_send(a, hello, sizeof(hello)) == (int)sizeof(hello));
+        snd1 = t->snd_nxt;
+        CHECK(net_sock_tcp_retry_arm(a, t0, sp) == 0);
+        CHECK(net_sock_send(a, hello, sizeof(hello)) < 0); /* armed: S_ERR */
+        CHECK(t->snd_nxt == snd1);                         /* nothing interleaved */
+        tx = net_sock_tcp_tx(&txlen);
+        CHECK(tx != 0 && txlen == 14u + 20u + 20u + sizeof(hello));
+        CHECK(tx[14 + 20 + 13] == (uint8_t)(TCP_PSH | TCP_ACK)); /* first segment intact */
+        CHECK(net_sock_tcp_ack_cover(a, snd1) == 1);             /* covering ACK disarms */
+        CHECK(net_sock_send(a, hello, sizeof(hello)) == (int)sizeof(hello));
+        CHECK(t->snd_nxt == snd1 + (uint32_t)sizeof(hello));
+        CHECK(net_sock_close(a) == 0);
+        /* FIN exhaustion: expiries 1-4 resend the FIN verbatim, the 5th
+         * RST-aborts and captures the armed waiter exactly once. */
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t2_establish(a, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        CHECK(net_sock_fin_close(a) == 0);
+        CHECK(t->state == NET_TCP_FIN_WAIT);
+        tx = net_sock_tcp_tx(&txlen);
+        CHECK(tx != 0 && txlen == 14u + 20u + 20u);
+        CHECK(tx[14 + 20 + 13] == (uint8_t)(TCP_FIN | TCP_ACK));
+        CHECK(net_sock_tcp_retry_arm(a, t0, sp) == 0);
+        CHECK(net_sock_tcp_retry_poll(t0 + sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(t0 + 2u * sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(t0 + 3u * sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(t0 + 4u * sp, sp, &owner, &had) == 1);
+        CHECK(t->retry_count == 4u);
+        CHECK(t->state == NET_TCP_FIN_WAIT);
+        CHECK(net_waiter_arm(a, 1, t0, 100000u) == 0);
+        trc = net_sock_tcp_retry_poll(t0 + 5u * sp, sp, &owner, &had);
+        CHECK(trc == 2 && had == 1 && owner == 1);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
+        CHECK(net_waiter_match(8080, &owner) < 0);
+        tx = net_sock_tcp_tx(&txlen);
+        CHECK(tx != 0 && txlen == 14u + 20u + 20u);
+        CHECK(tx[14 + 20 + 13] == (uint8_t)(TCP_RST | TCP_ACK));
+        trc = net_sock_tcp_retry_poll(t0 + 6u * sp, sp, &owner, &had);
+        CHECK(trc == 0 && had == 0); /* fired exactly once */
+        CHECK(net_sock_close(a) == 0);
+        /* Dead owner (no armed waiter): abort captures nothing, so the
+         * loop SENDs nothing. */
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t2_establish(a, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        CHECK(net_sock_fin_close(a) == 0);
+        CHECK(net_sock_tcp_retry_arm(a, t0, sp) == 0);
+        CHECK(net_sock_tcp_retry_poll(t0 + sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(t0 + 2u * sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(t0 + 3u * sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(t0 + 4u * sp, sp, &owner, &had) == 1);
+        trc = net_sock_tcp_retry_poll(t0 + 5u * sp, sp, &owner, &had);
+        CHECK(trc == 2 && had == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
         CHECK(net_sock_close(a) == 0);
         CHECK(net_sock_tcp_bound() < 0);
     }
