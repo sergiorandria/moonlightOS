@@ -561,6 +561,26 @@ int main(void)
         CHECK(net_sock_close(s0) == 0);
         CHECK(net_sock_close(s1) == 0);
     }
+    /* ---- Kind-guarded waiter match: same port never cross-wakes ---- */
+    {
+        int su, st;
+        unsigned owner = 0;
+        su = net_sock_open(NET_SOCK_UDP, 5100, 5);
+        CHECK(su >= 0);
+        st = net_sock_open(NET_SOCK_TCP, 5200, 7);
+        CHECK(st >= 0);
+        CHECK(net_waiter_arm(su, 5, 100, 50) == 0);
+        CHECK(net_waiter_arm(st, 7, 100, 50) == 0);
+        CHECK(net_waiter_match_kind(5100, (unsigned)NET_SOCK_UDP, &owner) == su);
+        CHECK(owner == 5);
+        CHECK(net_waiter_match_kind(5100, (unsigned)NET_SOCK_TCP, &owner) < 0);
+        CHECK(net_waiter_match_kind(5200, (unsigned)NET_SOCK_TCP, &owner) == st);
+        CHECK(owner == 7);
+        CHECK(net_waiter_match_kind(5200, (unsigned)NET_SOCK_UDP, &owner) < 0);
+        CHECK(net_waiter_match_kind(5100, 99u, &owner) < 0);
+        CHECK(net_sock_close(su) == 0);
+        CHECK(net_sock_close(st) == 0);
+    }
     /* ---- Task 3: DNS codec (query build + first-A parse) ---- */
     {
         static const uint8_t dns_q_expect[29] = {0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,

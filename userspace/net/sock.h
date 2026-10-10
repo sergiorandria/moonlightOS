@@ -37,6 +37,7 @@ int net_sock_owned(long id, unsigned long owner);
 int net_sock_send(int id, const uint8_t *buf, unsigned long len);
 int net_waiter_arm(int sock_id, unsigned owner, uint64_t now, uint64_t timeout);
 int net_waiter_match(uint16_t dport, unsigned *owner_out);
+int net_waiter_match_kind(uint16_t dport, unsigned kind, unsigned *owner_out);
 int net_waiter_expire(uint64_t now, int *sock_out, unsigned *owner_out);
 void net_waiter_clear(int sock_id);
 

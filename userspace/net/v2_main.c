@@ -1854,11 +1854,16 @@ void net_main(void)
                 }
                 else
                 {
-                    net_drop_port = net_socks[(int)sid].port; /* before close zeroes it */
-                    net_waiter_clear((int)sid);
-                    net_sock_close((int)sid);
-                    net_udp_drop_if(net_drop_port_eq);
-                    net_tcp_drop_if(net_drop_port_eq);
+                    {
+                        unsigned kkind = net_socks[(int)sid].kind;
+                        net_drop_port = net_socks[(int)sid].port; /* before close zeroes it */
+                        net_waiter_clear((int)sid);
+                        net_sock_close((int)sid);
+                        if (kkind == (unsigned)NET_SOCK_TCP)
+                            net_tcp_drop_if(net_drop_port_eq);
+                        else
+                            net_udp_drop_if(net_drop_port_eq);
+                    }
                     net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)sid);
                 }
             }
@@ -1947,7 +1952,7 @@ void net_main(void)
                         if (ihl >= 20u)
                         {
                             unsigned wowner = 0;
-                            int wsid = net_waiter_match(local, &wowner);
+                            int wsid = net_waiter_match_kind(local, (unsigned)NET_SOCK_UDP, &wowner);
                             if (wsid >= 0)
                             {
                                 if (!net_owner_live((long)wsid, wowner))
@@ -2109,7 +2114,7 @@ void net_main(void)
                             if (tihl >= 20u)
                             {
                                 unsigned wowner = 0;
-                                int wsid = net_waiter_match(tlocal, &wowner);
+                                int wsid = net_waiter_match_kind(tlocal, (unsigned)NET_SOCK_TCP, &wowner);
                                 if (wsid >= 0)
                                 {
                                     if (!net_owner_live((long)wsid, wowner))

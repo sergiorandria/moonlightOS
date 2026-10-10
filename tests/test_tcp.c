@@ -84,11 +84,10 @@ static unsigned t_mk_tcp(uint8_t *f, const uint8_t *smac, uint32_t sip, uint16_t
 
 /* Mirror a SYN into its peer SYN-ACK: swap MACs/IPs/ports, set SYN|ACK,
  * peer seq, and ack = iss+1. Re-checksums both headers. */
-static void t_mk_synack(const uint8_t *syn, unsigned long synlen, uint8_t *sa, uint32_t peer_seq, uint32_t iss,
+static void t_mk_synack(const uint8_t *syn, uint8_t *sa, uint32_t peer_seq, uint32_t iss,
                         uint16_t lport_raw_hi, uint16_t lport_raw_lo)
 {
     unsigned i;
-    (void)synlen;
     for (i = 0; i < 14u + 20u + 24u; i++) /* bound: 58 */
         sa[i] = syn[i];
     for (i = 0; i < 6u; i++) /* bound: 6 */
@@ -192,19 +191,17 @@ int main(void)
     /* Send gate: SYN_SENT emits nothing, advances nothing. */
     {
         uint32_t snd0 = t->snd_nxt;
-        unsigned long l0 = 0, l1 = 0;
+        unsigned long l0 = 0;
         CHECK(net_sock_send(a, hello, sizeof(hello)) < 0);
         CHECK(t->snd_nxt == snd0);
-        (void)net_sock_tcp_tx(&l0);
-        net_sock_tcp_tx(&l1);
-        CHECK(l1 == l0);
+        CHECK(net_sock_tcp_tx(&l0) == 0 && l0 == 0);
     }
-    t_mk_synack(syn, synlen, sa, peer, iss, 0x1Fu, 0x90u);
+    t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0x90u);
     CHECK(net_sock_tcp_input(a, sa, sizeof(sa), rep, &replen) == 1);
     CHECK(t->state == NET_TCP_ESTABLISHED && t->irs == peer);
     CHECK(replen == sizeof(rep));
     CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
-    CHECK(rep[42] == 0x0Au && rep[45] == 0x0Eu); /* ack = irs+1 */
+    CHECK(rep[42] == (uint8_t)((peer + 1u) >> 24) && rep[43] == (uint8_t)((peer + 1u) >> 16) && rep[44] == (uint8_t)((peer + 1u) >> 8) && rep[45] == (uint8_t)(peer + 1u)); /* ack = irs+1, full BE */
     CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, rep + 34, 20) == 0u);
 
     /* ---- Send seam: one in-order MSS-capped segment ---- */
@@ -257,7 +254,7 @@ int main(void)
         ackf = net_tcp_ack_tx(&alen);
         CHECK(ackf != 0 && alen == 14u + 20u + 20u);
         CHECK(ackf[14 + 20 + 13] == (uint8_t)TCP_ACK);
-        CHECK(ackf[45] == (uint8_t)t->rcv_nxt);
+        CHECK(ackf[42] == (uint8_t)(t->rcv_nxt >> 24) && ackf[43] == (uint8_t)(t->rcv_nxt >> 16) && ackf[44] == (uint8_t)(t->rcv_nxt >> 8) && ackf[45] == (uint8_t)t->rcv_nxt);
         net_tcp_ack_clear();
         ackf = net_tcp_ack_tx(&alen);
         CHECK(ackf == 0 && alen == 0);
@@ -282,7 +279,7 @@ int main(void)
     CHECK(t != 0 && t->state == NET_TCP_CLOSED);
     CHECK(net_sock_tcp_syn(b2, dmac, rip, 80u, iss, syn, &synlen) == 0);
     CHECK(t->state == NET_TCP_SYN_SENT);
-    t_mk_synack(syn, synlen, sa, peer, iss, 0x1Fu, 0x91u);
+    t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0x91u);
     sa[14 + 20 + 13] = (uint8_t)(TCP_RST | TCP_ACK);
     sa[52] = 0u;
     sa[53] = 0u;

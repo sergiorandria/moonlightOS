@@ -340,6 +340,32 @@ int net_waiter_match(uint16_t dport, unsigned *owner_out)
     return -1;
 }
 
+int net_waiter_match_kind(uint16_t dport, unsigned kind, unsigned *owner_out)
+{
+    unsigned i;
+    if (kind != (unsigned)NET_SOCK_UDP && kind != (unsigned)NET_SOCK_TCP)
+        return -1;
+    for (i = 0; i < NET_SOCK_MAX; i++) /* bound: 8 */
+    {
+        int sid;
+        if (!net_waiters[i].armed)
+            continue;
+        sid = net_waiters[i].sock_id;
+        if (sid < 0 || sid >= NET_SOCK_MAX)
+            continue;
+        if (!net_socks[sid].used)
+            continue;
+        if (net_socks[sid].kind != (uint8_t)kind)
+            continue;
+        if (net_socks[sid].port != dport)
+            continue;
+        if (owner_out)
+            *owner_out = net_waiters[i].owner;
+        return sid;
+    }
+    return -1;
+}
+
 int net_waiter_expire(uint64_t now, int *sock_out, unsigned *owner_out)
 {
     unsigned i;
