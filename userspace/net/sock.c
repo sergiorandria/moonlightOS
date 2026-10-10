@@ -178,7 +178,10 @@ int net_sock_tcp_syn(int id, const uint8_t *dmac, uint32_t rip, uint16_t rport, 
 /* Handshake/data input through the bind: feeds one RX frame to the bound
  * TCB (SYN-ACK check + RST abort live in tcp.h). An abort back to CLOSED
  * disarms the socket's waiter, so no waiter is left armed on a dead
- * connection. Returns net_tcp_input's 1 (ACK emitted) / 0 (drop). */
+ * connection. A passive-close entry to CLOSE_WAIT parks the FIN-ACK
+ * (rc 1) with the retry budget and waiter untouched, so bytes queued
+ * before the FIN still drain. Returns net_tcp_input's 1 (ACK emitted) /
+ * 0 (drop). */
 int net_sock_tcp_input(int id, const uint8_t *f, unsigned long len, uint8_t *out, unsigned long *outlen)
 {
     int rc;
@@ -451,7 +454,10 @@ static int tcp_rst_build(struct net_tcp_conn *c, uint8_t *out, unsigned long *ou
  * requires the bound TCB in ESTABLISHED (ownership is enforced by the
  * RPC layer via net_sock_owned before this seam runs) and a capped
  * payload, then emits one in-order segment into the parked TX frame
- * (copy out via net_sock_tcp_tx). Stop-and-wait: a second S_SEND while
+ * (copy out via net_sock_tcp_tx). S_SEND in CLOSE_WAIT (passive close:
+ * the peer is done sending) or LAST_ACK answers -1 (S_ERR at the RPC
+ * layer) with snd_nxt untouched -- the state gate below is the whole
+ * enforcement. Stop-and-wait: a second S_SEND while
  * the retry is armed (one segment already outstanding, covering ACK not
  * yet seen) is rejected, never interleaving bytes; the covering ACK
  * (ack_cover) disarms for the next send. Any gate failure emits nothing.

@@ -477,6 +477,90 @@ int main(void)
         CHECK(net_sock_tcp_bound() < 0);
     }
 
+    /* ---- Passive close: ESTABLISHED FIN -> CLOSE_WAIT, data preserved
+     * (RFC 793 section 3.5, single-TCB slice): an in-order peer FIN enters
+     * CLOSE_WAIT with rcv_nxt + 1 and an immediate pure ACK parked (rc 1);
+     * bytes queued before the FIN stay deliverable intact; S_SEND in
+     * CLOSE_WAIT fails closed with snd_nxt untouched. Simplified close:
+     * an out-of-window FIN closes anyway (bore-or-close, same spirit as
+     * the FIN_WAIT any-FIN match). ---- */
+    {
+        int c5;
+        uint32_t rcv0, snd0;
+        unsigned long rl3 = 0;
+        unsigned long alen = 0;
+        const uint8_t *ackf;
+        c5 = net_sock_open(NET_SOCK_TCP, 8098, 3);
+        CHECK(c5 >= 0);
+        t = net_sock_tcp(c5);
+        CHECK(t != 0);
+        CHECK(net_sock_tcp_syn(c5, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0xA2u);
+        CHECK(net_sock_tcp_input(c5, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        CHECK(NET_TCP_CLOSE_WAIT == 4);
+        /* Queue 5 stream bytes first (in-order PSH|ACK via the stack). */
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8098u, t->rcv_nxt, t->snd_nxt, (uint8_t)(TCP_PSH | TCP_ACK), hello,
+                        sizeof(hello));
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        rcv0 = t->rcv_nxt;
+        snd0 = t->snd_nxt;
+        CHECK(rcv0 == peer + 1u + (uint32_t)sizeof(hello));
+        ackf = net_tcp_ack_tx(&alen);
+        CHECK(ackf != 0 && alen == 14u + 20u + 20u);
+        net_tcp_ack_clear();
+        /* In-order header-only peer FIN via the seam: CLOSE_WAIT + ACK. */
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8098u, rcv0, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(c5, fr, flen, rep, &rl3) == 1);
+        CHECK(rl3 == sizeof(rep));
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        CHECK(t->rcv_nxt == rcv0 + 1u);
+        CHECK(t->snd_nxt == snd0);
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
+        CHECK(rep[38] == (uint8_t)(snd0 >> 24) && rep[39] == (uint8_t)(snd0 >> 16) && rep[40] == (uint8_t)(snd0 >> 8) &&
+              rep[41] == (uint8_t)snd0);
+        CHECK(rep[42] == (uint8_t)((rcv0 + 1u) >> 24) && rep[43] == (uint8_t)((rcv0 + 1u) >> 16) &&
+              rep[44] == (uint8_t)((rcv0 + 1u) >> 8) && rep[45] == (uint8_t)(rcv0 + 1u));
+        CHECK(net_ip_checksum(rep + 14, 20) == 0u);
+        CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, rep + 34, 20) == 0u);
+        /* Queued bytes drain intact after the close. */
+        trunc = -1;
+        sip = 0;
+        sport = 0;
+        n = net_tcp_recv_from(8098, buf, sizeof(buf), &sip, &sport, &trunc);
+        CHECK(n == (int)sizeof(hello));
+        CHECK(trunc == 0);
+        CHECK(sip == rip && sport == 80u);
+        CHECK(memcmp(buf, hello, sizeof(hello)) == 0);
+        /* Send gate: CLOSE_WAIT rejects with snd_nxt untouched. */
+        {
+            uint32_t snd1 = t->snd_nxt;
+            CHECK(net_sock_send(c5, hello, sizeof(hello)) < 0);
+            CHECK(t->snd_nxt == snd1);
+            CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        }
+        CHECK(net_sock_close(c5) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+        /* Bore-or-close: an out-of-window FIN still enters CLOSE_WAIT. */
+        c5 = net_sock_open(NET_SOCK_TCP, 8099, 3);
+        CHECK(c5 >= 0);
+        t = net_sock_tcp(c5);
+        CHECK(t != 0);
+        CHECK(net_sock_tcp_syn(c5, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0xA3u);
+        CHECK(net_sock_tcp_input(c5, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        rcv0 = t->rcv_nxt;
+        snd0 = t->snd_nxt;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8099u, rcv0 + 7u, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(c5, fr, flen, rep, &rl3) == 1);
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        CHECK(t->rcv_nxt == rcv0 + 1u);
+        CHECK(t->snd_nxt == snd0);
+        CHECK(net_sock_close(c5) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
+
     /* ---- Fair-share: 4 concurrent opens hold all slots ---- */
     {
         int ids[4];
