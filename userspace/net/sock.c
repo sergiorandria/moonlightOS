@@ -72,17 +72,15 @@ int net_sock_open(unsigned kind, uint16_t port, unsigned owner)
     if (kind == NET_SOCK_TCP)
     {
         /* Single live TCB guard (additive to fair-share): while the TCB
-         * is live (bound to an open socket past CLOSED, linger excepted)
+         * is live (bound to an open socket past CLOSED, linger included)
          * a second concurrent TCP open fails closed, never aliasing the
          * TCB. CLOSED-bound sockets do not block Task-1 fair-share vectors:
          * the bind moves to the new opener at alloc below. A TIME_WAIT
-         * linger reserves its port (the socket entry stays until close,
-         * so the same port still fails on the table check below) but not
-         * the TCB: a different-port open reclaims the bind (TCB reset to
-         * CLOSED at alloc) while the lingering socket goes unbound. */
+         * linger blocks ALL new opens until expiry frees the TCB to
+         * CLOSED (spec Sec 2): the lingering socket keeps its port and
+         * its duplicate-ACK duty for the remaining 2MSL. */
         if (net_tcb_sock >= 0 && net_tcb_sock < NET_SOCK_MAX && net_socks[net_tcb_sock].used &&
-            net_socks[net_tcb_sock].kind == NET_SOCK_TCP && net_tcb.state != NET_TCP_CLOSED &&
-            net_tcb.state != NET_TCP_TIME_WAIT)
+            net_socks[net_tcb_sock].kind == NET_SOCK_TCP && net_tcb.state != NET_TCP_CLOSED)
             return -1;
     }
     for (i = 0; i < NET_SOCK_MAX; i++)

@@ -1861,11 +1861,11 @@ int main(void)
      * (RFC 793 section 3.5, 2MSL = NET_TCP_TIME_WAIT_TICKS): duplicate
      * FIN/data re-ACK without state change; expiry one tick before the
      * deadline holds, at the deadline falls to CLOSED; the lingering
-     * port refuses open while a different port still opens. ---- */
+     * port refuses open and every new open fails closed until expiry. ---- */
     {
         static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
         static const uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
-        int a, b2;
+        int a;
         struct net_tcp_conn *t;
         uint8_t syn[58], sa[58], rep[54], fr[128];
         unsigned long replen = 0, rl = 0, flen = 0;
@@ -1941,11 +1941,11 @@ int main(void)
         CHECK(net_sock_tcp_retry_poll(dl - 1u, 50u, &owner, &had) == 0 && had == 0);
         CHECK(t->state == NET_TCP_TIME_WAIT);
         CHECK(t->retry_deadline == dl && t->retry_count == 0u);
-        /* ... a different free port still opens during the linger ... */
-        b2 = net_sock_open(NET_SOCK_TCP, 8081, 2);
-        CHECK(b2 >= 0);
-        CHECK(net_sock_tcp(b2) != 0 && net_sock_tcp(b2)->state == NET_TCP_CLOSED);
-        CHECK(net_sock_close(b2) == 0);
+        /* ... every new open fails closed for the whole linger (spec
+         * Sec 2): the linger survives, keeping its duplicate-ACK duty. */
+        CHECK(net_sock_open(NET_SOCK_TCP, 8081, 2) < 0);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        CHECK(t->retry_deadline == dl && t->retry_count == 0u);
         CHECK(net_sock_close(a) == 0);
         /* ... and a fresh linger falls to CLOSED exactly at the deadline,
          * freeing the port for rebind. */
