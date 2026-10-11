@@ -134,6 +134,28 @@ static void t_mk_synack(const uint8_t *syn, uint8_t *sa, uint32_t peer_seq, uint
 
 #include "../userspace/net/arp_cache.c"
 
+/* Task 3 loop-feed replica (mirrors the v2_main NET_CLASS_TCP branch):
+ * the loop demuxes every TCP frame to its owning entry by dport. The
+ * vectors below pin the per-entry contract through this exact call shape. */
+static int t_loop_feed(const uint8_t *fr, unsigned flen, uint8_t *rep, unsigned long *rl, uint64_t now)
+{
+    unsigned dihl;
+    unsigned doff;
+    uint16_t dport;
+    int bs;
+    if (flen < 14u + 20u + 14u)
+        return -1;
+    dihl = (unsigned)(fr[14] & 0x0Fu) * 4u;
+    doff = 14u + dihl;
+    if (dihl < 20u || flen < (unsigned long)(doff + 4u))
+        return -1;
+    dport = (uint16_t)(((unsigned)fr[doff + 2] << 8) | (unsigned)fr[doff + 3]);
+    bs = net_sock_demux(dport);
+    if (bs < 0 || !net_sock_tcp(bs))
+        return -1;
+    return net_sock_tcp_input_at(bs, fr, flen, rep, rl, now);
+}
+
 int main(void)
 {
     static const uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
@@ -979,6 +1001,71 @@ int main(void)
         CHECK(rlw == 0);
         CHECK(net_waiter_match(8106, &owner) < 0);
         CHECK(net_sock_close(cw) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
+
+    /* ---- Multi-TCB Task 3: per-entry RX feed + close isolation (RFC 793
+     * one state machine per connection): B opens first (first bound), then
+     * A; an RST for A aborts only A (CLOSED, waiter cleared once for the
+     * loop's single S_ERR) while B stays ESTABLISHED with its waiter
+     * intact; a FIN for B then closes only B (CLOSE_WAIT + pure ACK) with
+     * A undisturbed. Fed through t_loop_feed, the exact call shape of the
+     * v2_main RX branch. ---- */
+    {
+        int eA, eB;
+        struct net_tcp_conn *tA, *tB;
+        unsigned long rlx = 0;
+        uint32_t rcvA, sndA, sndB;
+        eB = net_sock_open(NET_SOCK_TCP, 8081, 2);
+        CHECK(eB >= 0);
+        eA = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(eA >= 0);
+        CHECK(net_sock_tcp_bound() == eB); /* B first bound */
+        tA = net_sock_tcp(eA);
+        tB = net_sock_tcp(eB);
+        CHECK(tA != 0 && tB != 0 && tA != tB);
+        CHECK(net_sock_tcp_syn(eB, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0x91u);
+        CHECK(net_sock_tcp_input(eB, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(tB->state == NET_TCP_ESTABLISHED);
+        CHECK(net_sock_tcp_syn(eA, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0x90u);
+        CHECK(net_sock_tcp_input(eA, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(tA->state == NET_TCP_ESTABLISHED);
+        CHECK(net_waiter_arm(eA, 1, 1000, 50) == 0);
+        CHECK(net_waiter_arm(eB, 2, 1000, 50) == 0);
+        rcvA = tA->rcv_nxt;
+        sndA = tA->snd_nxt;
+        sndB = tB->snd_nxt;
+        /* RST for A: only A aborts; B holds with its waiter. */
+        rlx = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcvA, sndA, (uint8_t)(TCP_RST | TCP_ACK), hello, 0);
+        CHECK(t_loop_feed(fr, flen, rep, &rlx, 1000) == 0);
+        CHECK(rlx == 0);
+        CHECK(tA->state == NET_TCP_CLOSED);
+        CHECK(tA->retry_deadline == 0u && tA->retry_count == 0u);
+        CHECK(net_waiter_match(8080, &wowner) < 0); /* A's single S_ERR consumed */
+        CHECK(tB->state == NET_TCP_ESTABLISHED);
+        CHECK(tB->snd_nxt == sndB && tB->rcv_nxt == peer + 1u);
+        CHECK(net_waiter_match(8081, &wowner) == eB);
+        CHECK(wowner == 2);
+        /* Repeat RST for A: still quiet, B untouched. */
+        rlx = 0;
+        CHECK(t_loop_feed(fr, flen, rep, &rlx, 1000) == 0);
+        CHECK(tB->state == NET_TCP_ESTABLISHED);
+        CHECK(net_waiter_match(8081, &wowner) == eB);
+        /* FIN for B: only B closes (CLOSE_WAIT + pure ACK); A stays CLOSED. */
+        rlx = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8081u, tB->rcv_nxt, sndB, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(t_loop_feed(fr, flen, rep, &rlx, 1000) == 1);
+        CHECK(rlx == sizeof(rep));
+        CHECK(tB->state == NET_TCP_CLOSE_WAIT);
+        CHECK(tB->rcv_nxt == peer + 1u + 1u);
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
+        CHECK(tA->state == NET_TCP_CLOSED);
+        CHECK(net_sock_send(eB, hello, sizeof(hello)) < 0); /* CLOSE_WAIT gate */
+        CHECK(net_sock_close(eA) == 0);
+        CHECK(net_sock_close(eB) == 0);
         CHECK(net_sock_tcp_bound() < 0);
     }
 

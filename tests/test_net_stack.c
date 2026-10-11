@@ -134,6 +134,28 @@ static void t2_mk_arp(uint8_t *f, const uint8_t *dmac, const uint8_t *smac, unsi
     f[41] = (uint8_t)tpa;
 }
 
+/* Task 3 loop-feed replica (mirrors the v2_main NET_CLASS_TCP branch):
+ * the loop demuxes every TCP frame to its owning entry by dport. The
+ * vectors below pin the per-entry contract through this exact call shape. */
+static int t_loop_feed(const uint8_t *f, unsigned flen, uint8_t *rep, unsigned long *rl, uint64_t now)
+{
+    unsigned dihl;
+    unsigned doff;
+    uint16_t dport;
+    int bs;
+    if (flen < 14u + 20u + 14u)
+        return -1;
+    dihl = (unsigned)(f[14] & 0x0Fu) * 4u;
+    doff = 14u + dihl;
+    if (dihl < 20u || flen < (unsigned long)(doff + 4u))
+        return -1;
+    dport = (uint16_t)(((unsigned)f[doff + 2] << 8) | (unsigned)f[doff + 3]);
+    bs = net_sock_demux(dport);
+    if (bs < 0 || !net_sock_tcp(bs))
+        return -1;
+    return net_sock_tcp_input_at(bs, f, flen, rep, rl, now);
+}
+
 /* FIN-retry Task 2: drive a fresh TCP socket to ESTABLISHED through the
  * bind (same canned SYN-ACK shape as the seam vectors: sport 80, peer seq,
  * ack = iss + 1, valid checksums). Returns 0 on ESTABLISHED, -1 otherwise.
@@ -2191,6 +2213,69 @@ int main(void)
         CHECK(net_waiter_match(8080, &owner) < 0);
         CHECK(net_tcp_recv_from(8080, fr, sizeof(fr), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
         CHECK(net_sock_close(a) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
+    /* ---- Multi-TCB Task 3: per-entry covering-ACK demux (RFC 793 section
+     * 3.5): A(8080) and B(8081) both FIN_WAIT with armed FIN retries; the
+     * covering ACK for B's FIN closes only B into TIME_WAIT (linger
+     * stamped, waiter held armed for the loop's single S_ERR) while A
+     * holds FIN_WAIT with its retry budget and waiter untouched. Fed
+     * through t_loop_feed, the exact call shape of the v2_main RX branch. ---- */
+    {
+        static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
+        static const uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
+        int A, B;
+        struct net_tcp_conn *tA, *tB;
+        uint8_t syn[58], sa[58], rep[54], fr[128];
+        unsigned long replen = 0, rl = 0, flen = 0;
+        uint8_t dmac[6];
+        uint32_t rip, sndA, sndB;
+        uint64_t tnow = 5000u, dl;
+        unsigned owner = 0;
+        net_stack_init();
+        net_arp_init();
+        rip = (uint32_t)NET_IP_GW;
+        CHECK(net_arp_lookup(rip, dmac) == 0);
+        A = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(A >= 0);
+        B = net_sock_open(NET_SOCK_TCP, 8081, 2);
+        CHECK(B >= 0);
+        CHECK(net_sock_tcp_bound() == A); /* A first bound */
+        tA = net_sock_tcp(A);
+        tB = net_sock_tcp(B);
+        CHECK(tA != 0 && tB != 0 && tA != tB);
+        CHECK(t2_establish(A, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        CHECK(t2_establish(B, dmac, rip, 0x0A0B0C0Du, 0x05060708u, 8081u, syn, sa, rep, &replen) == 0);
+        CHECK(tA->snd_nxt != tB->snd_nxt); /* independent seq, same peer IP */
+        CHECK(net_sock_fin_close(A) == 0);
+        CHECK(net_sock_fin_close(B) == 0);
+        CHECK(tA->state == NET_TCP_FIN_WAIT && tB->state == NET_TCP_FIN_WAIT);
+        sndA = tA->snd_nxt;
+        sndB = tB->snd_nxt;
+        CHECK(net_sock_tcp_retry_arm(A, tnow, 50u) == 0);
+        CHECK(net_sock_tcp_retry_arm(B, tnow, 50u) == 0);
+        CHECK(net_waiter_arm(A, 1, tnow, 100000u) == 0);
+        CHECK(net_waiter_arm(B, 2, tnow, 100000u) == 0);
+        /* Covering ACK for B's FIN: only B enters the linger. */
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8081u, tB->rcv_nxt, sndB, (uint8_t)TCP_ACK, hello, 0);
+        CHECK(t_loop_feed(fr, flen, rep, &rl, tnow) == 0);
+        CHECK(rl == 0);
+        CHECK(tB->state == NET_TCP_TIME_WAIT);
+        dl = tnow + (uint64_t)NET_TCP_TIME_WAIT_TICKS;
+        CHECK(tB->retry_deadline == dl && tB->retry_count == 0u);
+        CHECK(net_waiter_match(8081, &owner) == B); /* held for the single S_ERR */
+        CHECK(owner == 2u);
+        /* A undisturbed: FIN_WAIT held, FIN retry and waiter untouched. */
+        CHECK(tA->state == NET_TCP_FIN_WAIT);
+        CHECK(tA->snd_nxt == sndA);
+        CHECK(tA->retry_deadline == tnow + 50u && tA->retry_count == 0u);
+        CHECK(net_waiter_match(8080, &owner) == A);
+        CHECK(owner == 1u);
+        net_waiter_clear(B); /* the loop's single wake, modeled once */
+        CHECK(net_waiter_match(8081, &owner) < 0);
+        CHECK(net_sock_close(A) == 0);
+        CHECK(net_sock_close(B) == 0);
         CHECK(net_sock_tcp_bound() < 0);
     }
     puts("PASS: test_net_stack");

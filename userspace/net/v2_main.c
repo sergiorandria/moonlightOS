@@ -2128,7 +2128,7 @@ void net_main(void)
                 }
                 else if (cls == NET_CLASS_TCP)
                 {
-                    /* Bound-TCB feed (Task 3 demux): net_stack_rx above
+                    /* Per-entry feed (multi-TCB Task 3 demux): net_stack_rx above
                      * already classified + demuxed by dport -- unbound
                      * ports never queue (silent drop), in-order
                      * ESTABLISHED data is queued with an ACK parked, and
@@ -2145,8 +2145,22 @@ void net_main(void)
                      * never double-reply). An RST abort back to CLOSED
                      * disarms the waiter via the seam; the socket stays
                      * for an explicit close (a CLOSED bind never blocks
-                     * the next TCP open). */
-                    int bs = net_sock_tcp_bound();
+                     * the next TCP open). The owning entry is demuxed by
+                     * dport (ports are table-unique, so the match is
+                     * exact); unbound dports and TCP frames for UDP ports
+                     * drop silently here, exactly as the stack left them. */
+                    int bs = -1;
+                    {
+                        unsigned dihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
+                        unsigned doff = 14u + dihl;
+                        if (dihl >= 20u && pktlen >= (unsigned long)(doff + 4u))
+                        {
+                            uint16_t dport = (uint16_t)(((unsigned)rxcopy[doff + 2] << 8) | (unsigned)rxcopy[doff + 3]);
+                            int dsid = net_sock_demux(dport);
+                            if (dsid >= 0 && net_sock_tcp(dsid) != 0)
+                                bs = dsid;
+                        }
+                    }
                     if (bs >= 0)
                     {
                         struct net_tcp_conn *bt = net_sock_tcp(bs);
