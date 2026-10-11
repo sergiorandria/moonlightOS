@@ -65,12 +65,9 @@ static unsigned s_tqcount;
  * builder mirrors the tcp.h pure-ACK bytes (IP id 0x12/0x34, TTL 64,
  * window 2048). net_stack_rx has no frame out-param, so the frame parks
  * here like the net_sock_tcp_tx seam. */
-static uint8_t s_tcp_ack[ETH_HDR_LEN + IP_MIN + TCP_HDR_MIN];
-static unsigned long s_tcp_ack_len;
 /* Per-dport parked ACKs (back-to-back arrivals for different ports must
- * not clobber each other; Ref: RFC 793 duplicate-ACK duty). The global
- * mirror above stays as the legacy compat readout (most-recent park).
- * 4 slots mirror NET_TCP_QDEPTH; same-dport parks overwrite. */
+ * not clobber each other; Ref: RFC 793 duplicate-ACK duty). 4 slots
+ * mirror NET_TCP_QDEPTH; same-dport parks overwrite. */
 #define NET_TCP_ACK_SLOTS 4u
 struct tcp_ack_slot
 {
@@ -102,7 +99,6 @@ int net_stack_init(void)
     s_qcount = 0;
     s_tqhead = 0;
     s_tqcount = 0;
-    s_tcp_ack_len = 0;
     {
         unsigned qi;
         for (qi = 0; qi < NET_TCP_ACK_SLOTS; qi++) /* bound: 4 */
@@ -168,57 +164,57 @@ static void tcp_ack_build(const struct net_tcp_conn *c, const uint8_t *f, uint16
 {
     unsigned i;
     uint16_t ck;
+    uint8_t fr[ETH_HDR_LEN + IP_MIN + TCP_HDR_MIN];
     uint32_t sip = stack_ip_at(f, ETH_HDR_LEN + 12);
     for (i = 0; i < 6u; i++) /* bound: 6 */
     {
-        s_tcp_ack[i] = f[6 + i];
-        s_tcp_ack[6 + i] = NET_MAC_SELF[i];
+        fr[i] = f[6 + i];
+        fr[6 + i] = NET_MAC_SELF[i];
     }
-    s_tcp_ack[12] = 0x08u;
-    s_tcp_ack[13] = 0x00u;
-    s_tcp_ack[14] = 0x45u;
-    s_tcp_ack[15] = 0x00u;
-    s_tcp_ack[16] = 0u;
-    s_tcp_ack[17] = 40u;
-    s_tcp_ack[18] = 0x12u;
-    s_tcp_ack[19] = 0x34u;
-    s_tcp_ack[20] = 0x40u;
-    s_tcp_ack[21] = 0x00u;
-    s_tcp_ack[22] = 64u;
-    s_tcp_ack[23] = IP_PROTO_TCP;
-    s_tcp_ack[24] = 0u;
-    s_tcp_ack[25] = 0u;
-    stack_ip_put(s_tcp_ack, 26, (uint32_t)NET_IP_SELF);
-    stack_ip_put(s_tcp_ack, 30, sip);
-    ck = net_ip_checksum(s_tcp_ack + ETH_HDR_LEN, IP_MIN);
-    s_tcp_ack[24] = (uint8_t)(ck >> 8);
-    s_tcp_ack[25] = (uint8_t)(ck & 0xFFu);
-    s_tcp_ack[34] = (uint8_t)(c->lport >> 8);
-    s_tcp_ack[35] = (uint8_t)c->lport;
-    s_tcp_ack[36] = (uint8_t)(c->rport >> 8);
-    s_tcp_ack[37] = (uint8_t)c->rport;
-    s_tcp_ack[38] = (uint8_t)(c->snd_nxt >> 24);
-    s_tcp_ack[39] = (uint8_t)(c->snd_nxt >> 16);
-    s_tcp_ack[40] = (uint8_t)(c->snd_nxt >> 8);
-    s_tcp_ack[41] = (uint8_t)c->snd_nxt;
-    s_tcp_ack[42] = (uint8_t)(c->rcv_nxt >> 24);
-    s_tcp_ack[43] = (uint8_t)(c->rcv_nxt >> 16);
-    s_tcp_ack[44] = (uint8_t)(c->rcv_nxt >> 8);
-    s_tcp_ack[45] = (uint8_t)c->rcv_nxt;
-    s_tcp_ack[46] = (uint8_t)(5u << 4);
-    s_tcp_ack[47] = (uint8_t)TCP_ACK;
-    s_tcp_ack[48] = 0x08u;
-    s_tcp_ack[49] = 0x00u;
-    s_tcp_ack[50] = 0u;
-    s_tcp_ack[51] = 0u;
-    s_tcp_ack[52] = 0u;
-    s_tcp_ack[53] = 0u;
-    ck = net_tcp_checksum((uint32_t)NET_IP_SELF, sip, s_tcp_ack + ETH_HDR_LEN + IP_MIN,
+    fr[12] = 0x08u;
+    fr[13] = 0x00u;
+    fr[14] = 0x45u;
+    fr[15] = 0x00u;
+    fr[16] = 0u;
+    fr[17] = 40u;
+    fr[18] = 0x12u;
+    fr[19] = 0x34u;
+    fr[20] = 0x40u;
+    fr[21] = 0x00u;
+    fr[22] = 64u;
+    fr[23] = IP_PROTO_TCP;
+    fr[24] = 0u;
+    fr[25] = 0u;
+    stack_ip_put(fr, 26, (uint32_t)NET_IP_SELF);
+    stack_ip_put(fr, 30, sip);
+    ck = net_ip_checksum(fr + ETH_HDR_LEN, IP_MIN);
+    fr[24] = (uint8_t)(ck >> 8);
+    fr[25] = (uint8_t)(ck & 0xFFu);
+    fr[34] = (uint8_t)(c->lport >> 8);
+    fr[35] = (uint8_t)c->lport;
+    fr[36] = (uint8_t)(c->rport >> 8);
+    fr[37] = (uint8_t)c->rport;
+    fr[38] = (uint8_t)(c->snd_nxt >> 24);
+    fr[39] = (uint8_t)(c->snd_nxt >> 16);
+    fr[40] = (uint8_t)(c->snd_nxt >> 8);
+    fr[41] = (uint8_t)c->snd_nxt;
+    fr[42] = (uint8_t)(c->rcv_nxt >> 24);
+    fr[43] = (uint8_t)(c->rcv_nxt >> 16);
+    fr[44] = (uint8_t)(c->rcv_nxt >> 8);
+    fr[45] = (uint8_t)c->rcv_nxt;
+    fr[46] = (uint8_t)(5u << 4);
+    fr[47] = (uint8_t)TCP_ACK;
+    fr[48] = 0x08u;
+    fr[49] = 0x00u;
+    fr[50] = 0u;
+    fr[51] = 0u;
+    fr[52] = 0u;
+    fr[53] = 0u;
+    ck = net_tcp_checksum((uint32_t)NET_IP_SELF, sip, fr + ETH_HDR_LEN + IP_MIN,
                           (unsigned)TCP_HDR_MIN);
-    s_tcp_ack[50] = (uint8_t)(ck >> 8);
-    s_tcp_ack[51] = (uint8_t)(ck & 0xFFu);
-    s_tcp_ack_len = sizeof(s_tcp_ack);
-    tcp_ack_park_dport(dport, s_tcp_ack, sizeof(s_tcp_ack));
+    fr[50] = (uint8_t)(ck >> 8);
+    fr[51] = (uint8_t)(ck & 0xFFu);
+    tcp_ack_park_dport(dport, fr, sizeof(fr));
 }
 
 /* TCP branch of net_stack_rx: validate, demux by dport, and queue
@@ -679,21 +675,7 @@ void net_tcp_drop_if(int (*drop)(uint16_t dport))
     s_tqcount = wr;
 }
 
-/* Parked ACK frame from the last ESTABLISHED data decision: sets
- * *len_out and returns the frame bytes, or 0/0 when none is parked.
- * The wire path copies the frame, transmits, then clears (exactly once). */
-const uint8_t *net_tcp_ack_tx(unsigned long *len_out)
-{
-    if (len_out)
-        *len_out = s_tcp_ack_len;
-    return s_tcp_ack_len ? s_tcp_ack : 0;
-}
-
-/* Release the parked ACK without transmitting. */
-void net_tcp_ack_clear(void)
-{
-    s_tcp_ack_len = 0;
-}
+/* Legacy global readout removed: use net_tcp_ack_tx_for/clear_for. */
 
 /* Per-dport parked-ACK readout (back-to-back arrivals for different ports
  * must not clobber each other). Returns frame bytes + len, or 0/0. */

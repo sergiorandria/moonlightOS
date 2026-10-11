@@ -1410,7 +1410,7 @@ int main(void)
          * cleared exactly once. */
         {
             unsigned long alen = 0;
-            const uint8_t *ackf = net_tcp_ack_tx(&alen);
+            const uint8_t *ackf = net_tcp_ack_tx_for(8080, &alen);
             CHECK(ackf != 0 && alen == 14u + 20u + 20u);
             CHECK(ackf[14 + 20 + 13] == (uint8_t)TCP_ACK);
             CHECK(ackf[34] == 0x1Fu && ackf[35] == 0x90u);
@@ -1418,8 +1418,8 @@ int main(void)
             CHECK(ackf[42] == (uint8_t)(t->rcv_nxt >> 24) && ackf[45] == (uint8_t)t->rcv_nxt);
             CHECK(net_ip_checksum(ackf + 14, 20) == 0u);
             CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, ackf + 34, 20) == 0u);
-            net_tcp_ack_clear();
-            ackf = net_tcp_ack_tx(&alen);
+            net_tcp_ack_clear_for(8080);
+            ackf = net_tcp_ack_tx_for(8080, &alen);
             CHECK(ackf == 0 && alen == 0);
         }
         /* Duplicate of the accepted segment: dropped, no double delivery. */
@@ -1434,10 +1434,10 @@ int main(void)
         CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
         {
             unsigned long alen = 0;
-            const uint8_t *ackf = net_tcp_ack_tx(&alen);
+            const uint8_t *ackf = net_tcp_ack_tx_for(8080, &alen);
             CHECK(ackf != 0 && alen == 14u + 20u + 20u);
             CHECK(ackf[45] == (uint8_t)t->rcv_nxt);
-            net_tcp_ack_clear();
+            net_tcp_ack_clear_for(8080);
         }
         /* Oversize (> MSS 536) segment: fail-closed, no advance. */
         flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)(TCP_PSH | TCP_ACK), big, sizeof(big));
@@ -1494,7 +1494,7 @@ int main(void)
         flen =
             t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
-        net_tcp_ack_clear();
+        net_tcp_ack_clear_for(8080);
         CHECK(net_sock_close(a) == 0);
         net_tcp_drop_if(t_tcp_drop8080);
         CHECK(net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
@@ -1951,9 +1951,9 @@ int main(void)
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
         rcv0 = t->rcv_nxt;
         snd0 = t->snd_nxt;
-        ackf = net_tcp_ack_tx(&alen);
+        ackf = net_tcp_ack_tx_for(8080, &alen);
         CHECK(ackf != 0 && alen == 14u + 20u + 20u);
-        net_tcp_ack_clear();
+        net_tcp_ack_clear_for(8080);
         /* Wire FIN: TCP class, neither queue touched (UDP carve blind). */
         flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv0, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
@@ -2170,7 +2170,7 @@ int main(void)
         int had = 0;
         net_stack_init();
         net_arp_init();
-        net_tcp_ack_clear();
+        net_tcp_ack_clear_for(8080);
         rip = (uint32_t)NET_IP_GW;
         CHECK(net_arp_lookup(rip, dmac) == 0);
         a = net_sock_open(NET_SOCK_TCP, 8080, 1);
@@ -2211,7 +2211,7 @@ int main(void)
         rl = 0;
         flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1, t->snd_nxt, (uint8_t)(TCP_RST | TCP_ACK), hello, 0);
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
-        ackf = net_tcp_ack_tx(&alen);
+        ackf = net_tcp_ack_tx_for(8080, &alen);
         CHECK(ackf == 0 && alen == 0);
         CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0);
         CHECK(rl == 0);

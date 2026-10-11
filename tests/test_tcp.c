@@ -327,13 +327,13 @@ int main(void)
         net_waiter_clear(a);
         CHECK(net_waiter_match(8080, &wowner) < 0);
         /* Parked ACK covers the new rcv_nxt, clears exactly once. */
-        ackf = net_tcp_ack_tx(&alen);
+        ackf = net_tcp_ack_tx_for(8080, &alen);
         CHECK(ackf != 0 && alen == 14u + 20u + 20u);
         CHECK(ackf[14 + 20 + 13] == (uint8_t)TCP_ACK);
         CHECK(ackf[42] == (uint8_t)(t->rcv_nxt >> 24) && ackf[43] == (uint8_t)(t->rcv_nxt >> 16) &&
               ackf[44] == (uint8_t)(t->rcv_nxt >> 8) && ackf[45] == (uint8_t)t->rcv_nxt);
-        net_tcp_ack_clear();
-        ackf = net_tcp_ack_tx(&alen);
+        net_tcp_ack_clear_for(8080);
+        ackf = net_tcp_ack_tx_for(8080, &alen);
         CHECK(ackf == 0 && alen == 0);
         /* Duplicate drops: no double delivery. */
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
@@ -594,9 +594,9 @@ int main(void)
         rcv0 = t->rcv_nxt;
         snd0 = t->snd_nxt;
         CHECK(rcv0 == peer + 1u + (uint32_t)sizeof(hello));
-        ackf = net_tcp_ack_tx(&alen);
+        ackf = net_tcp_ack_tx_for(8098, &alen);
         CHECK(ackf != 0 && alen == 14u + 20u + 20u);
-        net_tcp_ack_clear();
+        net_tcp_ack_clear_for(8098);
         /* In-order header-only peer FIN via the seam: CLOSE_WAIT + ACK. */
         flen = t_mk_tcp(fr, gwmac, rip, 80u, 8098u, rcv0, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
         CHECK(net_sock_tcp_input(c5, fr, flen, rep, &rl3) == 1);
@@ -678,9 +678,9 @@ int main(void)
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
         rcv0 = t->rcv_nxt;
         snd0 = t->snd_nxt;
-        ackf = net_tcp_ack_tx(&alen);
+        ackf = net_tcp_ack_tx_for(8100, &alen);
         CHECK(ackf != 0 && alen == 14u + 20u + 20u);
-        net_tcp_ack_clear();
+        net_tcp_ack_clear_for(8100);
         /* Wire FIN via the stack: classified TCP, never queued as data. */
         flen = t_mk_tcp(fr, gwmac, rip, 80u, 8100u, rcv0, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
@@ -970,7 +970,7 @@ int main(void)
         /* RST during linger: the wire demux parks nothing, the seam
          * aborts to CLOSED silently with no ACK parked and the waiter
          * disarmed. */
-        net_tcp_ack_clear();
+        net_tcp_ack_clear_for(8105);
         cw = net_sock_open(NET_SOCK_TCP, 8106, 3);
         CHECK(cw >= 0);
         t = net_sock_tcp(cw);
@@ -990,7 +990,7 @@ int main(void)
         rlw = 0;
         flen = t_mk_tcp(fr, gwmac, rip, 80u, 8106u, t->rcv_nxt, sndw, (uint8_t)(TCP_RST | TCP_ACK), hello, 0);
         CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
-        ackf = net_tcp_ack_tx(&alen);
+        ackf = net_tcp_ack_tx_for(8106, &alen);
         CHECK(ackf == 0 && alen == 0);
         CHECK(net_sock_tcp_input(cw, fr, flen, rep, &rlw) == 0);
         CHECK(rlw == 0);
