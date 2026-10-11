@@ -71,5 +71,7 @@ int net_tcp_recv_from(uint16_t dport, uint8_t *buf, unsigned long cap, uint32_t 
 void net_tcp_drop_if(int (*drop)(uint16_t dport));
 const uint8_t *net_tcp_ack_tx(unsigned long *len_out);
 void net_tcp_ack_clear(void);
+const uint8_t *net_tcp_ack_tx_for(uint16_t dport, unsigned long *len_out);
+void net_tcp_ack_clear_for(uint16_t dport);
 
 #endif /* NET_STACK_H */

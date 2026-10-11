@@ -2279,6 +2279,56 @@ int main(void)
         CHECK(net_sock_close(B) == 0);
         CHECK(net_sock_tcp_bound() < 0);
     }
+    /* ---- Per-entry parked ACKs: back-to-back data for A(8080) then B(8081)
+     * parks two distinct ACKs (ports/seq differ); flushing A leaves B's
+     * ACK intact. Regression: the legacy global slot clobbered A. ---- */
+    {
+        static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
+        static const uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
+        int A, B;
+        struct net_tcp_conn *tA, *tB;
+        uint8_t syn[58], sa[58], rep[54], fr[128];
+        unsigned long replen = 0, alen = 0, blen = 0;
+        uint8_t dmac[6];
+        uint32_t rip;
+        const uint8_t *af, *bf;
+        net_stack_init();
+        net_arp_init();
+        rip = (uint32_t)NET_IP_GW;
+        CHECK(net_arp_lookup(rip, dmac) == 0);
+        A = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(A >= 0);
+        B = net_sock_open(NET_SOCK_TCP, 8081, 2);
+        CHECK(B >= 0);
+        CHECK(t2_establish(A, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        CHECK(t2_establish(B, dmac, rip, 0x0A0B0C0Du, 0x05060708u, 8081u, syn, sa, rep, &replen) == 0);
+        tA = net_sock_tcp(A);
+        tB = net_sock_tcp(B);
+        CHECK(tA != 0 && tB != 0);
+        {
+            unsigned fl = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, tA->rcv_nxt, tA->snd_nxt,
+                                    (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+            CHECK(net_stack_rx(fr, fl) == NET_CLASS_TCP);
+        }
+        {
+            unsigned fl = t3_mk_tcp(fr, gwmac, rip, 80u, 8081u, tB->rcv_nxt, tB->snd_nxt,
+                                    (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+            CHECK(net_stack_rx(fr, fl) == NET_CLASS_TCP);
+        }
+        af = net_tcp_ack_tx_for(8080, &alen);
+        bf = net_tcp_ack_tx_for(8081, &blen);
+        CHECK(af != 0 && alen == 54u);
+        CHECK(bf != 0 && blen == 54u);
+        CHECK(af[34] == 0x1Fu && af[35] == 0x90u); /* A lport survives B's park */
+        CHECK(bf[34] == 0x1Fu && bf[35] == 0x91u);
+        CHECK(af != bf);
+        net_tcp_ack_clear_for(8080);
+        CHECK(net_tcp_ack_tx_for(8080, &alen) == 0 && alen == 0);
+        CHECK(net_tcp_ack_tx_for(8081, &blen) != 0 && blen == 54u);
+        net_tcp_ack_clear_for(8081);
+        CHECK(net_sock_close(A) == 0);
+        CHECK(net_sock_close(B) == 0);
+    }
     puts("PASS: test_net_stack");
     return 0;
 }

@@ -67,6 +67,19 @@ static unsigned s_tqcount;
  * here like the net_sock_tcp_tx seam. */
 static uint8_t s_tcp_ack[ETH_HDR_LEN + IP_MIN + TCP_HDR_MIN];
 static unsigned long s_tcp_ack_len;
+/* Per-dport parked ACKs (back-to-back arrivals for different ports must
+ * not clobber each other; Ref: RFC 793 duplicate-ACK duty). The global
+ * mirror above stays as the legacy compat readout (most-recent park).
+ * 4 slots mirror NET_TCP_QDEPTH; same-dport parks overwrite. */
+#define NET_TCP_ACK_SLOTS 4u
+struct tcp_ack_slot
+{
+    uint16_t dport;
+    unsigned long len;
+    uint8_t frame[ETH_HDR_LEN + IP_MIN + TCP_HDR_MIN];
+    int used;
+};
+static struct tcp_ack_slot s_tack[NET_TCP_ACK_SLOTS];
 
 /* Byte-loop slot copy: struct assignment lowers to memcpy, which the
  * freestanding net ELF (-nostdlib) cannot link. Field-wise scalars plus
@@ -90,6 +103,11 @@ int net_stack_init(void)
     s_tqhead = 0;
     s_tqcount = 0;
     s_tcp_ack_len = 0;
+    {
+        unsigned qi;
+        for (qi = 0; qi < NET_TCP_ACK_SLOTS; qi++) /* bound: 4 */
+            s_tack[qi].used = 0;
+    }
     net_arp_init();
     return 0;
 }
@@ -122,7 +140,31 @@ static void tcp_slot_copy(struct tcp_slot *d, const struct tcp_slot *s)
 
 /* Park one pure ACK (seq = snd_nxt, ack = rcv_nxt) for the bound TCB.
  * Byte-mirrors the tcp.h pure-ACK reply (same IP id/TTL/window). */
-static void tcp_ack_build(const struct net_tcp_conn *c, const uint8_t *f)
+static void tcp_ack_park_dport(uint16_t dport, const uint8_t *frame, unsigned long flen)
+{
+    unsigned i, k;
+    for (i = 0; i < NET_TCP_ACK_SLOTS; i++) /* bound: 4 */
+    {
+        if (s_tack[i].used && s_tack[i].dport == dport)
+            break;
+    }
+    if (i >= NET_TCP_ACK_SLOTS)
+    {
+        for (k = 0; k < NET_TCP_ACK_SLOTS; k++) /* bound: 4 */
+        {
+            if (!s_tack[k].used)
+                break;
+        }
+        i = (k < NET_TCP_ACK_SLOTS) ? k : 0u; /* full: overwrite oldest */
+    }
+    s_tack[i].dport = dport;
+    s_tack[i].len = flen;
+    for (k = 0; k < (unsigned)sizeof(s_tack[i].frame); k++) /* bound: 54 */
+        s_tack[i].frame[k] = frame[k];
+    s_tack[i].used = 1;
+}
+
+static void tcp_ack_build(const struct net_tcp_conn *c, const uint8_t *f, uint16_t dport)
 {
     unsigned i;
     uint16_t ck;
@@ -176,6 +218,7 @@ static void tcp_ack_build(const struct net_tcp_conn *c, const uint8_t *f)
     s_tcp_ack[50] = (uint8_t)(ck >> 8);
     s_tcp_ack[51] = (uint8_t)(ck & 0xFFu);
     s_tcp_ack_len = sizeof(s_tcp_ack);
+    tcp_ack_park_dport(dport, s_tcp_ack, sizeof(s_tcp_ack));
 }
 
 /* TCP branch of net_stack_rx: validate, demux by dport, and queue
@@ -240,12 +283,12 @@ static int tcp_rx_demux(const uint8_t *f, unsigned long len)
         return NET_CLASS_TCP; /* pure ACK: accepted, nothing queued */
     if (seq != t->rcv_nxt || plen > (unsigned long)TCP_MSS_DEFAULT)
     {
-        tcp_ack_build(t, f); /* OOO/dup/oversize: duplicate ACK */
+        tcp_ack_build(t, f, dport); /* OOO/dup/oversize: duplicate ACK */
         return NET_CLASS_TCP;
     }
     if (s_tqcount >= NET_TCP_QDEPTH)
     {
-        tcp_ack_build(t, f); /* full: drop newest, still ACK */
+        tcp_ack_build(t, f, dport); /* full: drop newest, still ACK */
         return NET_CLASS_TCP;
     }
     idx = (s_tqhead + s_tqcount) % NET_TCP_QDEPTH;
@@ -261,7 +304,7 @@ static int tcp_rx_demux(const uint8_t *f, unsigned long len)
     __asm__ volatile("" ::: "memory");
     s_tqcount++;
     t->rcv_nxt += (uint32_t)plen;
-    tcp_ack_build(t, f); /* in-order ACK (ack = new rcv_nxt) */
+    tcp_ack_build(t, f, dport); /* in-order ACK (ack = new rcv_nxt) */
     return NET_CLASS_TCP;
 }
 
@@ -650,4 +693,34 @@ const uint8_t *net_tcp_ack_tx(unsigned long *len_out)
 void net_tcp_ack_clear(void)
 {
     s_tcp_ack_len = 0;
+}
+
+/* Per-dport parked-ACK readout (back-to-back arrivals for different ports
+ * must not clobber each other). Returns frame bytes + len, or 0/0. */
+const uint8_t *net_tcp_ack_tx_for(uint16_t dport, unsigned long *len_out)
+{
+    unsigned i;
+    for (i = 0; i < NET_TCP_ACK_SLOTS; i++) /* bound: 4 */
+    {
+        if (s_tack[i].used && s_tack[i].dport == dport)
+        {
+            if (len_out)
+                *len_out = s_tack[i].len;
+            return s_tack[i].frame;
+        }
+    }
+    if (len_out)
+        *len_out = 0;
+    return 0;
+}
+
+/* Release one port's parked ACK without transmitting. */
+void net_tcp_ack_clear_for(uint16_t dport)
+{
+    unsigned i;
+    for (i = 0; i < NET_TCP_ACK_SLOTS; i++) /* bound: 4 */
+    {
+        if (s_tack[i].used && s_tack[i].dport == dport)
+            s_tack[i].used = 0;
+    }
 }

@@ -2319,9 +2319,20 @@ void net_main(void)
                                 }
                             }
                             unsigned long alen = 0;
-                            const uint8_t *ackf = net_tcp_ack_tx(&alen);
+                            const uint8_t *ackf = 0;
                             unsigned tihl;
                             uint16_t tlocal = 0;
+                            {
+                                /* Per-dport flush (back-to-back arrivals for
+                                 * different ports must not clobber; the
+                                 * legacy global readout stays for tests). */
+                                unsigned fihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
+                                unsigned foff = 14u + fihl;
+                                if (fihl >= 20u && pktlen >= (unsigned long)(foff + 4u))
+                                    tlocal = (uint16_t)(((unsigned)rxcopy[foff + 2] << 8) |
+                                                        (unsigned)rxcopy[foff + 3]);
+                                ackf = net_tcp_ack_tx_for(tlocal, &alen);
+                            }
                             if (ackf &&
                                 alen >=
                                     (unsigned long)ETH_HDR_LEN + (unsigned long)IP_MIN + (unsigned long)TCP_HDR_MIN &&
@@ -2332,7 +2343,7 @@ void net_main(void)
                                     (wire.txf + NET_TX_PAY_OFF)[k] = ackf[k];
                                 (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, alen);
                             }
-                            net_tcp_ack_clear();
+                            net_tcp_ack_clear_for(tlocal);
                             /* Waiter wakeup for the new arrival (the UDP
                              * discipline above, TCP queue): an armed
                              * waiter on this frame's port consumes exactly
