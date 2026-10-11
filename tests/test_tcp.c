@@ -367,7 +367,7 @@ int main(void)
      * single-TCB slice): FIN->ACK and FIN->FIN-ACK enter TIME_WAIT
      * exactly once (no reply frame, linger stamped, waiter held armed
      * across entry for the Task 3 loop wake); a duplicate FIN
-     * in TIME_WAIT drops with no second close; an early FIN-ACK (peer
+     * in TIME_WAIT re-ACKs with no second close; an early FIN-ACK (peer
      * closing before our FIN is ACKed) still closes once; a stale ACK
      * holds FIN_WAIT with the FIN retry untouched ---- */
     {
@@ -397,8 +397,8 @@ int main(void)
         CHECK(t->retry_deadline == NET_TCP_TIME_WAIT_TICKS && t->retry_count == 0u);
         CHECK(net_sock_close(c4) == 0);
         CHECK(net_sock_tcp_bound() < 0);
-        /* FIN -> FIN-ACK closes; duplicate FIN drops with no second
-         * close; the armed waiter disarms (loop wakes it once). */
+        /* FIN -> FIN-ACK closes; duplicate FIN re-ACKs with no second
+         * close (waiter held armed: the loop wakes it once, Task 3). */
         c4 = net_sock_open(NET_SOCK_TCP, 8094, 3);
         CHECK(c4 >= 0);
         t = net_sock_tcp(c4);
@@ -414,7 +414,9 @@ int main(void)
         CHECK(t->state == NET_TCP_TIME_WAIT);
         CHECK(t->retry_deadline == NET_TCP_TIME_WAIT_TICKS && t->retry_count == 0u);
         CHECK(net_waiter_match(8094, &wowner) == c4);
-        CHECK(net_sock_tcp_input(c4, fr, flen, rep, &rl2) == 0);
+        CHECK(net_sock_tcp_input(c4, fr, flen, rep, &rl2) == 1);
+        CHECK(rl2 == sizeof(rep));
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
         CHECK(t->state == NET_TCP_TIME_WAIT);
         CHECK(net_waiter_match(8094, &wowner) == c4);
         CHECK(net_sock_close(c4) == 0);
@@ -432,7 +434,9 @@ int main(void)
         flen = t_mk_tcp(fr, gwmac, rip, 80u, 8095u, t->rcv_nxt, sndf - 1u, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
         CHECK(net_sock_tcp_input(c4, fr, flen, rep, &rl2) == 0);
         CHECK(t->state == NET_TCP_TIME_WAIT);
-        CHECK(net_sock_tcp_input(c4, fr, flen, rep, &rl2) == 0);
+        CHECK(net_sock_tcp_input(c4, fr, flen, rep, &rl2) == 1);
+        CHECK(rl2 == sizeof(rep));
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
         CHECK(t->state == NET_TCP_TIME_WAIT);
         CHECK(net_sock_close(c4) == 0);
         /* Stale pure ACK (pre-FIN edge, no FIN flag) holds FIN_WAIT with
@@ -670,11 +674,14 @@ int main(void)
         CHECK(rl4 == 0);
         CHECK(t->state == NET_TCP_TIME_WAIT);
         CHECK(t->retry_deadline == NET_TCP_TIME_WAIT_TICKS && t->retry_count == 0u);
-        /* Duplicates in TIME_WAIT: drops, holds, no re-close. */
+        /* Duplicates in TIME_WAIT hold, no re-close: bare ACKs drop,
+         * FINs re-ACK. */
         CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 0);
         CHECK(t->state == NET_TCP_TIME_WAIT);
         flen = t_mk_tcp(fr, gwmac, rip, 80u, 8100u, rcv1 - 1u, snd0 + 1u, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
-        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 0);
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 1);
+        CHECK(rl4 == sizeof(rep));
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
         CHECK(t->state == NET_TCP_TIME_WAIT);
         CHECK(net_sock_close(c6) == 0);
         CHECK(net_sock_tcp_bound() < 0);
@@ -823,6 +830,96 @@ int main(void)
             CHECK(t->state == NET_TCP_TIME_WAIT);
         }
         CHECK(net_sock_close(cp) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
+
+    /* ---- TIME_WAIT Task 3: waiter S_ERR-on-entry contract, RST skip,
+     * drained recv (RFC 793 section 3.5): a waiter armed pre-close stays
+     * armed across entry (the loop owes it exactly one S_ERR, then
+     * clears: no double wake); the linger expiry itself never wakes;
+     * RST during linger aborts to CLOSED silently (no ACK parked);
+     * drained recv answers EMPTY. ---- */
+    {
+        int cw;
+        uint32_t sndw;
+        uint64_t tnow = 9000u, dl;
+        unsigned long rlw = 0, alen = 0;
+        unsigned owner = 0;
+        int had = 0;
+        const uint8_t *ackf;
+        cw = net_sock_open(NET_SOCK_TCP, 8105, 3);
+        CHECK(cw >= 0);
+        t = net_sock_tcp(cw);
+        CHECK(t != 0);
+        CHECK(net_sock_tcp_syn(cw, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0xA9u);
+        CHECK(net_sock_tcp_input(cw, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        CHECK(net_sock_fin_close(cw) == 0);
+        CHECK(t->state == NET_TCP_FIN_WAIT);
+        sndw = t->snd_nxt;
+        CHECK(net_waiter_arm(cw, 3, tnow, 50) == 0);
+        rlw = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8105u, t->rcv_nxt, sndw, (uint8_t)TCP_ACK, hello, 0);
+        CHECK(net_sock_tcp_input_at(cw, fr, flen, rep, &rlw, tnow) == 0);
+        CHECK(rlw == 0);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        dl = tnow + (uint64_t)NET_TCP_TIME_WAIT_TICKS;
+        CHECK(t->retry_deadline == dl && t->retry_count == 0u);
+        /* Still armed: the loop owes exactly one S_ERR on this entry. */
+        CHECK(net_waiter_match(8105, &owner) == cw);
+        CHECK(owner == 3u);
+        /* The linger expiry itself never wakes (the entry wake is the
+         * loop's): one tick before the deadline holds with the waiter
+         * untouched. */
+        CHECK(net_sock_tcp_retry_poll(dl - 1u, 50u, &owner, &had) == 0 && had == 0);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        CHECK(net_waiter_match(8105, &owner) == cw);
+        /* The loop's single wake: live owner gets S_ERR, then clear;
+         * no second wake is ever owed. */
+        CHECK(net_sock_owned((long)cw, (unsigned long)owner));
+        net_waiter_clear(cw);
+        CHECK(net_waiter_match(8105, &owner) < 0);
+        /* Drained recv answers EMPTY (S_EMPTY analog), never queued. */
+        trunc = -1;
+        CHECK(net_tcp_recv_from(8105, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        CHECK(net_sock_close(cw) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+        /* RST during linger: the wire demux parks nothing, the seam
+         * aborts to CLOSED silently with no ACK parked and the waiter
+         * disarmed. */
+        net_tcp_ack_clear();
+        cw = net_sock_open(NET_SOCK_TCP, 8106, 3);
+        CHECK(cw >= 0);
+        t = net_sock_tcp(cw);
+        CHECK(t != 0);
+        CHECK(net_sock_tcp_syn(cw, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0xAAu);
+        CHECK(net_sock_tcp_input(cw, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(net_sock_fin_close(cw) == 0);
+        CHECK(t->state == NET_TCP_FIN_WAIT);
+        sndw = t->snd_nxt;
+        CHECK(net_waiter_arm(cw, 3, tnow, 50) == 0);
+        rlw = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8106u, t->rcv_nxt, sndw, (uint8_t)TCP_ACK, hello, 0);
+        CHECK(net_sock_tcp_input_at(cw, fr, flen, rep, &rlw, tnow) == 0);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        CHECK(net_waiter_match(8106, &owner) == cw);
+        rlw = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8106u, t->rcv_nxt, sndw, (uint8_t)(TCP_RST | TCP_ACK), hello, 0);
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        ackf = net_tcp_ack_tx(&alen);
+        CHECK(ackf == 0 && alen == 0);
+        CHECK(net_sock_tcp_input(cw, fr, flen, rep, &rlw) == 0);
+        CHECK(rlw == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
+        CHECK(net_waiter_match(8106, &owner) < 0);
+        /* Repeat RST in CLOSED: still quiet, still no waiter. */
+        CHECK(net_sock_tcp_input(cw, fr, flen, rep, &rlw) == 0);
+        CHECK(rlw == 0);
+        CHECK(net_waiter_match(8106, &owner) < 0);
+        CHECK(net_sock_close(cw) == 0);
         CHECK(net_sock_tcp_bound() < 0);
     }
 

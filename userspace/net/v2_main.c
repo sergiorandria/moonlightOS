@@ -1825,7 +1825,14 @@ void net_main(void)
                         ngot = net_udp_recv_from(net_socks[(int)sid].port, rxcopy, sizeof(rxcopy), 0, 0, &trunc);
                     if (ngot == -(NET_ERR_EMPTY))
                     {
-                        if (to == 0)
+                        struct net_tcp_conn *tw = net_sock_tcp((int)sid);
+                        if (tw && tw->state == NET_TCP_TIME_WAIT)
+                        {
+                            /* Linger (spec Sec 2): waiters never arm in
+                             * TIME_WAIT; a drained S_RECV answers S_EMPTY. */
+                            net_rpc_reply(snd, (uint64_t)S_EMPTY, 0);
+                        }
+                        else if (to == 0)
                         {
                             net_rpc_reply(snd, (uint64_t)S_EMPTY, 0);
                         }
@@ -2134,22 +2141,24 @@ void net_main(void)
                         struct net_tcp_conn *bt = net_sock_tcp(bs);
                         if (bt && bt->state != NET_TCP_ESTABLISHED)
                         {
-                            /* Task 3 close/abort wake (slice Sec 2): the seam
-                             * clears the waiter when input drives the TCB to
-                             * CLOSED (RST abort, or graceful peer-ACK/FIN-ACK
-                             * close), so capture the armed waiter BEFORE the
-                             * call (ports are table-unique, so a port match
-                             * on the bound socket is exact); after a live ->
-                             * CLOSED edge, wake it exactly once with S_ERR
-                             * via ASEND (a blocked reader must not hang on
-                             * a dead connection), gated on the dead-owner
-                             * check (a waiter whose socket closed or re-owned
-                             * since the arm clears without SENDing). A
-                             * graceful close (non-RST frame) additionally
-                             * prints the close (QEMU proof); an RST abort
-                             * stays silent (the boot probe already owns
+                            /* TIME_WAIT entry + abort wake (linger Task 3,
+                             * slice Sec 2): capture the armed waiter BEFORE
+                             * the call (ports are table-unique, so a port
+                             * match on the bound socket is exact). A graceful
+                             * peer-ACK/FIN-ACK close enters TIME_WAIT holding
+                             * the waiter: wake it exactly once with S_ERR via
+                             * ASEND (a blocked reader must not hang on a
+                             * closed connection) and clear, gated on the
+                             * dead-owner check (a waiter whose socket closed
+                             * or re-owned since the arm clears without
+                             * SENDing); the graceful completion prints the
+                             * close here (QEMU proof: the expiry is silent).
+                             * The seam's RST abort to CLOSED clears the
+                             * waiter; the edge below wakes it if still armed,
+                             * staying silent (the boot probe owns
                              * "NET: tcp rst"). */
                             int was_live = (bt->state != NET_TCP_CLOSED);
+                            int was_tw = (bt->state == NET_TCP_TIME_WAIT);
                             unsigned wowner = 0;
                             int wcap = (net_waiter_match(bt->lport, &wowner) == bs);
                             unsigned long replen = 0;
@@ -2157,19 +2166,27 @@ void net_main(void)
                                 net_sock_tcp_input_at(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen, now);
                             if (trc == 1)
                                 (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
+                            if (!was_tw && bt->state == NET_TCP_TIME_WAIT)
+                            {
+                                /* Linger entry (RFC 793 section 3.5): the
+                                 * close completes here; duplicates from here
+                                 * re-ACK through the seam above. Entry frames
+                                 * are ACK/FIN by construction (RST aborts to
+                                 * CLOSED through the seam instead). */
+                                u_puts("NET: tcp close\n");
+                                if (wcap)
+                                {
+                                    if (net_owner_live((long)bs, wowner))
+                                        net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
+                                    net_waiter_clear(bs);
+                                }
+                            }
                             if (was_live && bt->state == NET_TCP_CLOSED)
                             {
-                                /* Graceful vs abort from the frame itself
-                                 * (bounds-checked TCP flags byte; the seam
-                                 * already validated the whole frame). */
-                                unsigned tihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
-                                unsigned toff = 14u + tihl;
-                                int is_rst = 0;
-                                if (tihl >= 20u && pktlen >= (unsigned long)(toff + 14u) &&
-                                    (rxcopy[toff + 13] & (uint8_t)TCP_RST) != 0)
-                                    is_rst = 1;
-                                if (!is_rst)
-                                    u_puts("NET: tcp close\n");
+                                /* RST abort: silent, disarmed by the seam,
+                                 * woken here if still armed (defensive: the
+                                 * entry branch above normally cleared it, and
+                                 * S_RECV never arms in TIME_WAIT). */
                                 if (wcap && net_owner_live((long)bs, wowner))
                                     net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
                             }
