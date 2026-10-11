@@ -2344,6 +2344,43 @@ int main(void)
         CHECK(net_sock_close(A) == 0);
         CHECK(net_sock_close(B) == 0);
     }
+    /* ---- Piggyback FIN payload: in-order FIN|ACK carrying 5 bytes queues
+     * the bytes AND enters CLOSE_WAIT (rcv += plen + 1, single ACK). ---- */
+    {
+        static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
+        static const uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
+        int a;
+        struct net_tcp_conn *t;
+        uint8_t syn[58], sa[58], rep[54], fr[128];
+        unsigned long replen = 0, rl = 0, flen = 0;
+        uint8_t dmac[6], buf[600];
+        uint32_t rip, rcv0;
+        uint32_t sip = 0;
+        uint16_t sport = 0;
+        int trunc = -1, n;
+        net_stack_init();
+        net_arp_init();
+        rip = (uint32_t)NET_IP_GW;
+        CHECK(net_arp_lookup(rip, dmac) == 0);
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t2_establish(a, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        rcv0 = t->rcv_nxt;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv0, t->snd_nxt,
+                          (uint8_t)(TCP_FIN | TCP_ACK), hello, sizeof(hello));
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        CHECK(t->rcv_nxt == rcv0 + (uint32_t)sizeof(hello));
+        n = net_tcp_recv_from(8080, buf, sizeof(buf), &sip, &sport, &trunc);
+        CHECK(n == (int)sizeof(hello) && trunc == 0);
+        CHECK(memcmp(buf, hello, sizeof(hello)) == 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 1);
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        CHECK(t->rcv_nxt == rcv0 + (uint32_t)sizeof(hello) + 1u);
+        CHECK(net_sock_close(a) == 0);
+    }
     puts("PASS: test_net_stack");
     return 0;
 }

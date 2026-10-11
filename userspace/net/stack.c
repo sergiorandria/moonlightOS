@@ -40,7 +40,9 @@ static unsigned s_qcount;
  * In-order PSH/ACK (seq == rcv_nxt, payload <= TCP_MSS_DEFAULT 536)
  * enqueues, advances rcv_nxt, and parks a pure ACK (seq = snd_nxt,
  * ack = new rcv_nxt). OOO, duplicate, oversize, and queue-full arrivals
- * drop the payload but still park the duplicate ACK (current rcv_nxt),
+ * queue a piggyback FIN's payload (stack advances past it; the seam
+ * completes the close), drop anything else's payload but still park
+ * the duplicate ACK (current rcv_nxt),
  * prompting the peer's retransmit. No reassembly buffer in this slice:
  * a dropped segment stalls until the peer retransmits. snd_nxt advances
  * on TX only (RFC 793: RX advances rcv_nxt; the Task 2 send seam owns
@@ -270,13 +272,15 @@ static int tcp_rx_demux(const uint8_t *f, unsigned long len)
         return NET_CLASS_TCP; /* unbound port: silent drop */
     if (t->state != NET_TCP_ESTABLISHED)
         return NET_CLASS_TCP; /* handshake/RST leg owns it (seam) */
-    if (flags & (unsigned)(TCP_SYN | TCP_RST | TCP_FIN))
-        return NET_CLASS_TCP; /* seam owns control flags (no FIN support) */
+    if (flags & (unsigned)(TCP_SYN | TCP_RST))
+        return NET_CLASS_TCP; /* seam owns control flags */
     if (sport != t->rport || sip != t->rip)
         return NET_CLASS_TCP; /* spoof/foreign: silent drop */
     plen = seglen - (unsigned long)doff;
     if (plen == 0)
-        return NET_CLASS_TCP; /* pure ACK: accepted, nothing queued */
+        return NET_CLASS_TCP; /* pure ACK or header-only FIN: seam owns */
+    if ((flags & (unsigned)TCP_FIN) && plen > (unsigned long)TCP_MSS_DEFAULT)
+        return NET_CLASS_TCP; /* jumbo FIN: close wins over pathological bytes (legacy) */
     if (seq != t->rcv_nxt || plen > (unsigned long)TCP_MSS_DEFAULT)
     {
         tcp_ack_build(t, f, dport); /* OOO/dup/oversize: duplicate ACK */
@@ -285,6 +289,10 @@ static int tcp_rx_demux(const uint8_t *f, unsigned long len)
     if (s_tqcount >= NET_TCP_QDEPTH)
     {
         tcp_ack_build(t, f, dport); /* full: drop newest, still ACK */
+        if (flags & (unsigned)TCP_FIN)
+            return NET_CLASS_DROP; /* no room for FIN bytes: whole segment
+                                    * waits for retransmit (never close
+                                    * without its data) */
         return NET_CLASS_TCP;
     }
     idx = (s_tqhead + s_tqcount) % NET_TCP_QDEPTH;
@@ -300,6 +308,10 @@ static int tcp_rx_demux(const uint8_t *f, unsigned long len)
     __asm__ volatile("" ::: "memory");
     s_tqcount++;
     t->rcv_nxt += (uint32_t)plen;
+    if (flags & (unsigned)TCP_FIN)
+        return NET_CLASS_TCP; /* piggyback queued: the seam's CLOSE_WAIT
+                               * entry ACK (ack = rcv + 1) covers payload
+                               * and FIN at once -- no stack ACK here */
     tcp_ack_build(t, f, dport); /* in-order ACK (ack = new rcv_nxt) */
     return NET_CLASS_TCP;
 }
