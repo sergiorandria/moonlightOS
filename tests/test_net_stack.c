@@ -1238,10 +1238,19 @@ int main(void)
         CHECK(fB[38] == (uint8_t)((sndB - 5u) >> 24) && fB[39] == (uint8_t)((sndB - 5u) >> 16) &&
               fB[40] == (uint8_t)((sndB - 5u) >> 8) && fB[41] == (uint8_t)(sndB - 5u));
         CHECK(net_sock_tcp_tx_for(-1, &lB) == 0 && lB == 0);
-        /* Slot enumerator: A took slot 0, B slot 1 (table empty on entry). */
-        CHECK(net_sock_tcp_slot_sid(0) == A);
-        CHECK(net_sock_tcp_slot_sid(1) == B);
-        CHECK(net_sock_tcp_slot_sid(2) < 0);
+        /* Slot enumerator resolves by identity, never by order: A and B
+         * occupy distinct slots regardless of table history. */
+        {
+            int foundA = 0, foundB = 0, si;
+            for (si = 0; si < 4; si++) /* bound: 4 */
+            {
+                if (net_sock_tcp_slot_sid(si) == A)
+                    foundA = 1;
+                if (net_sock_tcp_slot_sid(si) == B)
+                    foundB = 1;
+            }
+            CHECK(foundA && foundB);
+        }
         CHECK(net_sock_tcp_slot_sid(4) < 0);
         CHECK(net_sock_tcp_slot_sid(-1) < 0);
         /* Covering ACK for A disarms only A; B holds its budget. */

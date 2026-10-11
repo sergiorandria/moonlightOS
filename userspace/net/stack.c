@@ -9,7 +9,7 @@
 #include "eth.h"
 #include "sock.h" /* TCP demux: net_sock_demux (bound-socket gate) */
 
-/* sock.c owns the single TCB; sock.h intentionally omits the bind API
+/* sock.c owns the 4-entry per-socket TCB table; sock.h intentionally omits the bind API
  * (Task 2 single-TU rationale: both consumers include sock.c), so the
  * one accessor used here is declared locally. */
 struct net_tcp_conn *net_sock_tcp(int id);

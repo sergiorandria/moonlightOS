@@ -94,7 +94,7 @@
 
 /* Net socket RPC tags on ep 6 (spec Sec 2, above T_DONE):
  *   S_OPEN    [S_OPEN, kind, port, 0]  -> [S_OK, id, 0, 0] / [S_ERR, 0,0,0]
- *     (kind TCP binds the single TCB, CLOSED until the SYN leg arms it;
+ *     (kind TCP binds one entry of the 4-entry per-socket TCB table, CLOSED until the SYN leg arms it;
  *     a second TCP open while the TCB is live answers S_ERR, never
  *     aliasing it)
  *   S_SEND    [S_SEND, sock, ip, port] -> [S_OK, 0,0,0] (routing phase only)
@@ -1092,7 +1092,7 @@ static void net_boot_ping(struct net_wire *w, uint8_t *tmp, unsigned long tcap, 
 /* Boot active open (TCP slice): one SYN to the gateway port 80 after the
  * self-ping, ~2s self-polled wait matching SYN-ACK by ports/ack. Prints
  * "NET: tcp open", "NET: tcp rst" (SLIRP refuses closed ports: still a
- * live round-trip), or "NET: tcp timeout"; never parks. The single TCB
+ * live round-trip), or "NET: tcp timeout"; never parks. One table entry
  * binds to a boot TCP socket through the sock seam (same MSS 536 via
  * tcp.h, same rdtime ISS source); the socket closes on every outcome
  * (open, RST, timeout), releasing the TCB so later S_OPEN TCP clients
@@ -1702,7 +1702,7 @@ void net_main(void)
                 /* S_OPEN [S_OPEN, kind, port, 0]: UDP or TCP table entry;
                  * duplicate bind and a full fair-share pool fail via
                  * error reply, never a wedge. A TCP open binds the
-                 * single TCB (CLOSED until the SYN leg arms it); a
+                 * one table entry (CLOSED until the SYN leg arms it); a
                  * second TCP open while the TCB is live fails closed.
                  * Owner is the kernel-stamped sender tid. */
                 uint64_t kind = buf[1];
@@ -2254,9 +2254,16 @@ void net_main(void)
                                     unsigned long replen = 0;
                                     (void)net_sock_tcp_input_at(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen,
                                                                 now);
-                                    if (was_live && bt->state == NET_TCP_CLOSED && wcap &&
-                                        net_owner_live((long)bs, wowner))
-                                        net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
+                                    if (was_live && bt->state == NET_TCP_CLOSED)
+                                    {
+                                        if (wcap && net_owner_live((long)bs, wowner))
+                                            net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
+                                        /* Defensive: the seam clears on
+                                         * CLOSED, so this is a no-op today;
+                                         * it keeps the loop self-sufficient
+                                         * if that contract ever changes. */
+                                        net_waiter_clear(bs);
+                                    }
                                 }
                             }
                             /* Passive-close entry (slice Sec 2, RFC 793 section 3.5):

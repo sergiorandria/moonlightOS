@@ -1,5 +1,6 @@
 /* userspace/net/tcp.h - TCP handshake + active close (RFC 793, lwIP-grounded:
- * single TCB, active open, RST abort, FIN_WAIT). Pure C, libc-free for
+ * 4-entry per-socket TCB table, active open, RST abort, FIN_WAIT). Pure C,
+ * libc-free for
  * freestanding use. Data/stream support is explicitly out of scope for
  * this slice. */
 #ifndef NET_TCP_H
