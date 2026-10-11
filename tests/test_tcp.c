@@ -224,10 +224,62 @@ int main(void)
         CHECK(net_sock_send(a, big, sizeof(big)) < 0);
         CHECK(t->snd_nxt == snd0 + 5u);
     }
-    /* Single live TCB: second concurrent TCP open fails closed. */
+    /* Multi-TCB: second concurrent TCP open binds its own entry (RFC 793
+     * one state machine per connection). a stays ESTABLISHED on 8080;
+     * 8081 establishes alongside with independent snd_nxt. */
     b2 = net_sock_open(NET_SOCK_TCP, 8081, 2);
-    CHECK(b2 < 0);
-    CHECK(net_sock_demux(8081) < 0);
+    CHECK(b2 >= 0);
+    CHECK(net_sock_demux(8081) == b2);
+    {
+        struct net_tcp_conn *t2;
+        uint32_t iss2 = 0x0A0B0C0Du;
+        unsigned long synlen2 = 0;
+        uint8_t syn2[14 + 20 + 24];
+        uint8_t sa2[14 + 20 + 24];
+        unsigned long replen2 = 0;
+        t2 = net_sock_tcp(b2);
+        CHECK(t2 != 0);
+        CHECK(t2 != t);
+        CHECK(t2->state == NET_TCP_CLOSED);
+        CHECK(net_sock_tcp_bound() == a); /* first live entry */
+        CHECK(net_sock_tcp_syn(b2, dmac, rip, 80u, iss2, syn2, &synlen2) == 0);
+        CHECK(t2->state == NET_TCP_SYN_SENT && t2->snd_nxt == iss2 + 1u);
+        CHECK(t->state == NET_TCP_ESTABLISHED); /* a untouched by b2 SYN */
+        t_mk_synack(syn2, sa2, peer, iss2, 0x1Fu, 0x91u);
+        CHECK(net_sock_tcp_input(b2, sa2, sizeof(sa2), rep, &replen2) == 1);
+        CHECK(t2->state == NET_TCP_ESTABLISHED);
+        CHECK(t2->snd_nxt == iss2 + 1u);
+        CHECK(t->snd_nxt != t2->snd_nxt); /* independent seq */
+        /* Close of one leaves the other live with waiter intact. */
+        CHECK(net_waiter_arm(a, 1, 1000, 50) == 0);
+        CHECK(net_sock_close(b2) == 0);
+        CHECK(net_sock_tcp(b2) == 0);
+        CHECK(net_sock_demux(8081) < 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0 && t->state == NET_TCP_ESTABLISHED);
+        CHECK(net_sock_tcp_bound() == a);
+        CHECK(net_waiter_match(8080, &wowner) == a);
+        CHECK(wowner == 1);
+        net_waiter_clear(a);
+    }
+    /* Fair-share: 4 concurrent TCP opens hold; 5th fails closed. */
+    {
+        int e1, e2, e3;
+        e1 = net_sock_open(NET_SOCK_TCP, 8081, 2);
+        CHECK(e1 >= 0);
+        e2 = net_sock_open(NET_SOCK_TCP, 8082, 2);
+        CHECK(e2 >= 0);
+        e3 = net_sock_open(NET_SOCK_TCP, 8083, 2);
+        CHECK(e3 >= 0);
+        CHECK(net_sock_open(NET_SOCK_TCP, 8084, 2) < 0);
+        CHECK(net_sock_demux(8084) < 0);
+        CHECK(net_sock_close(e1) == 0);
+        CHECK(net_sock_close(e2) == 0);
+        CHECK(net_sock_close(e3) == 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0 && t->state == NET_TCP_ESTABLISHED);
+        CHECK(net_sock_tcp_bound() == a);
+    }
 
     /* ---- RX demux: in-order PSH/ACK queues, wakes the waiter once ---- */
     {
@@ -334,7 +386,14 @@ int main(void)
         CHECK(net_ip_checksum(fin + 14, 20) == 0u);
         CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, fin + 34, 20) == 0u);
         CHECK(net_sock_tcp_bound() == c2); /* bind held in FIN_WAIT */
-        CHECK(net_sock_open(NET_SOCK_TCP, 8091, 4) < 0);
+        /* Per-socket table: an unrelated open binds its own entry. */
+        {
+            int extra = net_sock_open(NET_SOCK_TCP, 8091, 4);
+            CHECK(extra >= 0);
+            CHECK(net_sock_tcp(extra) != 0);
+            CHECK(net_sock_tcp(c2) == t);
+            CHECK(net_sock_close(extra) == 0);
+        }
         CHECK(net_sock_send(c2, hello, sizeof(hello)) < 0); /* FIN_WAIT: no new data */
         /* RST in FIN_WAIT aborts to CLOSED and disarms the waiter. */
         CHECK(net_waiter_arm(c2, 3, 1000, 50) == 0);

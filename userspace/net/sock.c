@@ -1,7 +1,7 @@
 /* userspace/net/sock.c - Socket table with port demux. UDP + TCP. */
 #include "sock.h"
 
-#include "tcp.h" /* single-TCB bind + MSS/state constants (RFC 793 handshake) */
+#include "tcp.h" /* per-entry TCB bind + MSS/state constants (RFC 793 handshake) */
 
 /* 1-slot fair-share: each open socket owns one slot carved from the
  * 4-slot datagram queue, so the 5th concurrent open fails. */
@@ -9,19 +9,24 @@
 
 static net_sock_t net_socks[NET_SOCK_MAX];
 
-/* Single-TCB bind (seam design Sec 3, lwIP single-TCB shape): one live TCB
- * shared by every TCP socket. It binds to the socket id at TCP open (state
- * CLOSED) and releases at close; while bound to a live socket no second
- * TCP open succeeds (fail closed, additive to the fair-share bound above).
- * The boot SYN proof (v2_main net_boot_tcp) and the S_OPEN/S_SEND RPC legs
- * drive the same bind (same MSS 536 via tcp.h, same rdtime ISS source at
- * the caller). */
-static struct net_tcp_conn net_tcb;
-static int net_tcb_sock = -1; /* bound socket id, -1 when free */
+/* Per-socket TCB table (design Sec 1, RFC 793 one state machine per
+ * connection; lwIP multi-PCB shape): each of the NET_TCP_MAX entries
+ * binds to its socket id (-1 when free). At most 4 TCP sockets open
+ * concurrently under the fair-share bound above, so the array never
+ * overflows -- no LRU, no steal. S_CLOSE frees only its entry; RST
+ * aborts only its entry. Port uniqueness stays table-wide across kinds
+ * (checked in net_sock_open). The boot SYN proof (v2_main net_boot_tcp)
+ * and the S_OPEN/S_SEND RPC legs drive a per-entry bind (same MSS 536
+ * via tcp.h, same rdtime ISS source at the caller). */
+static struct net_tcp_conn net_tcbs[NET_TCP_MAX];
+static int net_tcb_sock[NET_TCP_MAX] = {-1, -1, -1, -1}; /* bound socket id, -1 when free */
 
 /* Last TCP segment emitted by net_sock_send (the send seam has no frame
  * out-param, so the frame parks here; total <= 1514, payload <= 536). The
- * wire TX path copies it out via net_sock_tcp_tx before transmitting. */
+ * wire TX path copies it out via net_sock_tcp_tx before transmitting.
+ * Task 1 slice: still a single shared slot (per-entry TX + retry
+ * iteration land in Task 2); the table already isolates state/seq per
+ * entry. */
 static uint8_t net_tcp_tx[1514];
 static unsigned long net_tcp_tx_len;
 
@@ -31,22 +36,51 @@ static unsigned long net_tcp_tx_len;
  * poll below only counts expiries against this cap. */
 #define NET_TCP_RETRY_MAX 5u
 
-/* Bound TCB for a socket, or 0 when the socket is unused, non-TCP, or not
- * the bind holder. Callers drive the RFC 793 handshake (net_tcp_syn /
+/* Slot holding socket id, or -1 when unbound. */
+static int tcb_slot_for(int id)
+{
+    int i;
+    for (i = 0; i < NET_TCP_MAX; i++) /* bound: 4 */
+    {
+        if (net_tcb_sock[i] == id)
+            return i;
+    }
+    return -1;
+}
+
+/* Bound TCB for a socket, or 0 when the socket is unused, non-TCP, or
+ * has no entry. Callers drive the RFC 793 handshake (net_tcp_syn /
  * net_tcp_input) or the sock wrappers on the returned TCB. */
 struct net_tcp_conn *net_sock_tcp(int id)
 {
+    int slot;
     if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
         return 0;
-    if (id != net_tcb_sock)
+    if (net_socks[id].kind != NET_SOCK_TCP)
         return 0;
-    return &net_tcb;
+    slot = tcb_slot_for(id);
+    if (slot < 0)
+        return 0;
+    return &net_tcbs[slot];
 }
 
-/* Socket id holding the single TCB, or -1 when free. */
+/* First bound socket id in table order, or -1 when no TCP entry is
+ * live (no open TCP socket holds an entry). */
 int net_sock_tcp_bound(void)
 {
-    return net_tcb_sock;
+    int i;
+    for (i = 0; i < NET_TCP_MAX; i++) /* bound: 4 */
+    {
+        int sid = net_tcb_sock[i];
+        if (sid < 0 || sid >= NET_SOCK_MAX)
+            continue;
+        if (!net_socks[sid].used)
+            continue;
+        if (net_socks[sid].kind != NET_SOCK_TCP)
+            continue;
+        return sid;
+    }
+    return -1;
 }
 
 /* One waiter per socket slot, indexed by sock_id. Absolute deadline
@@ -67,20 +101,24 @@ int net_sock_open(unsigned kind, uint16_t port, unsigned owner)
 {
     unsigned i;
     unsigned used = 0;
+    int slot;
     if (kind != NET_SOCK_UDP && kind != NET_SOCK_TCP)
         return -1;
     if (kind == NET_SOCK_TCP)
     {
-        /* Single live TCB guard (additive to fair-share): while the TCB
-         * is live (bound to an open socket past CLOSED, linger included)
-         * a second concurrent TCP open fails closed, never aliasing the
-         * TCB. CLOSED-bound sockets do not block Task-1 fair-share vectors:
-         * the bind moves to the new opener at alloc below. A TIME_WAIT
-         * linger blocks ALL new opens until expiry frees the TCB to
-         * CLOSED (spec Sec 2): the lingering socket keeps its port and
-         * its duplicate-ACK duty for the remaining 2MSL. */
-        if (net_tcb_sock >= 0 && net_tcb_sock < NET_SOCK_MAX && net_socks[net_tcb_sock].used &&
-            net_socks[net_tcb_sock].kind == NET_SOCK_TCP && net_tcb.state != NET_TCP_CLOSED)
+        /* Table-full guard (additive to fair-share): with 4 concurrent
+         * TCP opens every entry is bound, so a 5th fails closed without
+         * touching any live entry. Unreachable via fair-share alone
+         * (4 sockets max), kept as defense-in-depth. Each entry's
+         * TIME_WAIT linger blocks only its own port (the lingering
+         * socket keeps the port, so the duplicate-port scan above
+         * rejects rebinds of that port until close). */
+        for (slot = 0; slot < NET_TCP_MAX; slot++) /* bound: 4 */
+        {
+            if (net_tcb_sock[slot] < 0)
+                break;
+        }
+        if (slot >= NET_TCP_MAX)
             return -1;
     }
     for (i = 0; i < NET_SOCK_MAX; i++)
@@ -103,18 +141,33 @@ int net_sock_open(unsigned kind, uint16_t port, unsigned owner)
         net_socks[i].owner = owner;
         if (kind == NET_SOCK_TCP)
         {
-            /* Bind the single TCB, CLOSED until the SYN leg arms it. */
-            net_tcb_sock = (int)i;
-            net_tcb.state = NET_TCP_CLOSED;
-            net_tcb.iss = 0u;
-            net_tcb.irs = 0u;
-            net_tcb.snd_nxt = 0u;
-            net_tcb.rcv_nxt = 0u;
-            net_tcb.lport = port;
-            net_tcb.rport = 0u;
-            net_tcb.rip = 0u;
-            net_tcb.retry_deadline = 0u;
-            net_tcb.retry_count = 0u;
+            /* Bind a free entry, CLOSED until the SYN leg arms it. The
+             * table-full guard above guarantees a free slot; re-scan
+             * and roll back the socket on the unreachable miss. */
+            for (slot = 0; slot < NET_TCP_MAX; slot++) /* bound: 4 */
+            {
+                if (net_tcb_sock[slot] < 0)
+                    break;
+            }
+            if (slot >= NET_TCP_MAX)
+            {
+                net_socks[i].used = 0;
+                net_socks[i].kind = NET_SOCK_NONE;
+                net_socks[i].port = 0;
+                net_socks[i].owner = 0;
+                return -1;
+            }
+            net_tcb_sock[slot] = (int)i;
+            net_tcbs[slot].state = NET_TCP_CLOSED;
+            net_tcbs[slot].iss = 0u;
+            net_tcbs[slot].irs = 0u;
+            net_tcbs[slot].snd_nxt = 0u;
+            net_tcbs[slot].rcv_nxt = 0u;
+            net_tcbs[slot].lport = port;
+            net_tcbs[slot].rport = 0u;
+            net_tcbs[slot].rip = 0u;
+            net_tcbs[slot].retry_deadline = 0u;
+            net_tcbs[slot].retry_count = 0u;
         }
         return (int)i;
     }
@@ -123,17 +176,19 @@ int net_sock_open(unsigned kind, uint16_t port, unsigned owner)
 
 int net_sock_close(int id)
 {
+    int slot;
     if (id < 0 || id >= NET_SOCK_MAX)
         return -1;
     if (!net_socks[id].used)
         return -1;
-    if (id == net_tcb_sock)
+    slot = tcb_slot_for(id);
+    if (slot >= 0)
     {
-        /* Release the single TCB for the next TCP open. */
-        net_tcb_sock = -1;
-        net_tcb.state = NET_TCP_CLOSED;
-        net_tcb.retry_deadline = 0u;
-        net_tcb.retry_count = 0u;
+        /* Release only this socket's entry for the next TCP open. */
+        net_tcb_sock[slot] = -1;
+        net_tcbs[slot].state = NET_TCP_CLOSED;
+        net_tcbs[slot].retry_deadline = 0u;
+        net_tcbs[slot].retry_count = 0u;
     }
     net_socks[id].used = 0;
     net_socks[id].kind = NET_SOCK_NONE;
@@ -170,12 +225,11 @@ int net_sock_tcp_syn(int id, const uint8_t *dmac, uint32_t rip, uint16_t rport, 
                      unsigned long *outlen)
 {
     uint16_t lport;
-    if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
-        return -1;
-    if (net_socks[id].kind != NET_SOCK_TCP || id != net_tcb_sock)
+    struct net_tcp_conn *c = net_sock_tcp(id);
+    if (!c)
         return -1;
     lport = net_socks[id].port;
-    return net_tcp_syn(&net_tcb, dmac, rip, rport, lport, iss, out, outlen);
+    return net_tcp_syn(c, dmac, rip, rport, lport, iss, out, outlen);
 }
 
 /* TIME_WAIT duplicate-ACK (design Sec 2, RFC 793 section 3.5): a valid
@@ -241,13 +295,12 @@ int net_sock_tcp_input_at(int id, const uint8_t *f, unsigned long len, uint8_t *
     int rc;
     int was_syn_sent;
     int was_time_wait;
-    if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
+    struct net_tcp_conn *c = net_sock_tcp(id);
+    if (!c)
         return -1;
-    if (net_socks[id].kind != NET_SOCK_TCP || id != net_tcb_sock)
-        return -1;
-    was_syn_sent = (net_tcb.state == NET_TCP_SYN_SENT);
-    was_time_wait = (net_tcb.state == NET_TCP_TIME_WAIT);
-    rc = net_tcp_input_at(&net_tcb, f, len, out, outlen, now);
+    was_syn_sent = (c->state == NET_TCP_SYN_SENT);
+    was_time_wait = (c->state == NET_TCP_TIME_WAIT);
+    rc = net_tcp_input_at(c, f, len, out, outlen, now);
     if (rc == 1 && was_syn_sent)
     {
         /* SYN-ACK accepted (SYN_SENT -> ESTABLISHED): the SYN retry budget
@@ -257,16 +310,16 @@ int net_sock_tcp_input_at(int id, const uint8_t *f, unsigned long len, uint8_t *
          * other state (Task 3 peer-ACK close) must leave that state's
          * retry budget alone. The CLOSED abort below already disarmed via
          * tcp.h; only handshake success needs this. */
-        net_tcb.retry_deadline = 0u;
-        net_tcb.retry_count = 0u;
+        c->retry_deadline = 0u;
+        c->retry_count = 0u;
     }
-    if (net_tcb.state == NET_TCP_CLOSED)
+    if (c->state == NET_TCP_CLOSED)
         net_waiter_clear(id);
-    if (rc == 0 && was_time_wait && net_tcb.state == NET_TCP_TIME_WAIT)
+    if (rc == 0 && was_time_wait && c->state == NET_TCP_TIME_WAIT)
     {
         /* Already lingering when the frame arrived (the closing frame
          * itself keeps the bare-close rc 0): duplicate data/FIN re-ACKs. */
-        rc = net_sock_tw_ack(&net_tcb, f, len, out, outlen);
+        rc = net_sock_tw_ack(c, f, len, out, outlen);
     }
     return rc;
 }
@@ -536,30 +589,27 @@ static int tcp_rst_build(struct net_tcp_conn *c, uint8_t *out, unsigned long *ou
 int net_sock_send(int id, const uint8_t *buf, unsigned long len)
 {
     unsigned long flen = 0;
-    if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
+    struct net_tcp_conn *c = net_sock_tcp(id);
+    if (!c)
         return -1;
-    if (net_socks[id].kind != NET_SOCK_TCP)
-        return -1;
-    if (id != net_tcb_sock)
-        return -1;
-    if (net_tcb.state == NET_TCP_TIME_WAIT)
+    if (c->state == NET_TCP_TIME_WAIT)
         return -1; /* linger: no new data, snd_nxt untouched */
-    if (net_tcb.state != NET_TCP_ESTABLISHED)
+    if (c->state != NET_TCP_ESTABLISHED)
         return -1;
-    if (net_tcb.retry_deadline != 0u)
+    if (c->retry_deadline != 0u)
         return -1;
     if (len < 1 || len > (unsigned long)TCP_MSS_DEFAULT)
         return -1;
     if (!buf)
         return -1;
-    if (tcp_data_build(&net_tcb, buf, len, net_tcp_tx, &flen) != 0)
+    if (tcp_data_build(c, buf, len, net_tcp_tx, &flen) != 0)
         return -1;
     net_tcp_tx_len = flen;
     /* Fresh frame, fresh budget: clear any stale retry state, still
      * unarmed (the TX pass arms the deadline after transmitting, per the
      * tcp.h convention; a covering ACK disarms via ack_cover below). */
-    net_tcb.retry_deadline = 0u;
-    net_tcb.retry_count = 0u;
+    c->retry_deadline = 0u;
+    c->retry_count = 0u;
     return (int)len;
 }
 
@@ -570,41 +620,39 @@ int net_sock_send(int id, const uint8_t *buf, unsigned long len)
  * deadline on the TX pass, so the deadline stays unarmed here) and
  * enters FIN_WAIT; CLOSE_WAIT (passive close: the peer FIN is already
  * ACKed, our FIN pending) emits the same header-only FIN|ACK and enters
- * LAST_ACK. Both keep the socket open and bound: a second concurrent TCP
- * open still fails closed and S_SEND stays gated off. A socket already
- * in LAST_ACK answers success at once (idempotent close: no second FIN
- * is parked, snd_nxt holds -- the RPC layer maps this to S_OK, mirroring
- * its FIN_WAIT branch). A parked unacked frame (retry armed by the TX
- * pass) still owns the single TX slot, so building FIN here would
- * silently drop data: that close is rejected with -1 and changes nothing
- * (close after the covering ACK disarms, or after exhaustion aborts).
- * Any other gate failure (bad id, unbound, non-TCP, FIN_WAIT/CLOSED /
- * SYN_SENT state, ARP miss) emits nothing and changes nothing. Returns
- * 0 on FIN entry or idempotent LAST_ACK, -1 otherwise. */
+ * LAST_ACK. Both keep the socket open and its entry bound: unrelated
+ * sockets keep their own entries and S_SEND stays gated off per entry.
+ * A socket already in LAST_ACK answers success at once (idempotent
+ * close: no second FIN is parked, snd_nxt holds -- the RPC layer maps
+ * this to S_OK, mirroring its FIN_WAIT branch). A parked unacked frame
+ * (retry armed by the TX pass) still owns the single TX slot, so
+ * building FIN here would silently drop data: that close is rejected
+ * with -1 and changes nothing (close after the covering ACK disarms, or
+ * after exhaustion aborts). Any other gate failure (bad id, unbound,
+ * non-TCP, FIN_WAIT/CLOSED / SYN_SENT state, ARP miss) emits nothing and
+ * changes nothing. Returns 0 on FIN entry or idempotent LAST_ACK, -1
+ * otherwise. */
 int net_sock_fin_close(int id)
 {
     unsigned long flen = 0;
     int passive = 0;
-    if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
+    struct net_tcp_conn *c = net_sock_tcp(id);
+    if (!c)
         return -1;
-    if (net_socks[id].kind != NET_SOCK_TCP)
-        return -1;
-    if (id != net_tcb_sock)
-        return -1;
-    if (net_tcb.state == NET_TCP_LAST_ACK)
+    if (c->state == NET_TCP_LAST_ACK)
         return 0;
-    if (net_tcb.state == NET_TCP_CLOSE_WAIT)
+    if (c->state == NET_TCP_CLOSE_WAIT)
         passive = 1;
-    else if (net_tcb.state != NET_TCP_ESTABLISHED)
+    else if (c->state != NET_TCP_ESTABLISHED)
         return -1;
-    if (net_tcb.retry_deadline != 0u)
+    if (c->retry_deadline != 0u)
         return -1;
-    if (tcp_fin_build(&net_tcb, net_tcp_tx, &flen) != 0)
+    if (tcp_fin_build(c, net_tcp_tx, &flen) != 0)
         return -1;
     net_tcp_tx_len = flen;
-    net_tcb.state = passive ? NET_TCP_LAST_ACK : NET_TCP_FIN_WAIT;
-    net_tcb.retry_deadline = 0u;
-    net_tcb.retry_count = 0u;
+    c->state = passive ? NET_TCP_LAST_ACK : NET_TCP_FIN_WAIT;
+    c->retry_deadline = 0u;
+    c->retry_count = 0u;
     return 0;
 }
 
@@ -661,14 +709,16 @@ int net_sock_tcp_ack_cover(int id, uint32_t ack)
 }
 
 /* Per-pass retry due check (design Sec 2, RFC 793 section 3.7: same pass
- * that pumps RX). Wrap-safe unsigned compare, as the waiter expiry. On a
- * due expiry with budget left the parked frame is resent verbatim (bytes
- * untouched, snd_nxt holds) and the deadline re-arms; on the 5th due
- * expiry (count already at NET_TCP_RETRY_MAX - 1) the TCB RST-aborts to
- * CLOSED with a header-only RST|ACK parked for the wire pass, the retry
- * state disarms, and the bound socket's waiter (if armed) is captured for
- * the caller's single S_ERR wake and cleared. A TIME_WAIT linger never
- * resends: past its deadline (wrap-safe compare) the TCB falls to CLOSED
+ * that pumps RX). Task 1 slice: polls the first bound entry only (per-
+ * entry iteration lands in Task 2). Wrap-safe unsigned compare, as the
+ * waiter expiry. On a due expiry with budget left the parked frame is
+ * resent verbatim (bytes untouched, snd_nxt holds) and the deadline
+ * re-arms; on the 5th due expiry (count already at NET_TCP_RETRY_MAX - 1)
+ * the entry RST-aborts to CLOSED with a header-only RST|ACK parked for
+ * the wire pass, the retry state disarms, and that entry's socket waiter
+ * (if armed) is captured for the caller's single S_ERR wake and cleared.
+ * A TIME_WAIT linger never resends: past its deadline (wrap-safe compare)
+ * the entry falls to CLOSED
  * with the retry disarmed (return 0, outs zeroed), freeing the port for
  * rebind; the socket stays open for an explicit close and no waiter
  * wakes (the entry wake is Task 3). Returns 0 (nothing due),

@@ -11,6 +11,11 @@
 #define NET_SOCK_UDP 1
 #define NET_SOCK_TCP 2
 
+/* Per-socket TCB table depth (design Sec 1, RFC 793 one state machine
+ * per connection): at most 4 TCP sockets open concurrently under the
+ * sock.c fair-share bound, so 4 entries never overflow. */
+#define NET_TCP_MAX 4
+
 typedef struct
 {
     uint8_t kind;
