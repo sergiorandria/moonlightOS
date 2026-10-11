@@ -1161,7 +1161,7 @@ static void net_boot_tcp(struct net_wire *w, uint8_t *tmp, unsigned long tcap, u
                 }
                 else if (cls == NET_CLASS_TCP)
                 {
-                    rc = net_sock_tcp_input(bs, tmp, pktlen, w->txf + NET_TX_PAY_OFF, &replen);
+                    rc = net_sock_tcp_input_at(bs, tmp, pktlen, w->txf + NET_TX_PAY_OFF, &replen, u_rdtime());
                     if (rc == 1)
                     {
                         (void)net_tx_frame(w, w->txf + NET_TX_PAY_OFF, replen);
@@ -1499,7 +1499,8 @@ void net_main(void)
          * verbatim; exhaustion parks an RST|ACK, aborts the TCB to CLOSED,
          * and wakes the armed waiter once with S_ERR via ASEND (the poll
          * already cleared it, so this fires exactly once; the socket stays
-         * open for an explicit close). Arming happens on the TX passes
+         * open for an explicit close). A TIME_WAIT linger expires silently
+         * here (no frame, no wake: the port frees for rebind). Arming happens on the TX passes
          * above, never here, so resends never reset the retry budget. */
         {
             unsigned r_owner = 0;
@@ -2152,7 +2153,8 @@ void net_main(void)
                             unsigned wowner = 0;
                             int wcap = (net_waiter_match(bt->lport, &wowner) == bs);
                             unsigned long replen = 0;
-                            int trc = net_sock_tcp_input(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen);
+                            int trc =
+                                net_sock_tcp_input_at(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen, now);
                             if (trc == 1)
                                 (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
                             if (was_live && bt->state == NET_TCP_CLOSED)
@@ -2203,7 +2205,8 @@ void net_main(void)
                                     unsigned wowner = 0;
                                     int wcap = (net_waiter_match(bt->lport, &wowner) == bs);
                                     unsigned long replen = 0;
-                                    (void)net_sock_tcp_input(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen);
+                                    (void)net_sock_tcp_input_at(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen,
+                                                                now);
                                     if (was_live && bt->state == NET_TCP_CLOSED && wcap &&
                                         net_owner_live((long)bs, wowner))
                                         net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
@@ -2243,7 +2246,8 @@ void net_main(void)
                                                                     (uint32_t)rxcopy[foff + 11]);
                                         (void)net_sock_tcp_ack_cover(bs, ftack);
                                     }
-                                    trc = net_sock_tcp_input(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen);
+                                    trc = net_sock_tcp_input_at(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen,
+                                                                now);
                                     if (trc == 1)
                                         (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
                                 }

@@ -1663,16 +1663,17 @@ int main(void)
         CHECK(rl == 0);
         CHECK(t->state == NET_TCP_LAST_ACK);
         CHECK(t->retry_deadline == t0 + sp && t->retry_count == 0u);
-        /* Covering ACK of our FIN: closes exactly once, retry disarmed. */
+        /* Covering ACK of our FIN: enters the linger (legacy now = 0
+         * stamp: deadline = NET_TCP_TIME_WAIT_TICKS), never CLOSED. */
         rl = 0;
         flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1, snd0 + 1u, (uint8_t)TCP_ACK, hello, 0);
         CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0);
         CHECK(rl == 0);
-        CHECK(t->state == NET_TCP_CLOSED);
-        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
-        /* Duplicate covering ACK after CLOSED: drops, no second close. */
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        CHECK(t->retry_deadline == NET_TCP_TIME_WAIT_TICKS && t->retry_count == 0u);
+        /* Duplicate covering ACK in TIME_WAIT: drops (bare ACK), holds. */
         CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0);
-        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
         CHECK(net_sock_close(a) == 0);
         CHECK(net_sock_tcp_bound() < 0);
         /* FIN exhaustion from LAST_ACK: expiries 1-4 resend the FIN
@@ -1849,9 +1850,126 @@ int main(void)
         rl = 0;
         flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1, snd0 + 1u, (uint8_t)TCP_ACK, hello, 0);
         CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        CHECK(t->retry_deadline == NET_TCP_TIME_WAIT_TICKS && t->retry_count == 0u);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0); /* duplicate bare ACK: drops, holds */
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        CHECK(net_sock_close(a) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
+    /* ---- TIME_WAIT linger Task 2: duplicate-ACK + expiry + port reserve
+     * (RFC 793 section 3.5, 2MSL = NET_TCP_TIME_WAIT_TICKS): duplicate
+     * FIN/data re-ACK without state change; expiry one tick before the
+     * deadline holds, at the deadline falls to CLOSED; the lingering
+     * port refuses open while a different port still opens. ---- */
+    {
+        static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
+        static const uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
+        int a, b2;
+        struct net_tcp_conn *t;
+        uint8_t syn[58], sa[58], rep[54], fr[128];
+        unsigned long replen = 0, rl = 0, flen = 0;
+        uint8_t dmac[6];
+        uint32_t rip, snd0, rcv1;
+        uint64_t tnow = 5000u, dl;
+        unsigned owner = 0;
+        int had = 0;
+        net_stack_init();
+        net_arp_init();
+        rip = (uint32_t)NET_IP_GW;
+        CHECK(net_arp_lookup(rip, dmac) == 0);
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t2_establish(a, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        /* Passive close to LAST_ACK, then the covering ACK enters the
+         * linger on an explicit clock (deadline = tnow + 2MSL). */
+        snd0 = t->snd_nxt;
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 1);
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        rcv1 = t->rcv_nxt;
+        CHECK(net_sock_fin_close(a) == 0);
+        CHECK(t->state == NET_TCP_LAST_ACK);
+        snd0 = t->snd_nxt;
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1, snd0, (uint8_t)TCP_ACK, hello, 0);
+        CHECK(net_sock_tcp_input_at(a, fr, flen, rep, &rl, tnow) == 0);
+        CHECK(rl == 0);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        dl = tnow + (uint64_t)NET_TCP_TIME_WAIT_TICKS;
+        CHECK(t->retry_deadline == dl && t->retry_count == 0u);
+        /* Port reserve: the lingering port refuses a new open. */
+        CHECK(net_sock_open(NET_SOCK_TCP, 8080, 2) < 0);
+        /* Duplicate FIN re-ACKs: rc 1, pure ACK, state/seq/retry held. */
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1 - 1u, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 1);
+        CHECK(rl == sizeof(rep));
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        CHECK(t->rcv_nxt == rcv1 && t->snd_nxt == snd0);
+        CHECK(t->retry_deadline == dl && t->retry_count == 0u);
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
+        CHECK(rep[42] == (uint8_t)(rcv1 >> 24) && rep[43] == (uint8_t)(rcv1 >> 16) && rep[44] == (uint8_t)(rcv1 >> 8) &&
+              rep[45] == (uint8_t)rcv1);
+        CHECK(net_ip_checksum(rep + 14, 20) == 0u);
+        CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, rep + 34, 20) == 0u);
+        /* Duplicate data re-ACKs the same way, never queued. */
+        rl = 0;
+        flen =
+            t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1 - 5u, snd0, (uint8_t)(TCP_PSH | TCP_ACK), hello, sizeof(hello));
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 1);
+        CHECK(rl == sizeof(rep));
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        CHECK(t->rcv_nxt == rcv1 && t->snd_nxt == snd0);
+        CHECK(t->retry_deadline == dl && t->retry_count == 0u);
+        {
+            uint32_t sip = 0;
+            uint16_t sport = 0;
+            int trunc = -1;
+            CHECK(net_tcp_recv_from(8080, fr, sizeof(fr), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        }
+        /* Bare covering-ACK retransmit: drops, holds (Task 1 compat). */
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1, snd0, (uint8_t)TCP_ACK, hello, 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0);
+        CHECK(rl == 0);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        /* Expiry: one tick before the deadline holds ... */
+        CHECK(net_sock_tcp_retry_poll(dl - 1u, 50u, &owner, &had) == 0 && had == 0);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        CHECK(t->retry_deadline == dl && t->retry_count == 0u);
+        /* ... a different free port still opens during the linger ... */
+        b2 = net_sock_open(NET_SOCK_TCP, 8081, 2);
+        CHECK(b2 >= 0);
+        CHECK(net_sock_tcp(b2) != 0 && net_sock_tcp(b2)->state == NET_TCP_CLOSED);
+        CHECK(net_sock_close(b2) == 0);
+        CHECK(net_sock_close(a) == 0);
+        /* ... and a fresh linger falls to CLOSED exactly at the deadline,
+         * freeing the port for rebind. */
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t2_establish(a, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        CHECK(net_sock_fin_close(a) == 0);
+        CHECK(t->state == NET_TCP_FIN_WAIT);
+        snd0 = t->snd_nxt;
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)TCP_ACK, hello, 0);
+        CHECK(net_sock_tcp_input_at(a, fr, flen, rep, &rl, tnow) == 0);
+        CHECK(t->state == NET_TCP_TIME_WAIT);
+        dl = tnow + (uint64_t)NET_TCP_TIME_WAIT_TICKS;
+        CHECK(t->retry_deadline == dl);
+        CHECK(net_sock_tcp_retry_poll(dl, 50u, &owner, &had) == 0 && had == 0);
         CHECK(t->state == NET_TCP_CLOSED);
-        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0); /* duplicate: no second close */
-        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
+        CHECK(net_sock_open(NET_SOCK_TCP, 8080, 2) < 0);
+        CHECK(net_sock_close(a) == 0);
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
         CHECK(net_sock_close(a) == 0);
         CHECK(net_sock_tcp_bound() < 0);
     }
