@@ -359,8 +359,10 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
          * seam clears the waiter and the loop wakes it once. A duplicate
          * peer FIN (Task 3 ruling) parks a re-ACK (returns 1) and holds
          * LAST_ACK with the FIN retry untouched -- a premature close
-         * would drop the duplicate-ACK obligation. Anything else (stale
-         * ACK, stray data-shaped segment, off-window FIN) drops with
+         * would drop the duplicate-ACK obligation. A duplicate FIN whose
+         * ACK covers our FIN additionally closes at once (the re-ACK is
+         * still parked: the peer missed our ACK of its FIN). Anything else
+         * (stale ACK, stray data-shaped segment, off-window FIN) drops with
          * LAST_ACK held, so the FIN retry keeps running. No reply frame
          * is ever parked on the close: a bare close needs no wire answer. */
         ack = (uint32_t)(((uint32_t)f[off + 8] << 24) | ((uint32_t)f[off + 9] << 16) | ((uint32_t)f[off + 10] << 8) |
@@ -372,6 +374,12 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
             if (seq != c->rcv_nxt - 1u)
                 return 0;
             tcp_park_ack(c, f, sip, out, outlen);
+            if ((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt)
+            {
+                c->state = NET_TCP_CLOSED;
+                c->retry_deadline = 0u;
+                c->retry_count = 0u;
+            }
             return 1;
         }
         if ((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt)

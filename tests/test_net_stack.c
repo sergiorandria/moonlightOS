@@ -1839,7 +1839,7 @@ int main(void)
         CHECK(t->state == NET_TCP_LAST_ACK);
         CHECK(net_sock_tcp_retry_arm(a, 30000u, 50u) == 0);
         rl = 0;
-        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1 - 1u, snd0 + 1u, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1 - 1u, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
         CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 1);
         CHECK(rl == sizeof(rep));
         CHECK(t->state == NET_TCP_LAST_ACK);
