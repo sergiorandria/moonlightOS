@@ -1589,6 +1589,164 @@ int main(void)
         CHECK(net_sock_close(a) == 0);
         CHECK(net_sock_tcp_bound() < 0);
     }
+    /* ---- Passive close Task 2: LAST_ACK via S_CLOSE + retry reuse ----
+     * (RFC 793 section 3.5): S_CLOSE in CLOSE_WAIT emits one header-only
+     * FIN|ACK into the parked TX frame and enters LAST_ACK; the peer ACK
+     * covering our FIN closes exactly once to CLOSED (a duplicate ACK
+     * after CLOSED drops); a repeat close succeeds without a second FIN;
+     * retry exhaustion RST-aborts and wakes the waiter once; an RST in
+     * LAST_ACK aborts at once. */
+    {
+        static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
+        static const uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
+        int a;
+        struct net_tcp_conn *t;
+        uint8_t syn[58], sa[58], rep[54], fr[128];
+        uint8_t snap[1514];
+        unsigned long replen = 0, txlen = 0, snaplen = 0, flen = 0, rl = 0;
+        const uint8_t *tx = 0;
+        uint8_t dmac[6];
+        uint32_t rip;
+        uint32_t snd0, rcv1;
+        uint64_t t0 = 30000u, sp = 50u;
+        unsigned owner = 0;
+        unsigned long k;
+        int had = 0, trc;
+        net_stack_init();
+        net_arp_init();
+        rip = (uint32_t)NET_IP_GW;
+        CHECK(net_arp_lookup(rip, dmac) == 0);
+        CHECK(NET_TCP_LAST_ACK == 5);
+        /* CLOSE_WAIT close: one header-only FIN|ACK parks, LAST_ACK holds. */
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t2_establish(a, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        snd0 = t->snd_nxt;
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 1);
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        rcv1 = t->rcv_nxt;
+        CHECK(net_sock_send(a, hello, sizeof(hello)) < 0); /* CLOSE_WAIT: S_ERR, no advance */
+        CHECK(t->snd_nxt == snd0);
+        CHECK(net_sock_fin_close(a) == 0);
+        CHECK(t->state == NET_TCP_LAST_ACK);
+        CHECK(t->snd_nxt == snd0 + 1u);                         /* FIN consumes one sequence number */
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u); /* TX pass arms */
+        tx = net_sock_tcp_tx(&txlen);
+        CHECK(tx != 0 && txlen == 14u + 20u + 20u);
+        CHECK(tx[14 + 20 + 13] == (uint8_t)(TCP_FIN | TCP_ACK));
+        CHECK(tx[38] == (uint8_t)(snd0 >> 24) && tx[39] == (uint8_t)(snd0 >> 16) && tx[40] == (uint8_t)(snd0 >> 8) &&
+              tx[41] == (uint8_t)snd0);
+        CHECK(tx[42] == (uint8_t)(rcv1 >> 24) && tx[43] == (uint8_t)(rcv1 >> 16) && tx[44] == (uint8_t)(rcv1 >> 8) &&
+              tx[45] == (uint8_t)rcv1);
+        CHECK(net_ip_checksum(tx + 14, 20) == 0u);
+        CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, tx + 34, 20) == 0u);
+        for (k = 0; k < txlen; k++) /* bound: 1514 */
+            snap[k] = tx[k];
+        snaplen = txlen;
+        /* Repeat close: success without a second FIN (RPC maps 0 to S_OK). */
+        CHECK(net_sock_fin_close(a) == 0);
+        CHECK(t->state == NET_TCP_LAST_ACK);
+        CHECK(t->snd_nxt == snd0 + 1u);
+        tx = net_sock_tcp_tx(&txlen);
+        CHECK(txlen == snaplen && memcmp(tx, snap, snaplen) == 0);
+        /* TX pass arms the FIN retry (fake ticks). */
+        CHECK(net_sock_tcp_retry_arm(a, t0, sp) == 0);
+        /* Stale pure ACK: drops, LAST_ACK held, retry untouched. */
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1, snd0, (uint8_t)TCP_ACK, hello, 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0);
+        CHECK(rl == 0);
+        CHECK(t->state == NET_TCP_LAST_ACK);
+        CHECK(t->retry_deadline == t0 + sp && t->retry_count == 0u);
+        /* Covering ACK of our FIN: closes exactly once, retry disarmed. */
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, rcv1, snd0 + 1u, (uint8_t)TCP_ACK, hello, 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0);
+        CHECK(rl == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
+        /* Duplicate covering ACK after CLOSED: drops, no second close. */
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(net_sock_close(a) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+        /* FIN exhaustion from LAST_ACK: expiries 1-4 resend the FIN
+         * verbatim, the 5th RST-aborts and captures the waiter once. */
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t2_establish(a, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        snd0 = t->snd_nxt;
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 1);
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        rcv1 = t->rcv_nxt;
+        CHECK(net_sock_fin_close(a) == 0);
+        CHECK(t->state == NET_TCP_LAST_ACK);
+        tx = net_sock_tcp_tx(&txlen);
+        CHECK(tx != 0 && txlen == 14u + 20u + 20u);
+        CHECK(tx[14 + 20 + 13] == (uint8_t)(TCP_FIN | TCP_ACK));
+        for (k = 0; k < txlen; k++) /* bound: 1514 */
+            snap[k] = tx[k];
+        snaplen = txlen;
+        CHECK(net_sock_tcp_retry_arm(a, t0, sp) == 0);
+        CHECK(net_sock_tcp_retry_poll(t0 + sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(t0 + 2u * sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(t0 + 3u * sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(t0 + 4u * sp, sp, &owner, &had) == 1);
+        CHECK(t->retry_count == 4u);
+        CHECK(t->state == NET_TCP_LAST_ACK);
+        tx = net_sock_tcp_tx(&txlen);
+        CHECK(txlen == snaplen && memcmp(tx, snap, snaplen) == 0);
+        CHECK(net_waiter_arm(a, 1, t0, 100000u) == 0);
+        trc = net_sock_tcp_retry_poll(t0 + 5u * sp, sp, &owner, &had);
+        CHECK(trc == 2 && had == 1 && owner == 1);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
+        CHECK(net_waiter_match(8080, &owner) < 0);
+        tx = net_sock_tcp_tx(&txlen);
+        CHECK(tx != 0 && txlen == 14u + 20u + 20u);
+        CHECK(tx[14 + 20 + 13] == (uint8_t)(TCP_RST | TCP_ACK));
+        CHECK(tx[38] == (uint8_t)((snd0 + 1u) >> 24) && tx[39] == (uint8_t)((snd0 + 1u) >> 16) &&
+              tx[40] == (uint8_t)((snd0 + 1u) >> 8) && tx[41] == (uint8_t)(snd0 + 1u));
+        CHECK(tx[42] == (uint8_t)(rcv1 >> 24) && tx[43] == (uint8_t)(rcv1 >> 16) && tx[44] == (uint8_t)(rcv1 >> 8) &&
+              tx[45] == (uint8_t)rcv1);
+        CHECK(net_ip_checksum(tx + 14, 20) == 0u);
+        CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, tx + 34, 20) == 0u);
+        CHECK(t->snd_nxt == snd0 + 1u); /* RST consumes no sequence number */
+        trc = net_sock_tcp_retry_poll(t0 + 6u * sp, sp, &owner, &had);
+        CHECK(trc == 0 && had == 0); /* fired exactly once */
+        CHECK(net_sock_close(a) == 0);
+        /* RST in LAST_ACK aborts at once (seam clears the waiter). */
+        a = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(a >= 0);
+        t = net_sock_tcp(a);
+        CHECK(t != 0);
+        CHECK(t2_establish(a, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        snd0 = t->snd_nxt;
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 1);
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        CHECK(net_sock_fin_close(a) == 0);
+        CHECK(t->state == NET_TCP_LAST_ACK);
+        CHECK(net_waiter_arm(a, 1, t0, 100000u) == 0);
+        rl = 0;
+        flen = t3_mk_tcp(fr, gwmac, rip, 80u, 8080u, t->rcv_nxt, snd0 + 1u, (uint8_t)(TCP_RST | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(a, fr, flen, rep, &rl) == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
+        CHECK(net_waiter_match(8080, &owner) < 0);
+        CHECK(net_sock_close(a) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
     puts("PASS: test_net_stack");
     return 0;
 }

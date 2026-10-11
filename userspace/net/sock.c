@@ -180,7 +180,9 @@ int net_sock_tcp_syn(int id, const uint8_t *dmac, uint32_t rip, uint16_t rport, 
  * disarms the socket's waiter, so no waiter is left armed on a dead
  * connection. A passive-close entry to CLOSE_WAIT parks the FIN-ACK
  * (rc 1) with the retry budget and waiter untouched, so bytes queued
- * before the FIN still drain. Returns net_tcp_input's 1 (ACK emitted) /
+ * before the FIN still drain. A LAST_ACK covering ACK or FIN closes to
+ * CLOSED the same way (rc 0, no reply frame); a stale ACK holds LAST_ACK
+ * with the FIN retry untouched. Returns net_tcp_input's 1 (ACK emitted) /
  * 0 (drop). */
 int net_sock_tcp_input(int id, const uint8_t *f, unsigned long len, uint8_t *out, unsigned long *outlen)
 {
@@ -488,35 +490,46 @@ int net_sock_send(int id, const uint8_t *buf, unsigned long len)
     return (int)len;
 }
 
-/* Graceful-close seam (design Sec 2: the S_CLOSE-on-ESTABLISHED leg the
- * RPC close handler calls instead of the abort release): ESTABLISHED
- * emits one header-only FIN|ACK into the parked TX frame (copy out via
+/* Graceful-close seam (design Sec 2: the S_CLOSE legs the RPC close
+ * handler calls instead of the abort release): ESTABLISHED emits one
+ * header-only FIN|ACK into the parked TX frame (copy out via
  * net_sock_tcp_tx; the retry slice resends it verbatim and arms the
  * deadline on the TX pass, so the deadline stays unarmed here) and
- * enters FIN_WAIT with cleared retry state. The socket stays open and
- * bound: a second concurrent TCP open still fails closed and S_SEND
- * stays gated off. A parked unacked frame (retry armed by the TX pass)
- * still owns the single TX slot, so building FIN here would silently
- * drop data: that close is rejected with -1 and changes nothing (close
- * after the covering ACK disarms, or after exhaustion aborts). Any other
- * gate failure (bad id, unbound, non-TCP, non-ESTABLISHED, ARP miss)
- * emits nothing and changes nothing. Returns 0 on FIN_WAIT entry, -1
- * otherwise. */
+ * enters FIN_WAIT; CLOSE_WAIT (passive close: the peer FIN is already
+ * ACKed, our FIN pending) emits the same header-only FIN|ACK and enters
+ * LAST_ACK. Both keep the socket open and bound: a second concurrent TCP
+ * open still fails closed and S_SEND stays gated off. A socket already
+ * in LAST_ACK answers success at once (idempotent close: no second FIN
+ * is parked, snd_nxt holds -- the RPC layer maps this to S_OK, mirroring
+ * its FIN_WAIT branch). A parked unacked frame (retry armed by the TX
+ * pass) still owns the single TX slot, so building FIN here would
+ * silently drop data: that close is rejected with -1 and changes nothing
+ * (close after the covering ACK disarms, or after exhaustion aborts).
+ * Any other gate failure (bad id, unbound, non-TCP, FIN_WAIT/CLOSED /
+ * SYN_SENT state, ARP miss) emits nothing and changes nothing. Returns
+ * 0 on FIN entry or idempotent LAST_ACK, -1 otherwise. */
 int net_sock_fin_close(int id)
 {
     unsigned long flen = 0;
+    int passive = 0;
     if (id < 0 || id >= NET_SOCK_MAX || !net_socks[id].used)
         return -1;
     if (net_socks[id].kind != NET_SOCK_TCP)
         return -1;
-    if (id != net_tcb_sock || net_tcb.state != NET_TCP_ESTABLISHED)
+    if (id != net_tcb_sock)
+        return -1;
+    if (net_tcb.state == NET_TCP_LAST_ACK)
+        return 0;
+    if (net_tcb.state == NET_TCP_CLOSE_WAIT)
+        passive = 1;
+    else if (net_tcb.state != NET_TCP_ESTABLISHED)
         return -1;
     if (net_tcb.retry_deadline != 0u)
         return -1;
     if (tcp_fin_build(&net_tcb, net_tcp_tx, &flen) != 0)
         return -1;
     net_tcp_tx_len = flen;
-    net_tcb.state = NET_TCP_FIN_WAIT;
+    net_tcb.state = passive ? NET_TCP_LAST_ACK : NET_TCP_FIN_WAIT;
     net_tcb.retry_deadline = 0u;
     net_tcb.retry_count = 0u;
     return 0;
@@ -535,10 +548,11 @@ const uint8_t *net_sock_tcp_tx(unsigned long *len_out)
 /* Arm the retry deadline after the TX pass transmits the parked frame
  * (design Sec 2, RFC 793 section 3.7: the tcp.h convention is that builds
  * leave the deadline unarmed and the TX pass arms it). Applies to any live
- * state (SYN_SENT SYN, ESTABLISHED PSH, FIN_WAIT FIN); the count is left
- * alone (builds zero it for a fresh budget, the poll below advances it on
- * resend), so re-arming an already-armed frame only moves the deadline.
- * Returns 0 on arming, -1 when unbound, CLOSED, or nothing is parked. */
+ * state (SYN_SENT SYN, ESTABLISHED PSH, FIN_WAIT/LAST_ACK FIN); the count
+ * is left alone (builds zero it for a fresh budget, the poll below
+ * advances it on resend), so re-arming an already-armed frame only moves
+ * the deadline. Returns 0 on arming, -1 when unbound, CLOSED, or nothing
+ * is parked. */
 int net_sock_tcp_retry_arm(int id, uint64_t now, uint64_t spacing)
 {
     struct net_tcp_conn *c = net_sock_tcp(id);
@@ -555,8 +569,8 @@ int net_sock_tcp_retry_arm(int id, uint64_t now, uint64_t spacing)
 /* Covering-ACK disarm (RFC 793 section 3.7: ACKed data stops retransmit).
  * Single-flight stop-and-wait: exactly one segment is ever outstanding,
  * so an ack equal to snd_nxt covers it fully and disarms. ESTABLISHED
- * only: FIN_WAIT ACKs belong to the Task 3 peer-ACK close, never disarmed
- * here. Returns 1 on disarm, 0 when untouched, -1 when unbound. */
+ * only: FIN_WAIT/LAST_ACK ACKs close via the tcp.h input leg, never
+ * disarmed here. Returns 1 on disarm, 0 when untouched, -1 when unbound. */
 int net_sock_tcp_ack_cover(int id, uint32_t ack)
 {
     struct net_tcp_conn *c = net_sock_tcp(id);

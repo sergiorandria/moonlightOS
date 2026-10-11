@@ -25,6 +25,7 @@
 #define NET_TCP_ESTABLISHED 2
 #define NET_TCP_FIN_WAIT 3   /* active close: our FIN sent, peer ACK pending */
 #define NET_TCP_CLOSE_WAIT 4 /* passive close: peer FIN seen+ACKed, our FIN pending */
+#define NET_TCP_LAST_ACK 5   /* passive close: our FIN sent, peer ACK pending */
 
 static inline int tcp_hdr_ok(const uint8_t *f, unsigned long len)
 {
@@ -200,7 +201,10 @@ static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint3
  * FIN_WAIT (stale ACK, stray data-shaped segment) drops with FIN_WAIT
  * held, so the FIN retry keeps running. No reply frame is ever parked
  * on the FIN_WAIT close: a bare close needs no wire answer, and
- * duplicate peer FINs arriving after CLOSED drop at the top. RST at any live state
+ * duplicate peer FINs arriving after CLOSED drop at the top. LAST_ACK
+ * input mirrors the FIN_WAIT leg (a covering ACK or any peer FIN closes
+ * exactly once to CLOSED; a stale ACK holds LAST_ACK with the FIN retry
+ * untouched). RST at any live state
  * (RFC 793 section 3.5: the FIN_WAIT active-close leg included) aborts
  * to CLOSED and zeroes the retry state; the sock seam disarms the
  * waiter. ESTABLISHED non-FIN input
@@ -245,6 +249,28 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
     {
         /* Active-close completion (RFC 793 section 3.5 FIN-WAIT-1/2):
          * ack parses like the SYN_SENT leg below (same offsets). */
+        ack = (uint32_t)(((uint32_t)f[off + 8] << 24) | ((uint32_t)f[off + 9] << 16) | ((uint32_t)f[off + 10] << 8) |
+                         (uint32_t)f[off + 11]);
+        if (((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt) || (flags & (unsigned)TCP_FIN))
+        {
+            c->state = NET_TCP_CLOSED;
+            c->retry_deadline = 0u;
+            c->retry_count = 0u;
+        }
+        return 0;
+    }
+    if (c->state == NET_TCP_LAST_ACK)
+    {
+        /* Passive-close completion (RFC 793 section 3.5 LAST-ACK): the
+         * peer ACK covering our FIN (ack == snd_nxt: FIN consumed one
+         * sequence number at build, same as the FIN_WAIT leg) or any peer
+         * FIN (duplicate FIN retransmit: same simultaneous-close shape as
+         * the FIN_WAIT leg) completes the close exactly once to CLOSED
+         * with the retry budget disarmed; the sock seam clears the waiter
+         * and the loop wakes it once. Anything else (stale ACK, stray
+         * data-shaped segment) drops with LAST_ACK held, so the FIN retry
+         * keeps running. No reply frame is ever parked on the LAST_ACK
+         * close: a bare close needs no wire answer. */
         ack = (uint32_t)(((uint32_t)f[off + 8] << 24) | ((uint32_t)f[off + 9] << 16) | ((uint32_t)f[off + 10] << 8) |
                          (uint32_t)f[off + 11]);
         if (((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt) || (flags & (unsigned)TCP_FIN))

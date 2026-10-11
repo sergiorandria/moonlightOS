@@ -1852,16 +1852,18 @@ void net_main(void)
             }
             else if (n >= 4 && (unsigned long)buf[0] == (unsigned long)S_CLOSE)
             {
-                /* S_CLOSE [S_CLOSE, sock, 0, 0]: three legs. A TCP socket
+                /* S_CLOSE [S_CLOSE, sock, 0, 0]: four legs. A TCP socket
                  * in ESTABLISHED closes gracefully (one FIN, FIN_WAIT held,
-                 * socket stays open for the RX-leg peer-ACK close). A TCP
-                 * socket already in FIN_WAIT answers S_OK idempotently (no
-                 * second FIN). Anything else (UDP, SYN_SENT/CLOSED TCP)
-                 * takes the abort release: disarm the socket's waiter, free
-                 * the entry, and discard only that socket's queued
-                 * datagrams / stream bytes (bound-port drop-if on both
-                 * queues) so the fair-share pool slot returns; other
-                 * sockets' traffic is untouched. */
+                 * socket stays open for the RX-leg peer-ACK close); in
+                 * CLOSE_WAIT it closes passively (one FIN|ACK, LAST_ACK
+                 * held, queued stream bytes still drainable). A TCP
+                 * socket already in FIN_WAIT or LAST_ACK answers S_OK
+                 * idempotently (no second FIN). Anything else (UDP,
+                 * SYN_SENT/CLOSED TCP) takes the abort release: disarm the
+                 * socket's waiter, free the entry, and discard only that
+                 * socket's queued datagrams / stream bytes (bound-port
+                 * drop-if on both queues) so the fair-share pool slot
+                 * returns; other sockets' traffic is untouched. */
                 long sid = (long)buf[1];
                 if (!net_sock_owned(sid, snd))
                 {
@@ -1871,9 +1873,10 @@ void net_main(void)
                 {
                     struct net_tcp_conn *ct = net_sock_tcp((int)sid);
                     if (net_socks[(int)sid].kind == (uint8_t)NET_SOCK_TCP && ct != 0 &&
-                        ct->state == NET_TCP_ESTABLISHED)
+                        (ct->state == NET_TCP_ESTABLISHED || ct->state == NET_TCP_CLOSE_WAIT))
                     {
-                        /* Graceful active close (slice Sec 2): the socket
+                        /* Graceful close (slice Sec 2: active on
+                         * ESTABLISHED, passive on CLOSE_WAIT): the socket
                          * stays open, so no queue is drained and the waiter
                          * is untouched. A parked unacked segment still owns
                          * the single TX slot (fin_close rejects while the
@@ -1902,12 +1905,12 @@ void net_main(void)
                         }
                     }
                     else if (net_socks[(int)sid].kind == (uint8_t)NET_SOCK_TCP && ct != 0 &&
-                             ct->state == NET_TCP_FIN_WAIT)
+                             (ct->state == NET_TCP_FIN_WAIT || ct->state == NET_TCP_LAST_ACK))
                     {
-                        /* Idempotent close: already FIN_WAIT (a FIN is in
-                         * flight or the peer-ACK race is settling); a
-                         * repeat S_CLOSE emits no second FIN and changes
-                         * nothing. */
+                        /* Idempotent close: already FIN_WAIT/LAST_ACK (a
+                         * FIN is in flight or the peer-ACK race is
+                         * settling); a repeat S_CLOSE emits no second FIN
+                         * and changes nothing. */
                         net_rpc_reply(snd, (uint64_t)S_OK, (uint64_t)sid);
                     }
                     else
@@ -2112,8 +2115,9 @@ void net_main(void)
                      * ESTABLISHED data is queued with an ACK parked, and
                      * OOO/duplicates park a duplicate ACK. While the TCB
                      * is not ESTABLISHED the handshake/RST/close leg below runs
-                     * (SYN-ACK check, RST abort, and FIN_WAIT peer-ACK close
-                     * live in tcp.h via the seam, with a single S_ERR waiter
+                     * (SYN-ACK check, RST abort, and FIN_WAIT/LAST_ACK
+                     * peer-ACK closes live in tcp.h via the seam, with a
+                     * single S_ERR waiter
                      * wake on the way to CLOSED); the ESTABLISHED leg only flushes the parked
                      * ACK and wakes an armed waiter (S_DATA via ASEND on
                      * one dequeue, waiter cleared -- a late duplicate can
