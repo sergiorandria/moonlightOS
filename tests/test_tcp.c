@@ -134,9 +134,10 @@ static void t_mk_synack(const uint8_t *syn, uint8_t *sa, uint32_t peer_seq, uint
 
 #include "../userspace/net/arp_cache.c"
 
-/* Task 3 loop-feed replica (mirrors the v2_main NET_CLASS_TCP branch):
- * the loop demuxes every TCP frame to its owning entry by dport. The
- * vectors below pin the per-entry contract through this exact call shape. */
+/* Task 3 loop-feed replica (mirrors the NET_CLASS_TCP per-entry demux block
+ * in userspace/net/v2_main.c: keep the length floor, guard order, and gates
+ * identical across the three sites -- the vectors below pin the per-entry
+ * contract through this exact call shape). */
 static int t_loop_feed(const uint8_t *fr, unsigned flen, uint8_t *rep, unsigned long *rl, uint64_t now)
 {
     unsigned dihl;

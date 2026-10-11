@@ -2150,6 +2150,11 @@ void net_main(void)
                      * exact); unbound dports and TCP frames for UDP ports
                      * drop silently here, exactly as the stack left them. */
                     int bs = -1;
+                    /* Demux parse, mirrored by the t_loop_feed replicas in
+                     * tests/test_tcp.c + tests/test_net_stack.c: keep the
+                     * length floor, guard order, and gates identical
+                     * across the three sites. */
+                    if (pktlen >= 14u + 20u + 14u)
                     {
                         unsigned dihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
                         unsigned doff = 14u + dihl;

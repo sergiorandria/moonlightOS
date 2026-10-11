@@ -134,9 +134,10 @@ static void t2_mk_arp(uint8_t *f, const uint8_t *dmac, const uint8_t *smac, unsi
     f[41] = (uint8_t)tpa;
 }
 
-/* Task 3 loop-feed replica (mirrors the v2_main NET_CLASS_TCP branch):
- * the loop demuxes every TCP frame to its owning entry by dport. The
- * vectors below pin the per-entry contract through this exact call shape. */
+/* Task 3 loop-feed replica (mirrors the NET_CLASS_TCP per-entry demux block
+ * in userspace/net/v2_main.c: keep the length floor, guard order, and gates
+ * identical across the three sites -- the vectors below pin the per-entry
+ * contract through this exact call shape). */
 static int t_loop_feed(const uint8_t *f, unsigned flen, uint8_t *rep, unsigned long *rl, uint64_t now)
 {
     unsigned dihl;
