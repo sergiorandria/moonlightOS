@@ -1245,11 +1245,11 @@ int main(void)
         CHECK(net_sock_tcp_slot_sid(4) < 0);
         CHECK(net_sock_tcp_slot_sid(-1) < 0);
         /* Covering ACK for A disarms only A; B holds its budget. */
-        CHECK(net_sock_tcp_ack_cover(A, sndA) == 1);
+        CHECK(net_sock_tcp_ack_cover(A, sndA, rip, 80u) == 1);
         CHECK(tA->retry_deadline == 0u && tA->retry_count == 0u);
         CHECK(tB->retry_deadline == tB0 + sp && tB->retry_count == 0u);
-        CHECK(net_sock_tcp_ack_cover(A, sndA) == 0);      /* disarmed: no-op */
-        CHECK(net_sock_tcp_ack_cover(B, sndB - 1u) == 0); /* stale: B holds */
+        CHECK(net_sock_tcp_ack_cover(A, sndA, rip, 80u) == 0);      /* disarmed: no-op */
+        CHECK(net_sock_tcp_ack_cover(B, sndB - 1u, rip, 80u) == 0); /* stale: B holds */
         CHECK(tB->retry_deadline == tB0 + sp && tB->retry_count == 0u);
         /* Only B armed: B's expiry resends while A holds. */
         trc = net_sock_tcp_retry_poll(tB0 + sp, sp, &owner, &had);
@@ -1258,7 +1258,7 @@ int main(void)
         CHECK(tA->retry_deadline == 0u && tA->retry_count == 0u);
         fB = net_sock_tcp_tx_for(B, &lB);
         CHECK(fB != 0 && lB == snapBlen && memcmp(fB, snapB, snapBlen) == 0); /* resend verbatim */
-        CHECK(net_sock_tcp_ack_cover(B, sndB) == 1);                          /* B disarms for the FIN leg below */
+        CHECK(net_sock_tcp_ack_cover(B, sndB, rip, 80u) == 1);                          /* B disarms for the FIN leg below */
         /* A's exhaustion aborts only A: 4 resends, then RST. */
         CHECK(net_sock_tcp_retry_arm(A, tA0, sp) == 0);
         CHECK(net_sock_tcp_retry_poll(tA0 + sp, sp, &owner, &had) == 1);
@@ -1566,12 +1566,18 @@ int main(void)
         tx = net_sock_tcp_tx(&txlen);
         CHECK(txlen == snaplen && memcmp(tx, snap, snaplen) == 0);
         CHECK(tx[14 + 20 + 13] == (uint8_t)(TCP_PSH | TCP_ACK));
-        /* Stale ACK: no-op, still armed. Covering ACK: disarms. */
-        CHECK(net_sock_tcp_ack_cover(a, snd1 - 1u) == 0);
+        /* Window validation: future ACK explicitly rejected; wrong peer
+         * never disarms even with a covering value. */
+        CHECK(net_sock_tcp_ack_cover(a, snd1 + 100u, rip, 80u) == -2);
+        CHECK(net_sock_tcp_ack_cover(a, snd1, rip ^ 1u, 80u) == 0);
+        CHECK(net_sock_tcp_ack_cover(a, snd1, rip, 81u) == 0);
         CHECK(t->retry_deadline != 0u);
-        CHECK(net_sock_tcp_ack_cover(a, snd1) == 1);
+        /* Stale ACK: no-op, still armed. Covering ACK: disarms. */
+        CHECK(net_sock_tcp_ack_cover(a, snd1 - 1u, rip, 80u) == 0);
+        CHECK(t->retry_deadline != 0u);
+        CHECK(net_sock_tcp_ack_cover(a, snd1, rip, 80u) == 1);
         CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
-        CHECK(net_sock_tcp_ack_cover(-1, snd1) < 0);
+        CHECK(net_sock_tcp_ack_cover(-1, snd1, rip, 80u) < 0);
         /* Re-arm on a fresh base: expiries 1-4 resend, 5th aborts. */
         CHECK(net_sock_tcp_retry_arm(a, t1, sp) == 0);
         CHECK(net_sock_tcp_retry_poll(t1 + sp, sp, &owner, &had) == 1);
@@ -1645,7 +1651,7 @@ int main(void)
         CHECK(t->snd_nxt == snd1 + 1u);
         tx = net_sock_tcp_tx(&txlen);
         CHECK(txlen == snaplen && memcmp(tx, snap, snaplen) == 0);
-        CHECK(net_sock_tcp_ack_cover(a, t->snd_nxt) == 0); /* FIN_WAIT: Task 3 owns ACKs */
+        CHECK(net_sock_tcp_ack_cover(a, t->snd_nxt, rip, 80u) == 0); /* FIN_WAIT: Task 3 owns ACKs */
         CHECK(t->retry_deadline == 0u);
         CHECK(net_sock_tcp_retry_arm(a, t1, sp) == 0);
         /* FIN_WAIT input through the seam (dropped SYN-ACK shape) never
@@ -1695,7 +1701,7 @@ int main(void)
         tx = net_sock_tcp_tx(&txlen);
         CHECK(tx != 0 && txlen == 14u + 20u + 20u + sizeof(hello));
         CHECK(tx[14 + 20 + 13] == (uint8_t)(TCP_PSH | TCP_ACK)); /* first segment intact */
-        CHECK(net_sock_tcp_ack_cover(a, snd1) == 1);             /* covering ACK disarms */
+        CHECK(net_sock_tcp_ack_cover(a, snd1, rip, 80u) == 1);             /* covering ACK disarms */
         CHECK(net_sock_send(a, hello, sizeof(hello)) == (int)sizeof(hello));
         CHECK(t->snd_nxt == snd1 + (uint32_t)sizeof(hello));
         CHECK(net_sock_close(a) == 0);

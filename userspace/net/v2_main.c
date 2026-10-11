@@ -2291,7 +2291,10 @@ void net_main(void)
                                                                     ((uint32_t)rxcopy[foff + 9] << 16) |
                                                                     ((uint32_t)rxcopy[foff + 10] << 8) |
                                                                     (uint32_t)rxcopy[foff + 11]);
-                                        (void)net_sock_tcp_ack_cover(bs, ftack);
+                                        (void)net_sock_tcp_ack_cover(bs, ftack,
+                                            stack_ip_at(rxcopy, 14u + 12u),
+                                            (uint16_t)(((unsigned)rxcopy[foff] << 8) |
+                                                       (unsigned)rxcopy[foff + 1]));
                                     }
                                     trc = net_sock_tcp_input_at(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen,
                                                                 now);
@@ -2315,7 +2318,10 @@ void net_main(void)
                                         (uint32_t)(((uint32_t)rxcopy[toff + 8] << 24) |
                                                    ((uint32_t)rxcopy[toff + 9] << 16) |
                                                    ((uint32_t)rxcopy[toff + 10] << 8) | (uint32_t)rxcopy[toff + 11]);
-                                    (void)net_sock_tcp_ack_cover(bs, tack);
+                                    (void)net_sock_tcp_ack_cover(bs, tack,
+                                            stack_ip_at(rxcopy, 14u + 12u),
+                                            (uint16_t)(((unsigned)rxcopy[toff] << 8) |
+                                                       (unsigned)rxcopy[toff + 1]));
                                 }
                             }
                             unsigned long alen = 0;

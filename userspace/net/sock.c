@@ -758,7 +758,11 @@ int net_sock_tcp_retry_arm(int id, uint64_t now, uint64_t spacing)
  * so an ack equal to snd_nxt covers it fully and disarms. ESTABLISHED
  * only: FIN_WAIT/LAST_ACK ACKs close via the tcp.h input leg, never
  * disarmed here. Returns 1 on disarm, 0 when untouched, -1 when unbound. */
-int net_sock_tcp_ack_cover(int id, uint32_t ack)
+/* Covering-ACK disarm with peer + window validation (RFC 793: only the
+ * peer's ACK may stop retransmit). Returns 1 on disarm, 0 when untouched
+ * (stale ACK, wrong peer, disarmed, non-ESTABLISHED), -2 on future ACK
+ * (ack past snd_nxt: explicitly rejected, never disarms), -1 unbound. */
+int net_sock_tcp_ack_cover(int id, uint32_t ack, uint32_t sip, uint16_t sport)
 {
     struct net_tcp_conn *c = net_sock_tcp(id);
     if (!c)
@@ -767,6 +771,10 @@ int net_sock_tcp_ack_cover(int id, uint32_t ack)
         return 0;
     if (c->retry_deadline == 0u)
         return 0;
+    if (sip != c->rip || sport != c->rport)
+        return 0; /* spoofed/forged peer: never disarms */
+    if ((int32_t)(ack - c->snd_nxt) > 0)
+        return -2; /* future ACK: explicitly rejected, still armed */
     if (ack != c->snd_nxt)
         return 0;
     c->retry_deadline = 0u;
