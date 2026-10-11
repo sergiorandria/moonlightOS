@@ -564,6 +564,161 @@ int main(void)
         CHECK(net_sock_tcp_bound() < 0);
     }
 
+    /* ---- Task 3 ESTABLISHED FIN routing + duplicate-FIN re-ACK (RFC 793
+     * section 3.5 passive close; carried ruling): the wire FIN never enters
+     * the data queue (stack.c classifies without queueing, so the UDP carve
+     * stays blind); the seam consumes it once (CLOSE_WAIT + pure ACK, the
+     * v2_main ESTABLISHED leg's feed) and re-ACKs retransmits without
+     * re-closing (CLOSE_WAIT and LAST_ACK hold, retry untouched); drained
+     * recv answers EMPTY (S_EMPTY analog); an RST abort clears the waiter
+     * once (the loop's single S_ERR analog). ---- */
+    {
+        int c6;
+        uint32_t rcv0, snd0, rcv1;
+        unsigned long rl4 = 0, alen = 0;
+        const uint8_t *ackf;
+        c6 = net_sock_open(NET_SOCK_TCP, 8100, 3);
+        CHECK(c6 >= 0);
+        t = net_sock_tcp(c6);
+        CHECK(t != 0);
+        CHECK(net_sock_tcp_syn(c6, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0xA4u);
+        CHECK(net_sock_tcp_input(c6, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        /* Queue 5 stream bytes via the wire RX path first. */
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8100u, t->rcv_nxt, t->snd_nxt, (uint8_t)(TCP_PSH | TCP_ACK), hello,
+                        sizeof(hello));
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        rcv0 = t->rcv_nxt;
+        snd0 = t->snd_nxt;
+        ackf = net_tcp_ack_tx(&alen);
+        CHECK(ackf != 0 && alen == 14u + 20u + 20u);
+        net_tcp_ack_clear();
+        /* Wire FIN via the stack: classified TCP, never queued as data. */
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8100u, rcv0, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_stack_rx(fr, flen) == NET_CLASS_TCP);
+        CHECK(t->state == NET_TCP_ESTABLISHED); /* the stack alone never closes */
+        CHECK(t->rcv_nxt == rcv0);              /* the FIN is never queued as data */
+        CHECK(net_udp_recv_from(8100, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        CHECK(net_udp_recv(buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY)); /* UDP carve blind */
+        /* The seam consumes the FIN once (the v2_main ESTABLISHED feed). */
+        rl4 = 0;
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 1);
+        CHECK(rl4 == sizeof(rep));
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        rcv1 = t->rcv_nxt;
+        CHECK(rcv1 == rcv0 + 1u);
+        CHECK(t->snd_nxt == snd0);
+        /* Queued bytes drain intact; drained recv answers EMPTY. */
+        trunc = -1;
+        sip = 0;
+        sport = 0;
+        n = net_tcp_recv_from(8100, buf, sizeof(buf), &sip, &sport, &trunc);
+        CHECK(n == (int)sizeof(hello));
+        CHECK(trunc == 0);
+        CHECK(sip == rip && sport == 80u);
+        CHECK(memcmp(buf, hello, sizeof(hello)) == 0);
+        CHECK(net_tcp_recv_from(8100, buf, sizeof(buf), &sip, &sport, &trunc) == -(NET_ERR_EMPTY));
+        /* Duplicate FIN (retransmit, seq == rcv_nxt - 1): re-ACK, hold. */
+        rl4 = 0;
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 1);
+        CHECK(rl4 == sizeof(rep));
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        CHECK(t->rcv_nxt == rcv1);
+        CHECK(t->snd_nxt == snd0);
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
+        CHECK(rep[38] == (uint8_t)(snd0 >> 24) && rep[39] == (uint8_t)(snd0 >> 16) && rep[40] == (uint8_t)(snd0 >> 8) &&
+              rep[41] == (uint8_t)snd0);
+        CHECK(rep[42] == (uint8_t)(rcv1 >> 24) && rep[43] == (uint8_t)(rcv1 >> 16) && rep[44] == (uint8_t)(rcv1 >> 8) &&
+              rep[45] == (uint8_t)rcv1);
+        CHECK(net_ip_checksum(rep + 14, 20) == 0u);
+        CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, rep + 34, 20) == 0u);
+        /* Second duplicate: same re-ACK, still held, never a second close. */
+        rl4 = 0;
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 1);
+        CHECK(rl4 == sizeof(rep));
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        CHECK(t->rcv_nxt == rcv1);
+        /* Off-window FIN in CLOSE_WAIT: drops, holds, no reply. */
+        rl4 = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8100u, rcv0 + 7u, snd0, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 0);
+        CHECK(rl4 == 0);
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        CHECK(t->rcv_nxt == rcv1);
+        /* Our FIN parks LAST_ACK; its retry budget is fresh for the check. */
+        CHECK(net_sock_fin_close(c6) == 0);
+        CHECK(t->state == NET_TCP_LAST_ACK);
+        CHECK(net_sock_tcp_retry_arm(c6, 1000, 50) == 0);
+        /* Duplicate peer FIN in LAST_ACK: re-ACK, hold, retry untouched. */
+        rl4 = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8100u, rcv1 - 1u, snd0 + 1u, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 1);
+        CHECK(rl4 == sizeof(rep));
+        CHECK(t->state == NET_TCP_LAST_ACK);
+        CHECK(t->retry_deadline == 1050u && t->retry_count == 0u);
+        CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
+        CHECK(rep[42] == (uint8_t)(rcv1 >> 24) && rep[43] == (uint8_t)(rcv1 >> 16) && rep[44] == (uint8_t)(rcv1 >> 8) &&
+              rep[45] == (uint8_t)rcv1);
+        CHECK(net_ip_checksum(rep + 14, 20) == 0u);
+        CHECK(net_tcp_checksum((uint32_t)NET_IP_SELF, rip, rep + 34, 20) == 0u);
+        /* Covering ACK of our FIN: the single close to CLOSED. */
+        rl4 = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8100u, rcv1, snd0 + 1u, (uint8_t)TCP_ACK, hello, 0);
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 0);
+        CHECK(rl4 == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
+        /* Duplicates after CLOSED: drops, no second close. */
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8100u, rcv1 - 1u, snd0 + 1u, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(net_sock_close(c6) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+        /* RST in ESTABLISHED aborts at once and clears the waiter exactly
+         * once (the loop wakes it with a single S_ERR off this edge). */
+        c6 = net_sock_open(NET_SOCK_TCP, 8101, 3);
+        CHECK(c6 >= 0);
+        t = net_sock_tcp(c6);
+        CHECK(t != 0);
+        CHECK(net_sock_tcp_syn(c6, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0xA5u);
+        CHECK(net_sock_tcp_input(c6, sa, sizeof(sa), rep, &replen) == 1);
+        CHECK(t->state == NET_TCP_ESTABLISHED);
+        CHECK(net_waiter_arm(c6, 3, 1000, 50) == 0);
+        rl4 = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8101u, t->rcv_nxt, t->snd_nxt, (uint8_t)(TCP_RST | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(net_waiter_match(8101, &wowner) < 0);
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 0); /* repeat: still no waiter */
+        CHECK(net_waiter_match(8101, &wowner) < 0);
+        CHECK(net_sock_close(c6) == 0);
+        /* RST in CLOSE_WAIT aborts the same way (waiter cleared once). */
+        c6 = net_sock_open(NET_SOCK_TCP, 8102, 3);
+        CHECK(c6 >= 0);
+        t = net_sock_tcp(c6);
+        CHECK(t != 0);
+        CHECK(net_sock_tcp_syn(c6, dmac, rip, 80u, iss, syn, &synlen) == 0);
+        t_mk_synack(syn, sa, peer, iss, 0x1Fu, 0xA6u);
+        CHECK(net_sock_tcp_input(c6, sa, sizeof(sa), rep, &replen) == 1);
+        rl4 = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8102u, t->rcv_nxt, t->snd_nxt, (uint8_t)(TCP_FIN | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 1);
+        CHECK(t->state == NET_TCP_CLOSE_WAIT);
+        CHECK(net_waiter_arm(c6, 3, 1000, 50) == 0);
+        rl4 = 0;
+        flen = t_mk_tcp(fr, gwmac, rip, 80u, 8102u, t->rcv_nxt, t->snd_nxt, (uint8_t)(TCP_RST | TCP_ACK), hello, 0);
+        CHECK(net_sock_tcp_input(c6, fr, flen, rep, &rl4) == 0);
+        CHECK(t->state == NET_TCP_CLOSED);
+        CHECK(t->retry_deadline == 0u && t->retry_count == 0u);
+        CHECK(net_waiter_match(8102, &wowner) < 0);
+        CHECK(net_sock_close(c6) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
+
     /* ---- Fair-share: 4 concurrent opens hold all slots ---- */
     {
         int ids[4];

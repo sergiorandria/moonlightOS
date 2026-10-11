@@ -202,13 +202,87 @@ static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint3
  * held, so the FIN retry keeps running. No reply frame is ever parked
  * on the FIN_WAIT close: a bare close needs no wire answer, and
  * duplicate peer FINs arriving after CLOSED drop at the top. LAST_ACK
- * input mirrors the FIN_WAIT leg (a covering ACK or any peer FIN closes
- * exactly once to CLOSED; a stale ACK holds LAST_ACK with the FIN retry
- * untouched). RST at any live state
+ * input closes exactly once on the covering ACK of our FIN
+ * (ack == snd_nxt); a duplicate peer FIN parks a re-ACK and holds
+ * LAST_ACK (Task 3 ruling, detailed below); a stale ACK holds LAST_ACK
+ * with the FIN retry untouched. RST at any live state
  * (RFC 793 section 3.5: the FIN_WAIT active-close leg included) aborts
  * to CLOSED and zeroes the retry state; the sock seam disarms the
  * waiter. ESTABLISHED non-FIN input
- * drops here: stream RX lives in stack.c. CLOSED input drops. */
+ * drops here: stream RX lives in stack.c. CLOSED input drops.
+ *
+ * Passive-close duplicates (Task 3 ruling, RFC 793 section 3.5): a
+ * retransmitted peer FIN in CLOSE_WAIT or LAST_ACK (seq == rcv_nxt - 1:
+ * the entry already consumed one sequence number) parks a pure re-ACK
+ * (returns 1, byte-identical to the entry ACK via tcp_park_ack) and holds
+ * state -- never a second close. A premature close would drop the
+ * duplicate-ACK obligation and (in LAST_ACK) disarm the FIN retry the
+ * close still needs; holding keeps the retry alive, so a combined FIN +
+ * covering ACK still converges via the retry's plain ACK. Anything else
+ * in CLOSE_WAIT/LAST_ACK (stale ACK, stray data-shaped segment,
+ * off-window FIN) drops with the state held. */
+static inline void tcp_park_ack(const struct net_tcp_conn *c, const uint8_t *f, uint32_t sip, uint8_t *out,
+                                unsigned long *outlen)
+{
+    unsigned i;
+    uint16_t ck;
+    unsigned long total = (unsigned long)ETH_HDR_LEN + 20u + (unsigned long)TCP_HDR_MIN;
+    for (i = 0; i < 6u; i++) /* bound: 6 */
+    {
+        out[i] = f[6 + i];
+        out[6 + i] = NET_MAC_SELF[i];
+    }
+    out[12] = 0x08u;
+    out[13] = 0x00u;
+    out[14] = 0x45u;
+    out[15] = 0x00u;
+    out[16] = 0u;
+    out[17] = 40u;
+    out[18] = 0x12u;
+    out[19] = 0x34u;
+    out[20] = 0x40u;
+    out[21] = 0x00u;
+    out[22] = 64u;
+    out[23] = IP_PROTO_TCP;
+    out[24] = 0u;
+    out[25] = 0u;
+    out[26] = (uint8_t)(NET_IP_SELF >> 24);
+    out[27] = (uint8_t)(NET_IP_SELF >> 16);
+    out[28] = (uint8_t)(NET_IP_SELF >> 8);
+    out[29] = (uint8_t)NET_IP_SELF;
+    out[30] = (uint8_t)(sip >> 24);
+    out[31] = (uint8_t)(sip >> 16);
+    out[32] = (uint8_t)(sip >> 8);
+    out[33] = (uint8_t)sip;
+    ck = net_ip_checksum(out + ETH_HDR_LEN, IP_MIN);
+    out[24] = (uint8_t)(ck >> 8);
+    out[25] = (uint8_t)(ck & 0xFFu);
+    out[34] = (uint8_t)(c->lport >> 8);
+    out[35] = (uint8_t)c->lport;
+    out[36] = (uint8_t)(c->rport >> 8);
+    out[37] = (uint8_t)c->rport;
+    out[38] = (uint8_t)(c->snd_nxt >> 24);
+    out[39] = (uint8_t)(c->snd_nxt >> 16);
+    out[40] = (uint8_t)(c->snd_nxt >> 8);
+    out[41] = (uint8_t)c->snd_nxt;
+    out[42] = (uint8_t)(c->rcv_nxt >> 24);
+    out[43] = (uint8_t)(c->rcv_nxt >> 16);
+    out[44] = (uint8_t)(c->rcv_nxt >> 8);
+    out[45] = (uint8_t)c->rcv_nxt;
+    out[46] = (uint8_t)(5u << 4);
+    out[47] = (uint8_t)TCP_ACK;
+    out[48] = 0x08u;
+    out[49] = 0x00u;
+    out[50] = 0u;
+    out[51] = 0u;
+    out[52] = 0u;
+    out[53] = 0u;
+    ck = net_tcp_checksum((uint32_t)NET_IP_SELF, sip, out + ETH_HDR_LEN + IP_MIN, (unsigned)TCP_HDR_MIN);
+    out[50] = (uint8_t)(ck >> 8);
+    out[51] = (uint8_t)(ck & 0xFFu);
+    *outlen = total;
+}
+
 static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsigned long len, uint8_t *out,
                                 unsigned long *outlen)
 {
@@ -259,21 +333,48 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
         }
         return 0;
     }
+    if (c->state == NET_TCP_CLOSE_WAIT)
+    {
+        /* Passive-close duplicate FIN (Task 3 ruling, detailed above):
+         * the retransmit carries the consumed sequence number, so only
+         * seq == rcv_nxt - 1 re-ACKs (returns 1) with CLOSE_WAIT held;
+         * anything else (stray data-shaped segment, off-window FIN) drops
+         * with CLOSE_WAIT held, so the app's S_CLOSE still owns our FIN.
+         * No reply frame is ever parked on a drop. */
+        if (!(flags & (unsigned)TCP_FIN))
+            return 0;
+        seq = (uint32_t)(((uint32_t)f[off + 4] << 24) | ((uint32_t)f[off + 5] << 16) | ((uint32_t)f[off + 6] << 8) |
+                         (uint32_t)f[off + 7]);
+        if (seq != c->rcv_nxt - 1u)
+            return 0;
+        tcp_park_ack(c, f, sip, out, outlen);
+        return 1;
+    }
     if (c->state == NET_TCP_LAST_ACK)
     {
         /* Passive-close completion (RFC 793 section 3.5 LAST-ACK): the
          * peer ACK covering our FIN (ack == snd_nxt: FIN consumed one
-         * sequence number at build, same as the FIN_WAIT leg) or any peer
-         * FIN (duplicate FIN retransmit: same simultaneous-close shape as
-         * the FIN_WAIT leg) completes the close exactly once to CLOSED
-         * with the retry budget disarmed; the sock seam clears the waiter
-         * and the loop wakes it once. Anything else (stale ACK, stray
-         * data-shaped segment) drops with LAST_ACK held, so the FIN retry
-         * keeps running. No reply frame is ever parked on the LAST_ACK
-         * close: a bare close needs no wire answer. */
+         * sequence number at build, same as the FIN_WAIT leg) closes
+         * exactly once to CLOSED with the retry budget disarmed; the sock
+         * seam clears the waiter and the loop wakes it once. A duplicate
+         * peer FIN (Task 3 ruling) parks a re-ACK (returns 1) and holds
+         * LAST_ACK with the FIN retry untouched -- a premature close
+         * would drop the duplicate-ACK obligation. Anything else (stale
+         * ACK, stray data-shaped segment, off-window FIN) drops with
+         * LAST_ACK held, so the FIN retry keeps running. No reply frame
+         * is ever parked on the close: a bare close needs no wire answer. */
         ack = (uint32_t)(((uint32_t)f[off + 8] << 24) | ((uint32_t)f[off + 9] << 16) | ((uint32_t)f[off + 10] << 8) |
                          (uint32_t)f[off + 11]);
-        if (((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt) || (flags & (unsigned)TCP_FIN))
+        if (flags & (unsigned)TCP_FIN)
+        {
+            seq = (uint32_t)(((uint32_t)f[off + 4] << 24) | ((uint32_t)f[off + 5] << 16) | ((uint32_t)f[off + 6] << 8) |
+                             (uint32_t)f[off + 7]);
+            if (seq != c->rcv_nxt - 1u)
+                return 0;
+            tcp_park_ack(c, f, sip, out, outlen);
+            return 1;
+        }
+        if ((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt)
         {
             c->state = NET_TCP_CLOSED;
             c->retry_deadline = 0u;
@@ -294,61 +395,7 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
             return 0;
         c->rcv_nxt += 1u;
         c->state = NET_TCP_CLOSE_WAIT;
-        total = (unsigned long)ETH_HDR_LEN + 20u + (unsigned long)TCP_HDR_MIN;
-        for (i = 0; i < 6u; i++) /* bound: 6 */
-        {
-            out[i] = f[6 + i];
-            out[6 + i] = NET_MAC_SELF[i];
-        }
-        out[12] = 0x08u;
-        out[13] = 0x00u;
-        out[14] = 0x45u;
-        out[15] = 0x00u;
-        out[16] = 0u;
-        out[17] = 40u;
-        out[18] = 0x12u;
-        out[19] = 0x34u;
-        out[20] = 0x40u;
-        out[21] = 0x00u;
-        out[22] = 64u;
-        out[23] = IP_PROTO_TCP;
-        out[24] = 0u;
-        out[25] = 0u;
-        out[26] = (uint8_t)(NET_IP_SELF >> 24);
-        out[27] = (uint8_t)(NET_IP_SELF >> 16);
-        out[28] = (uint8_t)(NET_IP_SELF >> 8);
-        out[29] = (uint8_t)NET_IP_SELF;
-        out[30] = (uint8_t)(sip >> 24);
-        out[31] = (uint8_t)(sip >> 16);
-        out[32] = (uint8_t)(sip >> 8);
-        out[33] = (uint8_t)sip;
-        ck = net_ip_checksum(out + ETH_HDR_LEN, IP_MIN);
-        out[24] = (uint8_t)(ck >> 8);
-        out[25] = (uint8_t)(ck & 0xFFu);
-        out[34] = (uint8_t)(c->lport >> 8);
-        out[35] = (uint8_t)c->lport;
-        out[36] = (uint8_t)(c->rport >> 8);
-        out[37] = (uint8_t)c->rport;
-        out[38] = (uint8_t)(c->snd_nxt >> 24);
-        out[39] = (uint8_t)(c->snd_nxt >> 16);
-        out[40] = (uint8_t)(c->snd_nxt >> 8);
-        out[41] = (uint8_t)c->snd_nxt;
-        out[42] = (uint8_t)(c->rcv_nxt >> 24);
-        out[43] = (uint8_t)(c->rcv_nxt >> 16);
-        out[44] = (uint8_t)(c->rcv_nxt >> 8);
-        out[45] = (uint8_t)c->rcv_nxt;
-        out[46] = (uint8_t)(5u << 4);
-        out[47] = (uint8_t)TCP_ACK;
-        out[48] = 0x08u;
-        out[49] = 0x00u;
-        out[50] = 0u;
-        out[51] = 0u;
-        out[52] = 0u;
-        out[53] = 0u;
-        ck = net_tcp_checksum((uint32_t)NET_IP_SELF, sip, out + ETH_HDR_LEN + IP_MIN, (unsigned)TCP_HDR_MIN);
-        out[50] = (uint8_t)(ck >> 8);
-        out[51] = (uint8_t)(ck & 0xFFu);
-        *outlen = total;
+        tcp_park_ack(c, f, sip, out, outlen);
         return 1;
     }
     if (c->state != NET_TCP_SYN_SENT)

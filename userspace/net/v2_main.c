@@ -2118,7 +2118,9 @@ void net_main(void)
                      * (SYN-ACK check, RST abort, and FIN_WAIT/LAST_ACK
                      * peer-ACK closes live in tcp.h via the seam, with a
                      * single S_ERR waiter
-                     * wake on the way to CLOSED); the ESTABLISHED leg only flushes the parked
+                     * wake on the way to CLOSED); the ESTABLISHED leg feeds FIN
+                     * frames to the seam (passive-close entry to CLOSE_WAIT),
+                     * then flushes the parked
                      * ACK and wakes an armed waiter (S_DATA via ASEND on
                      * one dequeue, waiter cleared -- a late duplicate can
                      * never double-reply). An RST abort back to CLOSED
@@ -2205,6 +2207,45 @@ void net_main(void)
                                     if (was_live && bt->state == NET_TCP_CLOSED && wcap &&
                                         net_owner_live((long)bs, wowner))
                                         net_wake_reply((unsigned long)wowner, (uint64_t)S_ERR, 0);
+                                }
+                            }
+                            /* Passive-close entry (slice Sec 2, RFC 793 section 3.5):
+                             * a FIN arriving in ESTABLISHED belongs to the seam,
+                             * not the data queue (stack.c already kept it out of
+                             * the stream queue), so feed it via net_sock_tcp_input
+                             * like the RST-first path above. An in-order FIN enters
+                             * CLOSE_WAIT with a pure ACK parked (trc 1: transmit it
+                             * from the TX staging area, which doubles as the seam's
+                             * out buffer); an off-window FIN drops with ESTABLISHED
+                             * held (trc 0: the cover/flush/waiter flow below runs on
+                             * normally). The covering-ACK disarm runs first while
+                             * still ESTABLISHED: the seam's FIN leg leaves the retry
+                             * alone, and after entry ack_cover would reject as
+                             * non-ESTABLISHED, stranding the budget and failing the
+                             * app's S_CLOSE. Entry leaves the waiter armed (queued
+                             * bytes still drain through the wake block below). */
+                            {
+                                unsigned fihl = (unsigned)(rxcopy[14] & 0x0Fu) * 4u;
+                                unsigned foff = 14u + fihl;
+                                int is_fin = 0;
+                                if (fihl >= 20u && pktlen >= (unsigned long)(foff + 14u) &&
+                                    (rxcopy[foff + 13] & (uint8_t)TCP_FIN) != 0)
+                                    is_fin = 1;
+                                if (is_fin && bt->state == NET_TCP_ESTABLISHED)
+                                {
+                                    unsigned long replen = 0;
+                                    int trc;
+                                    if (pktlen >= (unsigned long)(foff + 12u))
+                                    {
+                                        uint32_t ftack = (uint32_t)(((uint32_t)rxcopy[foff + 8] << 24) |
+                                                                    ((uint32_t)rxcopy[foff + 9] << 16) |
+                                                                    ((uint32_t)rxcopy[foff + 10] << 8) |
+                                                                    (uint32_t)rxcopy[foff + 11]);
+                                        (void)net_sock_tcp_ack_cover(bs, ftack);
+                                    }
+                                    trc = net_sock_tcp_input(bs, rxcopy, pktlen, wire.txf + NET_TX_PAY_OFF, &replen);
+                                    if (trc == 1)
+                                        (void)net_tx_frame(&wire, wire.txf + NET_TX_PAY_OFF, replen);
                                 }
                             }
                             /* Covering-ACK disarm (slice Sec 2): the frame's
