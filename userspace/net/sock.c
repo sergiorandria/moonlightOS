@@ -21,14 +21,16 @@ static net_sock_t net_socks[NET_SOCK_MAX];
 static struct net_tcp_conn net_tcbs[NET_TCP_MAX];
 static int net_tcb_sock[NET_TCP_MAX] = {-1, -1, -1, -1}; /* bound socket id, -1 when free */
 
-/* Last TCP segment emitted by net_sock_send (the send seam has no frame
- * out-param, so the frame parks here; total <= 1514, payload <= 536). The
- * wire TX path copies it out via net_sock_tcp_tx before transmitting.
- * Task 1 slice: still a single shared slot (per-entry TX + retry
- * iteration land in Task 2); the table already isolates state/seq per
- * entry. */
-static uint8_t net_tcp_tx[1514];
-static unsigned long net_tcp_tx_len;
+/* Per-entry TX slots (Task 2, design Sec 2, RFC 793 one state machine
+ * per connection: the shared slot let a second entry's send clobber the
+ * first entry's parked frame, so resends emitted the wrong bytes).
+ * Each entry parks its last emitted segment (the SYN leg writes the
+ * caller's buffer, never a slot) in its own 1514B slot (payload <= 536,
+ * same wire bound as before). The wire TX path copies an entry's frame
+ * out via net_sock_tcp_tx_for; net_sock_tcp_tx keeps the legacy shape
+ * (first bound entry's frame) for single-entry callers. */
+static uint8_t net_tcp_tx[NET_TCP_MAX][1514];
+static unsigned long net_tcp_tx_len[NET_TCP_MAX];
 
 /* Bounded retransmit cap (design Sec 2, RFC 793 section 3.7): expiries 1-4
  * resend the parked frame verbatim, the 5th RST-aborts. The spacing lives
@@ -46,6 +48,15 @@ static int tcb_slot_for(int id)
             return i;
     }
     return -1;
+}
+
+/* Table slot for a bound TCB pointer, or -1 (defensive: net_sock_tcp
+ * only returns in-table entries, so this never fires on the seam). */
+static int tcb_slot_of(const struct net_tcp_conn *c)
+{
+    if (!c || c < net_tcbs || c >= net_tcbs + NET_TCP_MAX)
+        return -1;
+    return (int)(c - net_tcbs);
 }
 
 /* Bound TCB for a socket, or 0 when the socket is unused, non-TCP, or
@@ -168,6 +179,7 @@ int net_sock_open(unsigned kind, uint16_t port, unsigned owner)
             net_tcbs[slot].rip = 0u;
             net_tcbs[slot].retry_deadline = 0u;
             net_tcbs[slot].retry_count = 0u;
+            net_tcp_tx_len[slot] = 0u;
         }
         return (int)i;
     }
@@ -184,11 +196,13 @@ int net_sock_close(int id)
     slot = tcb_slot_for(id);
     if (slot >= 0)
     {
-        /* Release only this socket's entry for the next TCP open. */
+        /* Release only this socket's entry for the next TCP open, and
+         * drop its parked frame so a later rebind starts empty. */
         net_tcb_sock[slot] = -1;
         net_tcbs[slot].state = NET_TCP_CLOSED;
         net_tcbs[slot].retry_deadline = 0u;
         net_tcbs[slot].retry_count = 0u;
+        net_tcp_tx_len[slot] = 0u;
     }
     net_socks[id].used = 0;
     net_socks[id].kind = NET_SOCK_NONE;
@@ -577,7 +591,7 @@ static int tcp_rst_build(struct net_tcp_conn *c, uint8_t *out, unsigned long *ou
  * requires the bound TCB in ESTABLISHED (ownership is enforced by the
  * RPC layer via net_sock_owned before this seam runs) and a capped
  * payload, then emits one in-order segment into the parked TX frame
- * (copy out via net_sock_tcp_tx). S_SEND in CLOSE_WAIT (passive close:
+ * (copy out via net_sock_tcp_tx_for). S_SEND in CLOSE_WAIT (passive close:
  * the peer is done sending), LAST_ACK, FIN_WAIT, or TIME_WAIT (2MSL
  * linger: no new data while duplicates may still be in flight) answers
  * -1 (S_ERR at the RPC layer) with snd_nxt untouched -- the state gate
@@ -589,8 +603,12 @@ static int tcp_rst_build(struct net_tcp_conn *c, uint8_t *out, unsigned long *ou
 int net_sock_send(int id, const uint8_t *buf, unsigned long len)
 {
     unsigned long flen = 0;
+    int slot;
     struct net_tcp_conn *c = net_sock_tcp(id);
     if (!c)
+        return -1;
+    slot = tcb_slot_of(c);
+    if (slot < 0)
         return -1;
     if (c->state == NET_TCP_TIME_WAIT)
         return -1; /* linger: no new data, snd_nxt untouched */
@@ -602,9 +620,9 @@ int net_sock_send(int id, const uint8_t *buf, unsigned long len)
         return -1;
     if (!buf)
         return -1;
-    if (tcp_data_build(c, buf, len, net_tcp_tx, &flen) != 0)
+    if (tcp_data_build(c, buf, len, net_tcp_tx[slot], &flen) != 0)
         return -1;
-    net_tcp_tx_len = flen;
+    net_tcp_tx_len[slot] = flen;
     /* Fresh frame, fresh budget: clear any stale retry state, still
      * unarmed (the TX pass arms the deadline after transmitting, per the
      * tcp.h convention; a covering ACK disarms via ack_cover below). */
@@ -616,7 +634,7 @@ int net_sock_send(int id, const uint8_t *buf, unsigned long len)
 /* Graceful-close seam (design Sec 2: the S_CLOSE legs the RPC close
  * handler calls instead of the abort release): ESTABLISHED emits one
  * header-only FIN|ACK into the parked TX frame (copy out via
- * net_sock_tcp_tx; the retry slice resends it verbatim and arms the
+ * net_sock_tcp_tx_for; the retry slice resends it verbatim and arms the
  * deadline on the TX pass, so the deadline stays unarmed here) and
  * enters FIN_WAIT; CLOSE_WAIT (passive close: the peer FIN is already
  * ACKed, our FIN pending) emits the same header-only FIN|ACK and enters
@@ -625,7 +643,7 @@ int net_sock_send(int id, const uint8_t *buf, unsigned long len)
  * A socket already in LAST_ACK answers success at once (idempotent
  * close: no second FIN is parked, snd_nxt holds -- the RPC layer maps
  * this to S_OK, mirroring its FIN_WAIT branch). A parked unacked frame
- * (retry armed by the TX pass) still owns the single TX slot, so
+ * (retry armed by the TX pass) still owns its entry's TX slot, so
  * building FIN here would silently drop data: that close is rejected
  * with -1 and changes nothing (close after the covering ACK disarms, or
  * after exhaustion aborts). Any other gate failure (bad id, unbound,
@@ -636,8 +654,12 @@ int net_sock_fin_close(int id)
 {
     unsigned long flen = 0;
     int passive = 0;
+    int slot;
     struct net_tcp_conn *c = net_sock_tcp(id);
     if (!c)
+        return -1;
+    slot = tcb_slot_of(c);
+    if (slot < 0)
         return -1;
     if (c->state == NET_TCP_LAST_ACK)
         return 0;
@@ -647,23 +669,63 @@ int net_sock_fin_close(int id)
         return -1;
     if (c->retry_deadline != 0u)
         return -1;
-    if (tcp_fin_build(c, net_tcp_tx, &flen) != 0)
+    if (tcp_fin_build(c, net_tcp_tx[slot], &flen) != 0)
         return -1;
-    net_tcp_tx_len = flen;
+    net_tcp_tx_len[slot] = flen;
     c->state = passive ? NET_TCP_LAST_ACK : NET_TCP_FIN_WAIT;
     c->retry_deadline = 0u;
     c->retry_count = 0u;
     return 0;
 }
 
-/* Parked TX frame from the last successful TCP net_sock_send: sets
- * *len_out and returns the frame bytes, or 0/0 when nothing was ever
- * emitted. The wire TX path copies the frame before transmitting. */
+/* Parked TX frame for one entry (Task 2): sets *len_out and returns
+ * that entry's frame bytes, or 0/0 when unbound or nothing was ever
+ * emitted there. The wire TX path copies the frame before transmitting. */
+const uint8_t *net_sock_tcp_tx_for(int id, unsigned long *len_out)
+{
+    int slot;
+    struct net_tcp_conn *c = net_sock_tcp(id);
+    if (!c)
+    {
+        if (len_out)
+            *len_out = 0;
+        return 0;
+    }
+    slot = tcb_slot_of(c);
+    if (slot < 0)
+    {
+        if (len_out)
+            *len_out = 0;
+        return 0;
+    }
+    if (len_out)
+        *len_out = net_tcp_tx_len[slot];
+    return net_tcp_tx_len[slot] ? net_tcp_tx[slot] : 0;
+}
+
+/* Legacy parked-frame shape: the first bound entry's frame, or 0/0 when
+ * no TCP entry is live. Single-entry callers behave exactly as before. */
 const uint8_t *net_sock_tcp_tx(unsigned long *len_out)
 {
-    if (len_out)
-        *len_out = net_tcp_tx_len;
-    return net_tcp_tx_len ? net_tcp_tx : 0;
+    return net_sock_tcp_tx_for(net_sock_tcp_bound(), len_out);
+}
+
+/* Bound socket id for table slot s, or -1 when the slot is free, out of
+ * range, or its socket closed (Task 2: lets the v2_main loop iterate all
+ * 4 entries per pass instead of the first bound entry only). */
+int net_sock_tcp_slot_sid(int s)
+{
+    int sid;
+    if (s < 0 || s >= NET_TCP_MAX)
+        return -1;
+    sid = net_tcb_sock[s];
+    if (sid < 0 || sid >= NET_SOCK_MAX)
+        return -1;
+    if (!net_socks[sid].used)
+        return -1;
+    if (net_socks[sid].kind != NET_SOCK_TCP)
+        return -1;
+    return sid;
 }
 
 /* Arm the retry deadline after the TX pass transmits the parked frame
@@ -676,12 +738,16 @@ const uint8_t *net_sock_tcp_tx(unsigned long *len_out)
  * is parked. */
 int net_sock_tcp_retry_arm(int id, uint64_t now, uint64_t spacing)
 {
+    int slot;
     struct net_tcp_conn *c = net_sock_tcp(id);
     if (!c)
         return -1;
     if (c->state == NET_TCP_CLOSED)
         return -1;
-    if (net_tcp_tx_len == 0)
+    slot = tcb_slot_of(c);
+    if (slot < 0)
+        return -1;
+    if (net_tcp_tx_len[slot] == 0)
         return -1;
     c->retry_deadline = now + spacing;
     return 0;
@@ -708,34 +774,38 @@ int net_sock_tcp_ack_cover(int id, uint32_t ack)
     return 1;
 }
 
-/* Per-pass retry due check (design Sec 2, RFC 793 section 3.7: same pass
- * that pumps RX). Task 1 slice: polls the first bound entry only (per-
- * entry iteration lands in Task 2). Wrap-safe unsigned compare, as the
- * waiter expiry. On a due expiry with budget left the parked frame is
- * resent verbatim (bytes untouched, snd_nxt holds) and the deadline
- * re-arms; on the 5th due expiry (count already at NET_TCP_RETRY_MAX - 1)
- * the entry RST-aborts to CLOSED with a header-only RST|ACK parked for
- * the wire pass, the retry state disarms, and that entry's socket waiter
- * (if armed) is captured for the caller's single S_ERR wake and cleared.
- * A TIME_WAIT linger never resends: past its deadline (wrap-safe compare)
- * the entry falls to CLOSED
+/* Per-entry retry due check (Task 2, design Sec 2, RFC 793 section
+ * 3.7: the loop runs this for every entry on the same pass that pumps
+ * RX, 4 x the old bounded cost). Wrap-safe unsigned compare, as the
+ * waiter expiry. On a due expiry with budget left the entry's parked
+ * frame is resent verbatim (bytes untouched, snd_nxt holds) and the
+ * deadline re-arms; on the 5th due expiry (count already at
+ * NET_TCP_RETRY_MAX - 1) the entry RST-aborts to CLOSED with a
+ * header-only RST|ACK parked in its own slot for the wire pass, the
+ * retry state disarms, and that entry's socket waiter (if armed) is
+ * captured for the caller's single S_ERR wake and cleared. A TIME_WAIT
+ * linger never resends: past its deadline (wrap-safe compare) the entry
+ * falls to CLOSED
  * with the retry disarmed (return 0, outs zeroed), freeing the port for
  * rebind; the socket stays open for an explicit close and no waiter
  * wakes (the entry wake is Task 3). Returns 0 (nothing due),
- * 1 (resend: transmit net_sock_tcp_tx verbatim), or 2 (abort: transmit
- * the parked RST, ASEND S_ERR once iff *waiter_out). Both out-params are
- * always written (0 on 0/1) and tolerate NULL. */
-int net_sock_tcp_retry_poll(uint64_t now, uint64_t spacing, unsigned *owner_out, int *waiter_out)
+ * 1 (resend: transmit net_sock_tcp_tx_for verbatim), or 2 (abort:
+ * transmit the parked RST, ASEND S_ERR once iff *waiter_out). Both
+ * out-params are always written (0 on 0/1) and tolerate NULL. */
+int net_sock_tcp_retry_poll_one(int id, uint64_t now, uint64_t spacing, unsigned *owner_out, int *waiter_out)
 {
-    int bound = net_sock_tcp_bound();
     struct net_tcp_conn *c;
+    int slot;
     unsigned long rstlen = 0;
     if (owner_out)
         *owner_out = 0;
     if (waiter_out)
         *waiter_out = 0;
-    c = net_sock_tcp(bound);
+    c = net_sock_tcp(id);
     if (!c || c->state == NET_TCP_CLOSED)
+        return 0;
+    slot = tcb_slot_of(c);
+    if (slot < 0)
         return 0;
     if (c->state == NET_TCP_TIME_WAIT)
     {
@@ -751,7 +821,7 @@ int net_sock_tcp_retry_poll(uint64_t now, uint64_t spacing, unsigned *owner_out,
     }
     if (c->retry_deadline == 0u)
         return 0;
-    if (net_tcp_tx_len == 0)
+    if (net_tcp_tx_len[slot] == 0)
     {
         /* Defensive: armed with nothing parked (unreachable via the seam
          * above); disarm rather than spin. */
@@ -767,22 +837,55 @@ int net_sock_tcp_retry_poll(uint64_t now, uint64_t spacing, unsigned *owner_out,
         c->retry_deadline = now + spacing;
         return 1;
     }
-    if (tcp_rst_build(c, net_tcp_tx, &rstlen) == 0)
-        net_tcp_tx_len = rstlen;
+    if (tcp_rst_build(c, net_tcp_tx[slot], &rstlen) == 0)
+        net_tcp_tx_len[slot] = rstlen;
     else
-        net_tcp_tx_len = 0; /* ARP miss: abort the state, send nothing */
+        net_tcp_tx_len[slot] = 0; /* ARP miss: abort the state, send nothing */
     c->state = NET_TCP_CLOSED;
     c->retry_deadline = 0u;
     c->retry_count = 0u;
-    if (bound >= 0 && bound < NET_SOCK_MAX && net_waiters[bound].armed)
+    if (id >= 0 && id < NET_SOCK_MAX && net_waiters[id].armed)
     {
         if (owner_out)
-            *owner_out = net_waiters[bound].owner;
+            *owner_out = net_waiters[id].owner;
         if (waiter_out)
             *waiter_out = 1;
-        net_waiter_clear(bound);
+        net_waiter_clear(id);
     }
     return 2;
+}
+
+/* Legacy per-pass poll shape: runs the per-entry check over all 4 table
+ * entries in table order and reports the first due entry (same 0/1/2
+ * contract, outs for that entry). Single-entry callers behave exactly
+ * as before; multi-entry callers needing every due entry in one pass
+ * (the v2_main loop) iterate net_sock_tcp_slot_sid + poll_one instead. */
+int net_sock_tcp_retry_poll(uint64_t now, uint64_t spacing, unsigned *owner_out, int *waiter_out)
+{
+    int i;
+    if (owner_out)
+        *owner_out = 0;
+    if (waiter_out)
+        *waiter_out = 0;
+    for (i = 0; i < NET_TCP_MAX; i++) /* bound: 4 */
+    {
+        int sid = net_sock_tcp_slot_sid(i);
+        unsigned o = 0;
+        int w = 0;
+        int trc;
+        if (sid < 0)
+            continue;
+        trc = net_sock_tcp_retry_poll_one(sid, now, spacing, &o, &w);
+        if (trc != 0)
+        {
+            if (owner_out)
+                *owner_out = o;
+            if (waiter_out)
+                *waiter_out = w;
+            return trc;
+        }
+    }
+    return 0;
 }
 
 int net_waiter_arm(int sock_id, unsigned owner, uint64_t now, uint64_t timeout)

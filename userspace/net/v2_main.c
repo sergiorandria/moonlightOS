@@ -1493,29 +1493,40 @@ void net_main(void)
         if (pend_valid && now - pend_t0 > (uint64_t)NET_IRQ_TIMEOUT_TICKS)
             pend_valid = 0;
 
-        /* TCP retransmit (slice Sec 2, RFC 793 section 3.7): per-pass due
-         * check on the parked frame (SYN, unacked PSH, FIN), on the same
-         * pass that pumps RX below. A resend transmits the parked bytes
-         * verbatim; exhaustion parks an RST|ACK, aborts the TCB to CLOSED,
-         * and wakes the armed waiter once with S_ERR via ASEND (the poll
+        /* TCP retransmit (slice Sec 2, RFC 793 section 3.7): per-entry due
+         * check over all 4 table entries (Task 2 multi-TCB: 4 x the old
+         * bounded cost, so a second entry's expiry never strands while
+         * the first holds), on the same pass that pumps RX below. A
+         * resend transmits that entry's parked bytes verbatim; exhaustion
+         * parks an RST|ACK, aborts that entry's TCB to CLOSED, and wakes
+         * that entry's armed waiter once with S_ERR via ASEND (the poll
          * already cleared it, so this fires exactly once; the socket stays
-         * open for an explicit close). A TIME_WAIT linger expires silently
-         * here (no frame, no wake: the port frees for rebind). Arming happens on the TX passes
+         * open for an explicit close). The wake gates on the aborting
+         * entry's own socket (a first-entry check would drop a later
+         * entry's wake). A TIME_WAIT linger expires silently here (no
+         * frame, no wake: the port frees for rebind). Arming happens on the TX passes
          * above, never here, so resends never reset the retry budget. */
         {
-            unsigned r_owner = 0;
-            int r_wait = 0;
-            int trc = net_sock_tcp_retry_poll(now, (uint64_t)NET_IRQ_TIMEOUT_TICKS, &r_owner, &r_wait);
-            if (trc == 1 || trc == 2)
+            int rs;
+            for (rs = 0; rs < NET_TCP_MAX; rs++) /* bound: 4 */
             {
+                int rsid = net_sock_tcp_slot_sid(rs);
+                unsigned r_owner = 0;
+                int r_wait = 0;
+                int trc;
                 unsigned long rlen = 0;
-                const uint8_t *rtx = net_sock_tcp_tx(&rlen);
+                const uint8_t *rtx;
+                if (rsid < 0)
+                    continue;
+                trc = net_sock_tcp_retry_poll_one(rsid, now, (uint64_t)NET_IRQ_TIMEOUT_TICKS, &r_owner, &r_wait);
+                if (trc != 1 && trc != 2)
+                    continue;
+                rtx = net_sock_tcp_tx_for(rsid, &rlen);
                 if (rtx && rlen >= 14u && rlen <= (unsigned long)NET_PKT_MAX)
                     (void)net_tx_frame(&wire, rtx, rlen);
                 if (trc == 2 && r_wait)
                 {
-                    int bs = net_sock_tcp_bound();
-                    if (bs >= 0 && net_owner_live((long)bs, r_owner))
+                    if (net_owner_live((long)rsid, r_owner))
                         net_wake_reply((unsigned long)r_owner, (uint64_t)S_ERR, 0);
                 }
             }
@@ -1648,7 +1659,7 @@ void net_main(void)
                              * below misses: the parked frame is what the
                              * poll resends. */
                             (void)net_sock_tcp_retry_arm(sid, now, (uint64_t)NET_IRQ_TIMEOUT_TICKS);
-                            txp = net_sock_tcp_tx(&flen);
+                            txp = net_sock_tcp_tx_for(sid, &flen);
                             if (!txp || flen == 0 || flen > (unsigned long)NET_PKT_MAX)
                             {
                                 net_rpc_reply(snd, (uint64_t)S_ERR, 0);
@@ -1887,7 +1898,7 @@ void net_main(void)
                          * ESTABLISHED, passive on CLOSE_WAIT): the socket
                          * stays open, so no queue is drained and the waiter
                          * is untouched. A parked unacked segment still owns
-                         * the single TX slot (fin_close rejects while the
+                         * the entry's TX slot (fin_close rejects while the
                          * retry is armed), as does an ARP miss: both answer
                          * S_ERR with the connection untouched. Otherwise
                          * the parked FIN transmits now and the retry arms,
@@ -1902,7 +1913,7 @@ void net_main(void)
                         else
                         {
                             (void)net_sock_tcp_retry_arm((int)sid, now, (uint64_t)NET_IRQ_TIMEOUT_TICKS);
-                            txp = net_sock_tcp_tx(&flen);
+                            txp = net_sock_tcp_tx_for((int)sid, &flen);
                             if (txp && flen >= 14u && flen <= (unsigned long)NET_PKT_MAX)
                             {
                                 for (k = 0; k < flen; k++) /* bound: 1514 */

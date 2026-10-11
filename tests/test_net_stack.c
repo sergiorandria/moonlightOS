@@ -1051,10 +1051,27 @@ int main(void)
         CHECK(replen == 14u + 20u + 20u);
         CHECK(rep[14 + 20 + 13] == (uint8_t)TCP_ACK);
         CHECK(rep[42] == 0x0Au && rep[45] == 0x0Eu);
-        /* Single live TCB: second concurrent TCP open fails closed. */
+        /* Multi-TCB Task 2: second concurrent TCP open binds its own
+         * entry (RFC 793 one state machine per connection); a stays
+         * ESTABLISHED on 8080 while 8081 establishes alongside with
+         * independent snd_nxt. b2 closes at once: later vectors reuse
+         * 8081 and assume a's exact snd_nxt. */
         b2 = net_sock_open(NET_SOCK_TCP, 8081, 2);
-        CHECK(b2 < 0);
-        CHECK(net_sock_demux(8081) < 0);
+        CHECK(b2 >= 0);
+        CHECK(net_sock_demux(8081) == b2);
+        {
+            struct net_tcp_conn *tB = net_sock_tcp(b2);
+            CHECK(tB != 0 && tB != t);
+            CHECK(tB->state == NET_TCP_CLOSED);
+            CHECK(t2_establish(b2, dmac, rip, 0x0A0B0C0Du, 0x05060708u, 8081u, syn, sa, rep, &replen) == 0);
+            CHECK(tB->state == NET_TCP_ESTABLISHED);
+            CHECK(t->state == NET_TCP_ESTABLISHED);
+            CHECK(t->snd_nxt != tB->snd_nxt); /* independent seq, same peer IP */
+            CHECK(net_sock_tcp_bound() == a); /* first live entry */
+            CHECK(net_sock_close(b2) == 0);
+            CHECK(net_sock_tcp(b2) == 0);
+            CHECK(net_sock_demux(8081) < 0);
+        }
         /* ESTABLISHED send: one in-order segment, MSS-capped. */
         CHECK(net_sock_send(a, hello, sizeof(hello)) == (int)sizeof(hello));
         CHECK(t->snd_nxt == snd0 + 5u);
@@ -1129,6 +1146,126 @@ int main(void)
         CHECK(net_waiter_match(8081, &wowner) < 0);
         CHECK(net_sock_send(b2, hello, sizeof(hello)) < 0);
         CHECK(net_sock_close(b2) == 0);
+        CHECK(net_sock_tcp_bound() < 0);
+    }
+    /* ---- Multi-TCB Task 2: per-entry retry + duplicate-ACK isolation
+     * (RFC 793 section 3.7, design Sec 2): A expiry resends while B
+     * holds, each entry keeping its own parked frame; a covering ACK
+     * for A never disarms B; A's exhaustion aborts only A. ---- */
+    {
+        static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
+        int A, B;
+        struct net_tcp_conn *tA, *tB;
+        uint8_t syn[58], sa[58], rep[54];
+        uint8_t snapA[1514];
+        uint8_t snapB[1514];
+        unsigned long replen = 0, lA = 0, lB = 0, snaplen = 0, snapBlen = 0, k;
+        const uint8_t *fA;
+        const uint8_t *fB;
+        uint8_t dmac[6];
+        uint32_t rip;
+        uint32_t sndA, sndB;
+        uint64_t tA0 = 10000u, tB0 = 10200u, sp = 50u;
+        unsigned owner = 0;
+        int had = 0, trc;
+        net_stack_init();
+        rip = (uint32_t)NET_IP_GW;
+        CHECK(net_arp_lookup(rip, dmac) == 0);
+        A = net_sock_open(NET_SOCK_TCP, 8080, 1);
+        CHECK(A >= 0);
+        B = net_sock_open(NET_SOCK_TCP, 8081, 2);
+        CHECK(B >= 0);
+        tA = net_sock_tcp(A);
+        tB = net_sock_tcp(B);
+        CHECK(tA != 0 && tB != 0 && tA != tB);
+        CHECK(t2_establish(A, dmac, rip, 0x01020304u, 0x0A0B0C0Du, 8080u, syn, sa, rep, &replen) == 0);
+        CHECK(t2_establish(B, dmac, rip, 0x0A0B0C0Du, 0x05060708u, 8081u, syn, sa, rep, &replen) == 0);
+        CHECK(tA->state == NET_TCP_ESTABLISHED && tB->state == NET_TCP_ESTABLISHED);
+        CHECK(tA->snd_nxt != tB->snd_nxt); /* independent seq, same peer IP */
+        CHECK(net_sock_tcp_bound() == A);  /* first live entry */
+        /* One segment each; the TX pass arms each entry's own retry. */
+        CHECK(net_sock_send(A, hello, sizeof(hello)) == (int)sizeof(hello));
+        sndA = tA->snd_nxt;
+        CHECK(net_sock_tcp_retry_arm(A, tA0, sp) == 0);
+        fA = net_sock_tcp_tx(&lA);
+        CHECK(fA != 0 && lA == 14u + 20u + 20u + sizeof(hello));
+        for (k = 0; k < lA; k++) /* bound: 1514 */
+            snapA[k] = fA[k];
+        snaplen = lA;
+        CHECK(net_sock_send(B, hello, sizeof(hello)) == (int)sizeof(hello));
+        sndB = tB->snd_nxt;
+        CHECK(net_sock_tcp_retry_arm(B, tB0, sp) == 0);
+        fB = net_sock_tcp_tx_for(B, &lB);
+        CHECK(fB != 0 && lB == 14u + 20u + 20u + sizeof(hello));
+        for (k = 0; k < lB; k++) /* bound: 1514 */
+            snapB[k] = fB[k];
+        snapBlen = lB;
+        /* B's send never clobbers A's parked frame: the first-bound entry
+         * still reads A's segment (sport 8080, A's seq). */
+        fA = net_sock_tcp_tx(&lA);
+        CHECK(fA != 0 && lA == snaplen && memcmp(fA, snapA, snaplen) == 0);
+        CHECK(fA[34] == 0x1Fu && fA[35] == 0x90u);
+        /* Per-entry slots: each entry reads its own frame (seq + ports). */
+        fA = net_sock_tcp_tx_for(A, &lA);
+        CHECK(fA != 0 && lA == snaplen && memcmp(fA, snapA, snaplen) == 0);
+        fB = net_sock_tcp_tx_for(B, &lB);
+        CHECK(fB != 0 && lB == snapBlen && memcmp(fB, snapB, snapBlen) == 0);
+        CHECK(fB != fA);
+        CHECK(fB[34] == 0x1Fu && fB[35] == 0x91u); /* sport 8081 */
+        CHECK(fB[38] == (uint8_t)((sndB - 5u) >> 24) && fB[39] == (uint8_t)((sndB - 5u) >> 16) &&
+              fB[40] == (uint8_t)((sndB - 5u) >> 8) && fB[41] == (uint8_t)(sndB - 5u));
+        CHECK(net_sock_tcp_tx_for(-1, &lB) == 0 && lB == 0);
+        /* Slot enumerator: A took slot 0, B slot 1 (table empty on entry). */
+        CHECK(net_sock_tcp_slot_sid(0) == A);
+        CHECK(net_sock_tcp_slot_sid(1) == B);
+        CHECK(net_sock_tcp_slot_sid(2) < 0);
+        CHECK(net_sock_tcp_slot_sid(4) < 0);
+        CHECK(net_sock_tcp_slot_sid(-1) < 0);
+        /* Covering ACK for A disarms only A; B holds its budget. */
+        CHECK(net_sock_tcp_ack_cover(A, sndA) == 1);
+        CHECK(tA->retry_deadline == 0u && tA->retry_count == 0u);
+        CHECK(tB->retry_deadline == tB0 + sp && tB->retry_count == 0u);
+        CHECK(net_sock_tcp_ack_cover(A, sndA) == 0);      /* disarmed: no-op */
+        CHECK(net_sock_tcp_ack_cover(B, sndB - 1u) == 0); /* stale: B holds */
+        CHECK(tB->retry_deadline == tB0 + sp && tB->retry_count == 0u);
+        /* Only B armed: B's expiry resends while A holds. */
+        trc = net_sock_tcp_retry_poll(tB0 + sp, sp, &owner, &had);
+        CHECK(trc == 1 && had == 0);
+        CHECK(tB->retry_count == 1u && tB->retry_deadline == tB0 + 2u * sp);
+        CHECK(tA->retry_deadline == 0u && tA->retry_count == 0u);
+        fB = net_sock_tcp_tx_for(B, &lB);
+        CHECK(fB != 0 && lB == snapBlen && memcmp(fB, snapB, snapBlen) == 0); /* resend verbatim */
+        CHECK(net_sock_tcp_ack_cover(B, sndB) == 1);                          /* B disarms for the FIN leg below */
+        /* A's exhaustion aborts only A: 4 resends, then RST. */
+        CHECK(net_sock_tcp_retry_arm(A, tA0, sp) == 0);
+        CHECK(net_sock_tcp_retry_poll(tA0 + sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(tA0 + 2u * sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(tA0 + 3u * sp, sp, &owner, &had) == 1);
+        CHECK(net_sock_tcp_retry_poll(tA0 + 4u * sp, sp, &owner, &had) == 1);
+        CHECK(tA->retry_count == 4u && tA->state == NET_TCP_ESTABLISHED);
+        CHECK(tB->state == NET_TCP_ESTABLISHED); /* B untouched throughout */
+        fA = net_sock_tcp_tx(&lA);
+        CHECK(fA != 0 && lA == snaplen && memcmp(fA, snapA, snaplen) == 0); /* A resends its own frame */
+        CHECK(net_waiter_arm(A, 1, tA0, 100000u) == 0);
+        trc = net_sock_tcp_retry_poll(tA0 + 5u * sp, sp, &owner, &had);
+        CHECK(trc == 2 && had == 1 && owner == 1);
+        CHECK(tA->state == NET_TCP_CLOSED);
+        CHECK(tA->retry_deadline == 0u && tA->retry_count == 0u);
+        CHECK(tB->state == NET_TCP_ESTABLISHED);
+        CHECK(tB->retry_deadline == 0u && tB->retry_count == 0u);
+        fA = net_sock_tcp_tx(&lA);
+        CHECK(fA != 0 && lA == 14u + 20u + 20u);
+        CHECK(fA[14 + 20 + 13] == (uint8_t)(TCP_RST | TCP_ACK));
+        CHECK(fA[34] == 0x1Fu && fA[35] == 0x90u); /* RST names A's port */
+        CHECK(fA[38] == (uint8_t)(sndA >> 24) && fA[39] == (uint8_t)(sndA >> 16) && fA[40] == (uint8_t)(sndA >> 8) &&
+              fA[41] == (uint8_t)sndA);
+        CHECK(tA->snd_nxt == sndA); /* RST consumes no sequence number */
+        fB = net_sock_tcp_tx_for(B, &lB);
+        CHECK(fB != 0 && lB == snapBlen && memcmp(fB, snapB, snapBlen) == 0); /* B's frame intact */
+        trc = net_sock_tcp_retry_poll(tA0 + 6u * sp, sp, &owner, &had);
+        CHECK(trc == 0 && had == 0); /* fired exactly once */
+        CHECK(net_sock_close(A) == 0);
+        CHECK(net_sock_close(B) == 0);
         CHECK(net_sock_tcp_bound() < 0);
     }
     /* ---- Seam Task 3: TCP RX demux + waiter wakeup ---- */
@@ -1861,7 +1998,7 @@ int main(void)
      * (RFC 793 section 3.5, 2MSL = NET_TCP_TIME_WAIT_TICKS): duplicate
      * FIN/data re-ACK without state change; expiry one tick before the
      * deadline holds, at the deadline falls to CLOSED; the lingering
-     * port refuses open and every new open fails closed until expiry. ---- */
+     * entry blocks only its own port while unrelated ports open. ---- */
     {
         static const uint8_t hello[5] = {'h', 'e', 'l', 'l', 'o'};
         static const uint8_t gwmac[6] = {0x52u, 0x54u, 0x00u, 0x12u, 0x34u, 0x56u};
@@ -1941,9 +2078,18 @@ int main(void)
         CHECK(net_sock_tcp_retry_poll(dl - 1u, 50u, &owner, &had) == 0 && had == 0);
         CHECK(t->state == NET_TCP_TIME_WAIT);
         CHECK(t->retry_deadline == dl && t->retry_count == 0u);
-        /* ... every new open fails closed for the whole linger (spec
-         * Sec 2): the linger survives, keeping its duplicate-ACK duty. */
-        CHECK(net_sock_open(NET_SOCK_TCP, 8081, 2) < 0);
+        /* ... the linger blocks only its own port (design Sec 4:
+         * strict-block becomes per-entry): an unrelated port opens
+         * freely while the lingering entry keeps its duplicate-ACK
+         * duty and its own port stays reserved. */
+        {
+            int c2 = net_sock_open(NET_SOCK_TCP, 8081, 2);
+            CHECK(c2 >= 0);
+            CHECK(t->state == NET_TCP_TIME_WAIT);
+            CHECK(t->retry_deadline == dl && t->retry_count == 0u);
+            CHECK(net_sock_close(c2) == 0);
+        }
+        CHECK(net_sock_open(NET_SOCK_TCP, 8080, 9) < 0); /* own port reserved */
         CHECK(t->state == NET_TCP_TIME_WAIT);
         CHECK(t->retry_deadline == dl && t->retry_count == 0u);
         CHECK(net_sock_close(a) == 0);
