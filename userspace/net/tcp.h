@@ -26,6 +26,10 @@
 #define NET_TCP_FIN_WAIT 3   /* active close: our FIN sent, peer ACK pending */
 #define NET_TCP_CLOSE_WAIT 4 /* passive close: peer FIN seen+ACKed, our FIN pending */
 #define NET_TCP_LAST_ACK 5   /* passive close: our FIN sent, peer ACK pending */
+#define NET_TCP_TIME_WAIT 6  /* linger (RFC 793 section 3.5): both closes park here for 2MSL */
+/* 2MSL linger, rdtime ticks (~60s at the 10MHz timebase shared with
+ * NET_IRQ_TIMEOUT_TICKS). Entry stamps now + this; RST skips it. */
+#define NET_TCP_TIME_WAIT_TICKS 600000000UL
 
 static inline int tcp_hdr_ok(const uint8_t *f, unsigned long len)
 {
@@ -196,18 +200,23 @@ static inline int net_tcp_syn(struct net_tcp_conn *c, const uint8_t *dmac, uint3
  * (ack == snd_nxt: FIN consumed one sequence
  * number at build) or any peer FIN (including an early FIN-ACK sent
  * before our FIN was ACKed: simultaneous close) completes the close
- * exactly once to CLOSED with the retry budget disarmed; the sock seam
- * clears the waiter and the loop wakes it once. Anything else in
+ * exactly once to TIME_WAIT (RFC 793 section 3.5 linger: retry_deadline
+ * = now + NET_TCP_TIME_WAIT_TICKS, retry disarmed, no reply parked);
+ * the sock seam holds the waiter armed across entry (the loop wakes it
+ * once, Task 3). Anything else in
  * FIN_WAIT (stale ACK, stray data-shaped segment) drops with FIN_WAIT
  * held, so the FIN retry keeps running. No reply frame is ever parked
  * on the FIN_WAIT close: a bare close needs no wire answer, and
- * duplicate peer FINs arriving after CLOSED drop at the top. LAST_ACK
+ * duplicate peer FINs arriving after the linger (CLOSED) drop at the top. LAST_ACK
  * input closes exactly once on the covering ACK of our FIN
- * (ack == snd_nxt); a duplicate peer FIN parks a re-ACK and holds
+ * (ack == snd_nxt) to TIME_WAIT (same linger stamp as the FIN_WAIT
+ * leg); a duplicate peer FIN parks a re-ACK and holds
  * LAST_ACK (Task 3 ruling, detailed below); a stale ACK holds LAST_ACK
- * with the FIN retry untouched. RST at any live state
+ * with the FIN retry untouched. TIME_WAIT input holds (drops with no
+ * reply: duplicate-ACK replies are Task 2). RST at any live state
  * (RFC 793 section 3.5: the FIN_WAIT active-close leg included) aborts
- * to CLOSED and zeroes the retry state; the sock seam disarms the
+ * to CLOSED and zeroes the retry state (RST skips the linger); the
+ * sock seam disarms the
  * waiter. ESTABLISHED non-FIN input
  * drops here: stream RX lives in stack.c. CLOSED input drops.
  *
@@ -283,8 +292,12 @@ static inline void tcp_park_ack(const struct net_tcp_conn *c, const uint8_t *f, 
     *outlen = total;
 }
 
-static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsigned long len, uint8_t *out,
-                                unsigned long *outlen)
+/* Clock-threading input: now stamps the TIME_WAIT linger (now +
+ * NET_TCP_TIME_WAIT_TICKS) on both graceful completions. The legacy
+ * net_tcp_input wrapper below passes now = 0 (test-pinned baseline);
+ * the loop passes u_rdtime() once it migrates (Task 2). */
+static inline int net_tcp_input_at(struct net_tcp_conn *c, const uint8_t *f, unsigned long len, uint8_t *out,
+                                   unsigned long *outlen, uint64_t now)
 {
     unsigned ihl, off, i;
     uint32_t sip, seq, ack;
@@ -327,8 +340,8 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
                          (uint32_t)f[off + 11]);
         if (((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt) || (flags & (unsigned)TCP_FIN))
         {
-            c->state = NET_TCP_CLOSED;
-            c->retry_deadline = 0u;
+            c->state = NET_TCP_TIME_WAIT;
+            c->retry_deadline = now + NET_TCP_TIME_WAIT_TICKS;
             c->retry_count = 0u;
         }
         return 0;
@@ -355,8 +368,10 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
         /* Passive-close completion (RFC 793 section 3.5 LAST-ACK): the
          * peer ACK covering our FIN (ack == snd_nxt: FIN consumed one
          * sequence number at build, same as the FIN_WAIT leg) closes
-         * exactly once to CLOSED with the retry budget disarmed; the sock
-         * seam clears the waiter and the loop wakes it once. A duplicate
+         * exactly once to TIME_WAIT (linger: retry_deadline = now +
+         * NET_TCP_TIME_WAIT_TICKS, retry disarmed, no reply frame); the
+         * sock seam holds the waiter armed across entry (the loop wakes
+         * it once, Task 3). A duplicate
          * peer FIN (Task 3 ruling) parks a re-ACK (returns 1) and holds
          * LAST_ACK with the FIN retry untouched -- a premature close
          * would drop the duplicate-ACK obligation. A duplicate FIN whose
@@ -376,18 +391,25 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
             tcp_park_ack(c, f, sip, out, outlen);
             if ((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt)
             {
-                c->state = NET_TCP_CLOSED;
-                c->retry_deadline = 0u;
+                c->state = NET_TCP_TIME_WAIT;
+                c->retry_deadline = now + NET_TCP_TIME_WAIT_TICKS;
                 c->retry_count = 0u;
             }
             return 1;
         }
         if ((flags & (unsigned)TCP_ACK) && ack == c->snd_nxt)
         {
-            c->state = NET_TCP_CLOSED;
-            c->retry_deadline = 0u;
+            c->state = NET_TCP_TIME_WAIT;
+            c->retry_deadline = now + NET_TCP_TIME_WAIT_TICKS;
             c->retry_count = 0u;
         }
+        return 0;
+    }
+    if (c->state == NET_TCP_TIME_WAIT)
+    {
+        /* Linger hold (Task 1 slice): never re-close, never re-arm.
+         * Duplicate-ACK replies land here in Task 2; until then drop
+         * with TIME_WAIT held. */
         return 0;
     }
     if (c->state == NET_TCP_ESTABLISHED && (flags & (unsigned)TCP_FIN))
@@ -475,6 +497,15 @@ static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsign
     out[51] = (uint8_t)(ck & 0xFFu);
     *outlen = total;
     return 1;
+}
+
+/* Legacy input (no clock): TIME_WAIT linger stamps relative to 0.
+ * Kept so the loop and older vectors compile unchanged until Task 2
+ * threads u_rdtime() through net_tcp_input_at. */
+static inline int net_tcp_input(struct net_tcp_conn *c, const uint8_t *f, unsigned long len, uint8_t *out,
+                                unsigned long *outlen)
+{
+    return net_tcp_input_at(c, f, len, out, outlen, 0u);
 }
 
 #endif /* NET_TCP_H */
