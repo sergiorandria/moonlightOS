@@ -16,8 +16,7 @@
 #include "services/ipc_protocol.h"
 #include <stdint.h>
 
-int moonlight_yield(void); /* from lib; putc comes from the TTY shim below */
-
+/* moonlight_yield comes from ipc_helpers.h (lib). */
 #define TTY_LINE_MAX 256
 #define SHELL_TTY_ID 0 /* Use TTY 0 (console F1) */
 #define SHELL_TID 1    /* Shell is thread 1 */
@@ -25,37 +24,72 @@ int moonlight_yield(void); /* from lib; putc comes from the TTY shim below */
 /* Engine I/O hooks (shell_core.h externs), TTY-backed. Only
  * shell_platform_write and moonlight_yield are used on target
  * (the engine's putc declaration is currently uncalled). */
-static unsigned tty_write_count;
 __attribute__((noinline)) static void shell_platform_write(const char *s, int len)
 {
     if (s && len > 0)
     {
+        /* Pacing now lives inside tty_write (one yield per 16-byte chunk:
+         * 1:1 producer discipline, see there). */
         tty_write(SHELL_TID, SHELL_TTY_ID, s, (uint32_t)len);
-        /* Paced output: bursts (help ~60 puts) overflow the 32-slot
-         * queue while the consumer never runs (no preemption mid-exec),
-         * dropping paint permanently. Yield regularly to let it drain. */
-        if (++tty_write_count % 8u == 0u)
-            moonlight_yield();
     }
 }
 
 #include "shell_core.h"
 
-/* Read one line from TTY (blocking) */
+/* Read one line from TTY (blocking). TTY returns at most TTY_BUF_SIZE
+ * bytes per IPC round trip, so long lines arrive as multiple fragments:
+ * keep reading until newline or the buffer is full. */
 static int shell_read_line(char *buf, int max_len)
 {
-    int len = tty_read(SHELL_TID, SHELL_TTY_ID, buf, max_len - 1);
-    if (len < 0)
-        len = 0;
+    int total = 0;
+    int done = 0;
 
-    /* Remove trailing newline */
-    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r'))
+    while (!done && total < max_len - 1)
     {
-        len--;
+        char frag[TTY_BUF_SIZE];
+        int len = tty_read(SHELL_TID, SHELL_TTY_ID, frag, sizeof(frag));
+        int i;
+
+        if (len <= 0)
+            break;
+        for (i = 0; i < len && total < max_len - 1; i++)
+        {
+            buf[total++] = frag[i];
+            if (frag[i] == '\n')
+            {
+                done = 1;
+                break;
+            }
+        }
+    }
+    /* Over-long tail: discard through the newline so the next read starts
+     * fresh instead of executing the tail as a new command. */
+    while (!done)
+    {
+        char frag[TTY_BUF_SIZE];
+        int len = tty_read(SHELL_TID, SHELL_TTY_ID, frag, sizeof(frag));
+        int j;
+
+        if (len <= 0)
+            break;
+        for (j = 0; j < len; j++)
+        {
+            if (frag[j] == '\n')
+            {
+                done = 1;
+                break;
+            }
+        }
     }
 
-    buf[len] = '\0';
-    return len;
+    /* Remove trailing newline */
+    while (total > 0 && (buf[total - 1] == '\n' || buf[total - 1] == '\r'))
+    {
+        total--;
+    }
+
+    buf[total] = '\0';
+    return total;
 }
 
 /*
