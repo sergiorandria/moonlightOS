@@ -11,8 +11,6 @@
 #include "services/ipc_protocol.h"
 #include <stdint.h>
 
-int moonlight_yield(void); /* paced repaint: let the GUI drain keep up */
-
 /* Console state (12 virtual consoles) */
 static console_state_t consoles[CONSOLE_COUNT];
 static uint32_t active_console = 0; /* Currently visible console (0-11) */
@@ -22,6 +20,48 @@ static void handle_gui_key_event(const msg_key_event_t *msg);
 static void handle_gui_mouse_event(const msg_mouse_event_t *msg);
 static void handle_tty_write(const msg_tty_write_t *msg);
 static void handle_kernel_boot_log(const msg_kernel_boot_log_t *msg);
+
+/* Flush the pending paint run as one MSG_CONSOLE_PUTS (active console
+ * only; inactive consoles repaint from cells on switch). Always resets
+ * the run: cells already hold the truth. Bold is pre-resolved to a
+ * bright palette index (same rule the old per-cell path used) so the GUI stays a
+ * dumb painter. The GUI draws the cursor at the run end, so no separate
+ * CURSOR RPC is needed on the hot path. */
+static void console_flush_run(console_state_t *cons)
+{
+    if (cons->prun_active && cons->prun_len > 0 && cons == &consoles[active_console])
+    {
+        uint32_t fgi = cons->prun_fg;
+        uint32_t pal;
+        if (cons->prun_attr & ATTR_BOLD)
+            fgi = (fgi & 0x7u) | (uint32_t)COLOR_BRIGHT;
+        pal = (fgi & 0xFu) | (((uint32_t)cons->prun_bg & 0xFu) << 4);
+        console_send_puts(cons->prun_x, cons->prun_y, pal, cons->prun_data, cons->prun_len);
+        cons->puts_sent++;
+    }
+    cons->prun_active = 0;
+    cons->prun_len = 0;
+}
+
+/* Accumulate one cell into the pending run, flushing first on any run
+ * break (new row, colors/attr change, run full). */
+static void console_run_put(console_state_t *cons, uint32_t x, uint32_t y, char ch, uint8_t fg, uint8_t bg,
+                            uint8_t attr)
+{
+    if (!(cons->prun_active && cons->prun_len < 16 && cons->prun_x + (uint32_t)cons->prun_len == x &&
+          cons->prun_y == y && cons->prun_fg == fg && cons->prun_bg == bg && cons->prun_attr == attr))
+    {
+        console_flush_run(cons);
+        cons->prun_active = 1;
+        cons->prun_x = x;
+        cons->prun_y = y;
+        cons->prun_fg = fg;
+        cons->prun_bg = bg;
+        cons->prun_attr = attr;
+        cons->prun_len = 0;
+    }
+    cons->prun_data[cons->prun_len++] = ch;
+}
 
 /*
  * Initialize console service
@@ -108,6 +148,13 @@ void console_main(void)
             /* Unknown message - ignore */
             break;
         }
+
+        /* 1:1 consumer pacing (help-burst loss): one yield per handled
+         * message keeps our PUTS emission inside the GUI's MMIO-bound
+         * drain rate. Without it this loop burst-drains a full backlog
+         * into the 32-deep GUI queue in one slice and the tail drops.
+         * Companion pacing: shell/TTY yield per chunk (producers). */
+        moonlight_yield();
     }
 }
 
@@ -125,6 +172,11 @@ static void handle_gui_key_event(const msg_key_event_t *msg)
         if (msg->keycode >= 0x3B && msg->keycode <= 0x46)
         { /* F1-F12 */
             uint32_t new_console = msg->keycode - 0x3B;
+            /* Fail closed: CONSOLE_COUNT is 1, so consoles[1..] do not
+             * exist — switching there reads OOB and faults the console
+             * thread (dead UI + dead input). Ignore out-of-range targets. */
+            if (new_console >= (uint32_t)CONSOLE_COUNT)
+                return;
             if (new_console != active_console)
             {
                 active_console = new_console;
@@ -144,8 +196,6 @@ static void handle_gui_key_event(const msg_key_event_t *msg)
         };
         input.data[0] = (char)msg->ascii;
         ipc_send_async(SERVICE_TTY, &input, sizeof(input));
-        // Debug visual marker: red asterisk at top‑left corner
-        console_send_putc(0, 0, '*', COLOR_RED, COLOR_BLACK);
     }
 }
 
@@ -167,13 +217,18 @@ static void handle_tty_write(const msg_tty_write_t *msg)
         return;
 
     console_state_t *cons = &consoles[msg->tty_id];
+    uint32_t ox = cons->cursor_x, oy = cons->cursor_y, os = cons->puts_sent;
     console_write(cons, msg->data, msg->len);
 
-    /* Update display if this is the active console */
-    if (msg->tty_id == active_console)
-    {
+    /* Paint the tail run: the shell blocks on its next read right after a
+     * burst, so an unflushed tail would leave the prompt invisible until
+     * more output arrives. Cursor position rides each PUTS (GUI draws the
+     * underline at the run end), so no CURSOR RPC is needed here — unless
+     * the chunk moved the cursor without painting anything (bare newlines,
+     * tabs), in which case the underline would lag one chunk behind. */
+    console_flush_run(cons);
+    if (cons->puts_sent == os && (cons->cursor_x != ox || cons->cursor_y != oy) && msg->tty_id == active_console)
         console_update_cursor(cons);
-    }
 }
 
 /*
@@ -191,6 +246,7 @@ static void handle_kernel_boot_log(const msg_kernel_boot_log_t *msg)
 
     /* Display immediately */
     console_write(cons, msg->data, msg->len);
+    console_flush_run(cons);
 
     /* Update display if console 0 is active */
     if (active_console == 0)
@@ -252,16 +308,29 @@ void console_putchar(console_state_t *cons, char ch)
         {
             cons->cursor_x = 0;
             cons->cursor_y++;
+            /* Same scroll discipline as \n/wrap: tab at bottom must
+             * scroll, not run cursor_y out of bounds (OOB cells write
+             * corrupts state and overwrites visible rows). Ref: BusyBox
+             * ash tab handling advances to next tab stop with wrap. */
+            if (cons->cursor_y >= CONSOLE_HEIGHT)
+            {
+                console_scroll_up(cons, 1);
+                cons->cursor_y = CONSOLE_HEIGHT - 1;
+            }
         }
         return;
     }
     else if (ch == 0x1B)
-    { /* ESC - start ANSI sequence */
+    { /* ESC - start ANSI sequence (flush: colors may change) */
+        console_flush_run(cons);
         cons->ansi_state = 1;
         return;
     }
 
-    /* Printable character */
+    /* Printable character: store the cell, accumulate the paint run (one
+     * PUTS per same-row/same-color run, up to 16 cells). Post-advance rows
+     * flush lazily on the next char or at chunk end; scroll paths flush
+     * explicitly since coords go stale. */
     if (ch >= 0x20 && ch <= 0x7E)
     {
         cons->cells[cons->cursor_y][cons->cursor_x].ch = ch;
@@ -269,11 +338,7 @@ void console_putchar(console_state_t *cons, char ch)
         cons->cells[cons->cursor_y][cons->cursor_x].bg = cons->bg_color;
         cons->cells[cons->cursor_y][cons->cursor_x].attr = cons->attr;
 
-        /* Render if active console */
-        if (cons == &consoles[active_console])
-        {
-            console_render_cell(cons, cons->cursor_x, cons->cursor_y);
-        }
+        console_run_put(cons, cons->cursor_x, cons->cursor_y, ch, cons->fg_color, cons->bg_color, cons->attr);
 
         /* Advance cursor */
         cons->cursor_x++;
@@ -335,6 +400,7 @@ void console_process_ansi(console_state_t *cons, char ch)
             {
             case 'H': /* Cursor position */
             case 'f':
+                console_flush_run(cons);
                 cons->cursor_y = cons->ansi_params[0] > 0 ? cons->ansi_params[0] - 1 : 0;
                 cons->cursor_x = cons->ansi_params[1] > 0 ? cons->ansi_params[1] - 1 : 0;
                 if (cons->cursor_y >= CONSOLE_HEIGHT)
@@ -350,7 +416,8 @@ void console_process_ansi(console_state_t *cons, char ch)
                 }
                 break;
 
-            case 'm': /* Graphics mode (colors) */
+            case 'm': /* Graphics mode (colors: flush, rest of run is stale) */
+                console_flush_run(cons);
                 for (uint32_t i = 0; i < cons->ansi_param_count; i++)
                 {
                     uint32_t param = cons->ansi_params[i];
@@ -386,6 +453,10 @@ void console_process_ansi(console_state_t *cons, char ch)
  */
 void console_clear(console_state_t *cons)
 {
+    /* Discard (do not flush) any pending run: cells are blanked below, so
+     * painting the stale run after the FILL would resurrect text. */
+    cons->prun_active = 0;
+    cons->prun_len = 0;
     for (uint32_t y = 0; y < CONSOLE_HEIGHT; y++)
     {
         for (uint32_t x = 0; x < CONSOLE_WIDTH; x++)
@@ -401,7 +472,11 @@ void console_clear(console_state_t *cons)
 
     if (cons == &consoles[active_console])
     {
-        console_send_clear();
+        /* Preserve background: FILL with the console's current bg
+         * (default BLUE) instead of CLEAR (GUI hardcodes black).
+         * Ref: Linux fbcon clear uses current bg; BusyBox clear keeps
+         * attributes. This fixes "clear resets background". */
+        console_send_fill(0, 0, 800, 600, vga_palette[cons->bg_color & 0xF]);
     }
 }
 /*
@@ -411,26 +486,34 @@ void console_scroll_up(console_state_t *cons, uint32_t lines)
 {
     if (lines == 0)
         return;
+    /* Flush first: cells move below, so pending run coords go stale. */
+    console_flush_run(cons);
     if (lines > CONSOLE_HEIGHT)
         lines = CONSOLE_HEIGHT;
-    /* Move lines up */
-    for (uint32_t i = 0; i < CONSOLE_HEIGHT - lines; i++)
+    /* Move lines up: flat single pass over (HEIGHT-lines)*WIDTH cells.
+     * dest < src, forward copy is memmove-safe. Ref: BusyBox scrolling
+     * text buffer; single loop replaces nested row/col branches. */
     {
-        for (uint32_t x = 0; x < CONSOLE_WIDTH; x++)
-        {
-            cons->cells[i][x] = cons->cells[i + lines][x];
-        }
+        uint32_t move_cells = (CONSOLE_HEIGHT - lines) * (uint32_t)CONSOLE_WIDTH;
+        uint32_t stride = lines * (uint32_t)CONSOLE_WIDTH;
+        console_cell_t *flat = &cons->cells[0][0];
+        uint32_t i;
+        for (i = 0; i < move_cells; i++) /* bound: 2000 */
+            flat[i] = flat[i + stride];
     }
 
-    /* Clear bottom lines */
-    for (uint32_t y = CONSOLE_HEIGHT - lines; y < CONSOLE_HEIGHT; y++)
+    /* Clear bottom lines: flat single pass over lines*WIDTH cells. */
     {
-        for (uint32_t x = 0; x < CONSOLE_WIDTH; x++)
+        uint32_t base = (CONSOLE_HEIGHT - lines) * (uint32_t)CONSOLE_WIDTH;
+        uint32_t total = lines * (uint32_t)CONSOLE_WIDTH;
+        console_cell_t *flat = &cons->cells[0][0];
+        uint32_t i;
+        for (i = 0; i < total; i++) /* bound: 2000 */
         {
-            cons->cells[y][x].ch = ' ';
-            cons->cells[y][x].fg = cons->fg_color;
-            cons->cells[y][x].bg = cons->bg_color;
-            cons->cells[y][x].attr = 0;
+            flat[base + i].ch = ' ';
+            flat[base + i].fg = cons->fg_color;
+            flat[base + i].bg = cons->bg_color;
+            flat[base + i].attr = 0;
         }
     }
 
@@ -442,44 +525,45 @@ void console_scroll_up(console_state_t *cons, uint32_t lines)
 }
 
 /*
- * Render single character cell to GUI
- */
-void console_render_cell(console_state_t *cons, uint32_t x, uint32_t y)
-{
-    console_cell_t *cell = &cons->cells[y][x];
-    uint32_t fg = vga_palette[cell->fg & 0xF];
-    uint32_t bg = vga_palette[cell->bg & 0xF];
-    static uint32_t paint_count = 0;
-
-    /* Apply bold attribute (brighter colors) */
-    if (cell->attr & ATTR_BOLD)
-    {
-        fg = vga_palette[(cell->fg & 0x7) | COLOR_BRIGHT];
-    }
-
-    console_send_putc(x, y, cell->ch, fg, bg);
-    /* Paced paint: the GUI drains ~1 msg/loop over slow MMIO and the
-     * queue drops beyond 32, so yield regularly or bursts lose cells. */
-    if (++paint_count % 16u == 0u)
-        moonlight_yield();
-}
-
-/*
  * Render entire console to GUI
  */
 void console_render_all(console_state_t *cons)
 {
+    /* A switch-time repaint from cells (7500 PUTCs) is the same burst
+     * disease as help output: repaint row by row with PUTS runs. */
+    cons->prun_active = 0;
+    cons->prun_len = 0;
+
     /* Clear screen first */
     console_send_fill(0, 0, 800, 600, vga_palette[cons->bg_color & 0xF]);
 
-    /* Render all cells (pacing lives in render_cell: yield every 16). */
+    /* Repaint all cells, one PUTS run per same-color row segment.
+     * Trailing blank runs are skipped: the FILL above already cleared to
+     * cons->bg_color, so repainting spaces over it is pure queue pressure
+     * (a blank 80x25 screen costs zero PUTS, not ~375). Only trailing
+     * blanks are skipped — a blank run is never skipped on the live path,
+     * where pixel state is only guaranteed by painting. */
     for (uint32_t y = 0; y < CONSOLE_HEIGHT; y++)
     {
-        for (uint32_t x = 0; x < CONSOLE_WIDTH; x++)
+        uint32_t last = 0;
+        uint32_t x;
+        for (x = 0; x < CONSOLE_WIDTH; x++)
         {
-            console_render_cell(cons, x, y);
+            console_cell_t *cell = &cons->cells[y][x];
+            if (cell->ch != ' ' || cell->bg != (cons->bg_color & 0xF))
+                last = x + 1;
         }
+        for (x = 0; x < last; x++)
+        {
+            console_cell_t *cell = &cons->cells[y][x];
+            console_run_put(cons, x, y, (char)cell->ch, cell->fg, cell->bg, cell->attr);
+        }
+        console_flush_run(cons);
+        /* Paced repaint: ~500 PUTS at once would pin the GUI queue the
+         * same way help output did pre-batching. */
+        moonlight_yield();
     }
+    console_flush_run(cons);
 
     console_update_cursor(cons);
 }
