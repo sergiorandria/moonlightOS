@@ -25,16 +25,25 @@
 
 typedef struct
 {
-    uint32_t irq;   /* VIRTIO_IRQ_NOT_FOUND = empty slot */
-    uint8_t tid;    /* owning driver thread; ignored for STUB */
-    uint8_t kind;   /* IRQ_KIND_* */
-    uint64_t bits;  /* notify badge */
+    uint32_t irq;  /* VIRTIO_IRQ_NOT_FOUND = empty slot */
+    uint8_t tid;   /* owning driver thread; ignored for STUB */
+    uint8_t kind;  /* IRQ_KIND_* */
+    uint64_t bits; /* notify badge: plain mask only, never a pointer/cap (CHERI: use uintcap_t if ptr needed) */
 } irq_route_t;
 
 void irq_init(void);
 int irq_bind(uint32_t irq, uint8_t tid, uint8_t kind, uint64_t bits);
 int irq_lookup(uint32_t irq, uint8_t *tid, uint8_t *kind, uint64_t *bits);
 void irq_plic_enable(uint32_t irq);
+
+/* Host-testable PLIC helpers (SiFive PLIC enable array; PLIC 0 reserved).
+ * irq_is_valid_source gates bind/enable/claim-match; word/bit compute the
+ * enable-array location; claim_matches guards the spurious claim-0 hazard
+ * (PLIC claim 0 = "no IRQ" must never match a device). */
+int irq_is_valid_source(uint32_t irq);
+uint32_t irq_enable_word(uint32_t irq);
+uint32_t irq_enable_bit(uint32_t irq);
+int irq_claim_matches(uint32_t claim, uint32_t dev_irq);
 
 /* Live kinds wake the owner; STUB completes the IRQ with no notify. */
 static inline int irq_kind_wakes(uint8_t kind)
