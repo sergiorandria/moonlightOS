@@ -45,6 +45,7 @@
 #define MSG_CONSOLE_SCROLL      0x2002  /* Scroll region */
 #define MSG_CONSOLE_CURSOR      0x2003  /* Move cursor */
 #define MSG_CONSOLE_CLEAR       0x2004  /* Clear screen */
+#define MSG_CONSOLE_PUTS        0x2005  /* Draw run of up to 16 cells on one row */
 
 /* TTY ↔ Console: Character I/O */
 #define MSG_TTY_WRITE           0x3000  /* TTY → Console: write chars */
@@ -135,17 +136,32 @@ typedef struct {
     uint32_t color;         /* Fill color RGB */
 } msg_console_fill_t;
 
-/* Console → GUI: Scroll screen region */
+/* Console → GUI: Scroll screen region (shares the {type,msg_id} header
+ * with PUTC/FILL; GUI decodes lines@8 top@12 bottom@16). */
 typedef struct {
     uint32_t msg_type;      /* MSG_CONSOLE_SCROLL */
+    uint32_t msg_id;        /* Sequence number (async: 0, ignored by GUI) */
     uint32_t lines;         /* Number of lines to scroll up */
     uint32_t top;           /* Top row of scroll region */
     uint32_t bottom;        /* Bottom row of scroll region */
 } msg_console_scroll_t;
 
-/* Console → GUI: Move cursor */
+/* Console → GUI: Run of up to 16 cells on one row (burst batching;
+ * xy packs (x<<16)|y, lenpal packs len | pal<<8; exactly 32 bytes, so
+ * one PUTS replaces up to 16 PUTC RPCs). */
+typedef struct {
+    uint32_t msg_type;      /* MSG_CONSOLE_PUTS */
+    uint32_t msg_id;        /* Sequence number (async: 0, ignored by GUI) */
+    uint32_t xy;            /* (x << 16) | y */
+    uint32_t lenpal;        /* len | pal << 8 */
+    char     data[16];
+} msg_console_puts_t;
+_Static_assert(sizeof(msg_console_puts_t) == 32, "PUTS must fit the 32-byte inline transfer");
+
+/* Console → GUI: Move cursor (shares the {type,msg_id} header) */
 typedef struct {
     uint32_t msg_type;      /* MSG_CONSOLE_CURSOR */
+    uint32_t msg_id;        /* Sequence number (async: 0, ignored by GUI) */
     uint32_t x;             /* Column */
     uint32_t y;             /* Row */
     uint32_t visible;       /* 1 = show cursor, 0 = hide */
@@ -258,6 +274,7 @@ typedef union {
     msg_mouse_event_t       mouse_event;
     msg_console_putc_t      console_putc;
     msg_console_fill_t      console_fill;
+    msg_console_puts_t      console_puts;
     msg_console_scroll_t    console_scroll;
     msg_console_cursor_t    console_cursor;
     msg_tty_write_t         tty_write;

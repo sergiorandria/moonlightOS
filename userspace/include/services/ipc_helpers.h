@@ -11,6 +11,11 @@
 #include "ipc_protocol.h"
 #include <stdint.h>
 
+/* Cooperative pacing hook (ecall on target, no-op stub in host tests).
+ * Declared here (mirrors lib/moonlight.h) so paced helpers below see it
+ * regardless of include order at each TU. */
+int moonlight_yield(void);
+
 /* ============================================================================
  * Low-level IPC wrappers (to be implemented in ipc_helpers.c)
  * ============================================================================ */
@@ -86,12 +91,9 @@ static inline int gui_send_mouse_event(int32_t dx, int32_t dy, uint32_t buttons,
     return ipc_send_async(SERVICE_CONSOLE, &msg, sizeof(msg));
 }
 
-/* Console Service helpers */
-static inline int console_send_putc(uint32_t x, uint32_t y, uint32_t ch, uint32_t fg, uint32_t bg)
-{
-    msg_console_putc_t msg = {.msg_type = MSG_CONSOLE_PUTC, .x = x, .y = y, .ch = ch, .fg_color = fg, .bg_color = bg};
-    return ipc_send_async(SERVICE_GUI, &msg, sizeof(msg));
-}
+/* Console Service helpers. NOTE: per-cell PUTC and CLEAR senders were
+ * removed (PUTS row runs / FILL cover them); tags 0x2000/0x2004 stay
+ * parsed for wire compat. */
 
 static inline int console_send_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color)
 {
@@ -99,14 +101,8 @@ static inline int console_send_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t
     return ipc_send_async(SERVICE_GUI, &msg, sizeof(msg));
 }
 
-static inline int console_send_clear(void)
-{
-    msg_response_t msg = {.msg_type = MSG_CONSOLE_CLEAR};
-    return ipc_send_async(SERVICE_GUI, &msg, sizeof(msg));
-}
-
 /* Scroll the screen up by lines (single RPC: a full repaint would be
- * thousands of PUTCs and overflow the 32-slot queue, dropping paint). */
+ * hundreds of PUTS and overflow the 32-deep queue, dropping paint). */
 static inline int console_send_scroll(uint32_t lines)
 {
     msg_console_scroll_t msg = {.msg_type = MSG_CONSOLE_SCROLL, .lines = lines, .top = 0, .bottom = 0};
@@ -120,6 +116,20 @@ static inline int console_send_cursor(uint32_t x, uint32_t y, uint32_t visible)
 }
 
 /* TTY Service helpers */
+
+static inline int console_send_puts(uint32_t x, uint32_t y, uint32_t pal, const char *data, uint32_t len)
+{
+    msg_console_puts_t msg;
+    if (len > 16)
+        len = 16;
+    msg.msg_type = MSG_CONSOLE_PUTS;
+    msg.msg_id = 0;
+    msg.xy = (x << 16) | (y & 0xFFFFu);
+    msg.lenpal = (len & 0xFFu) | ((pal & 0xFFFFu) << 8);
+    for (uint32_t i = 0; i < 16; i++)
+        msg.data[i] = i < len ? data[i] : 0;
+    return ipc_send_async(SERVICE_GUI, &msg, sizeof(msg));
+}
 
 /* Write data to TTY. Automatically chunks long strings into TTY_BUF_SIZE
  * segments for inline-only IPC (32-byte limit). */
@@ -138,6 +148,12 @@ static inline int tty_write(uint32_t sender_tid, uint32_t tty_id, const char *da
         int ret = ipc_send_async(SERVICE_TTY, &msg, sizeof(msg));
         if (ret < 0)
             return ret;
+        /* 1:1 producer pacing (help-burst loss): one yield per chunk keeps
+         * our burst inside the consumer's drain rate instead of pinning
+         * the 32-deep queue until it silently drops newlines/whole lines.
+         * Companion pacing lives in tty.c (per-forward) and console.c
+         * (PUTS batching + per-chunk yield discipline). */
+        moonlight_yield();
     }
     return 0;
 }
