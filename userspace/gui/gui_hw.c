@@ -232,44 +232,84 @@ static inline void fb_pix(uint32_t x, uint32_t y, uint32_t rgb)
         fb[y * FB_WIDTH + x] = 0xFF000000u | rgb;
 }
 
-/* Rectangle fill */
+/* Rectangle fill: clip once via rect_clip_fill, then unchecked inner.
+ * Dispatch/FILL paths already validate, but boot/header callers pass
+ * raw pixels — clipping here keeps one safe entry point. Inner writes
+ * skip per-pixel bounds tests (clip guarantees x+w<=800, y+h<=600).
+ * Ref: Bochs VGA 800x600x32 linear LFB. */
 static inline void fb_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t rgb)
 {
-    for (uint32_t r = 0; r < h; r++)
-        for (uint32_t c = 0; c < w; c++)
-            fb_pix(x + c, y + r, rgb);
+    uint32_t cx, cy, cw, ch, r, c;
+    uint32_t v = 0xFF000000u | rgb;
+    if (!rect_clip_fill(x, y, w, h, &cx, &cy, &cw, &ch))
+        return;
+    for (r = 0; r < ch; r++) /* bound: 600 */
+        for (c = 0; c < cw; c++) /* bound: 800 */
+            fb[(cy + r) * FB_WIDTH + (cx + c)] = v;
 }
 
-/* Scroll one text line up (shift FB up by FONT_H rows) */
+/* Console default background (COLOR_BLUE -> 0x0000AA). Must match
+ * console.c COLOR_BLUE/vga_palette[4]=0xFF0000AA: CLEAR and the
+ * scrolled-in bottom line clear to bg, not black, or "clear resets
+ * background" (Linux fbcon clears with current bg; BusyBox clear keeps
+ * attributes). fb_pix ORs 0xFF000000, so raw 0x0000AA. */
+#define GUI_BG_BLUE 0x0000AAu
+
+/* Scroll N text lines up in one pass (shift by N*16 rows).
+ * Uses scroll_region_n so N lines cost one 480k-word pass, not N passes.
+ * Overlapping copy runs top-down (dest < src): forward copy is safe.
+ * Bottom N lines clear to console bg (BLUE). Ref: VGA text pane. */
+static void fb_scroll_n(uint32_t n)
+{
+    uint32_t move_rows, clear_y, clear_h, i;
+    uint32_t v = 0xFF000000u | GUI_BG_BLUE;
+    if (n == 0u)
+        return;
+    if (n > (uint32_t)CON_ROWS)
+        n = (uint32_t)CON_ROWS;
+    if (!scroll_region_n(n, FONT_H, FB_HEIGHT, &move_rows, &clear_y, &clear_h))
+        return;
+    for (i = 0; i < move_rows * FB_WIDTH; i++) /* bound: 480000 */
+        fb[i] = fb[i + (FB_HEIGHT - move_rows) * FB_WIDTH];
+    for (i = 0; i < clear_h * FB_WIDTH; i++) /* bound: 480000 */
+        fb[(clear_y * FB_WIDTH) + i] = v;
+}
+
+/* Scroll one text line up (boot-path wrapper over fb_scroll_n). */
 static void fb_scroll(void)
 {
-    for (uint32_t y = FONT_H; y < FB_HEIGHT; y++)
-        for (uint32_t x = 0; x < FB_WIDTH; x++)
-            fb[(y - FONT_H) * FB_WIDTH + x] = fb[y * FB_WIDTH + x];
-    /* Clear bottom line */
-    for (uint32_t y = FB_HEIGHT - FONT_H; y < FB_HEIGHT; y++)
-        for (uint32_t x = 0; x < FB_WIDTH; x++)
-            fb[y * FB_WIDTH + x] = 0xFF000000u;
+    fb_scroll_n(1u);
 }
 
-/* Draw one glyph at character cell (col, row) */
-static void fb_glyph(char c, uint32_t col, uint32_t row, uint32_t fg, uint32_t bg)
+/* Draw one glyph, unchecked fast path (cell pre-validated).
+ * Precondition: glyph_cell_ok(col,row,CON_COLS,CON_ROWS). Then
+ * x0+8<=800, y0+16<=600, so inner writes skip per-pixel bounds tests.
+ * Ref: IBM VGA 8x16 ROM font, bit7 = leftmost. */
+static inline void fb_glyph_fast(char c, uint32_t col, uint32_t row, uint32_t fg, uint32_t bg)
 {
     unsigned idx = (unsigned)(unsigned char)c;
-    if (idx >= 128)
-        idx = 0;
-    const uint8_t *glyph = gui_font8x16[idx];
-    uint32_t x0 = col * FONT_W;
-    uint32_t y0 = row * FONT_H;
-    for (uint32_t gy = 0; gy < FONT_H; gy++)
+    const uint8_t *glyph;
+    uint32_t x0 = col * (uint32_t)FONT_W;
+    uint32_t y0 = row * (uint32_t)FONT_H;
+    uint32_t gy, gx;
+    if (idx >= 128u)
+        idx = 0u;
+    glyph = gui_font8x16[idx];
+    for (gy = 0; gy < (uint32_t)FONT_H; gy++) /* bound: 16 */
     {
         uint8_t bits = glyph[gy];
-        for (uint32_t gx = 0; gx < FONT_W; gx++)
-        {
-            uint32_t rgb = (bits & (0x80u >> gx)) ? fg : bg;
-            fb_pix(x0 + gx, y0 + gy, rgb);
-        }
+        volatile uint32_t *dst = &fb[(y0 + gy) * FB_WIDTH + x0];
+        for (gx = 0; gx < (uint32_t)FONT_W; gx++) /* bound: 8 */
+            dst[gx] = (0xFF000000u | ((((bits & (0x80u >> gx)) != 0u) ? (fg & 0x00FFFFFFu) : (bg & 0x00FFFFFFu))));
     }
+}
+
+/* Draw one glyph at character cell (col, row), checked entry. */
+static void fb_glyph(char c, uint32_t col, uint32_t row, uint32_t fg, uint32_t bg)
+{
+    if (!glyph_cell_ok(col, row, (uint32_t)CON_COLS, (uint32_t)CON_ROWS))
+        return;
+    fb_glyph_fast(c, col, row, fg, bg);
 }
 
 /* ---- simple framebuffer console state ---------------------------------- */
@@ -330,12 +370,35 @@ static void fb_cursor(void)
     }
 }
 
-/* Positioned cursor for console CURSOR RPCs (cell coords). */
+/* Positioned cursor for console CURSOR RPCs (cell coords).
+ * Tracks last position to erase the old underline first: without this
+ * every newline leaves a permanent white ghost (old cursor never
+ * repainted), which reads as "rendering breaks". Erase fills the old
+ * 2px underline with console bg (BLUE). */
+static uint32_t last_cur_x = 0xFFFFFFFFu;
+static uint32_t last_cur_y = 0xFFFFFFFFu;
+static void fb_cursor_erase(void)
+{
+    uint32_t x0, y0, x;
+    if (last_cur_x == 0xFFFFFFFFu)
+        return;
+    if (last_cur_x >= (uint32_t)CON_COLS || last_cur_y >= (uint32_t)CON_ROWS)
+        return;
+    x0 = last_cur_x * FONT_W;
+    y0 = last_cur_y * FONT_H + FONT_H - 2;
+    for (x = x0; x < x0 + FONT_W && x < FB_WIDTH; x++)
+    {
+        fb_pix(x, y0, GUI_BG_BLUE);
+        fb_pix(x, y0 + 1, GUI_BG_BLUE);
+    }
+    last_cur_x = 0xFFFFFFFFu;
+}
 static void fb_cursor_at(uint32_t col, uint32_t row)
 {
     uint32_t x0, y0, x;
     if (col >= (uint32_t)CON_COLS || row >= (uint32_t)CON_ROWS)
         return;
+    fb_cursor_erase();
     x0 = col * FONT_W;
     y0 = row * FONT_H + FONT_H - 2;
     for (x = x0; x < x0 + FONT_W && x < FB_WIDTH; x++)
@@ -343,6 +406,8 @@ static void fb_cursor_at(uint32_t col, uint32_t row)
         fb_pix(x, y0, 0xFFFFFF);
         fb_pix(x, y0 + 1, 0xFFFFFF);
     }
+    last_cur_x = col;
+    last_cur_y = row;
 }
 
 /* Blocking 4-word RECV on our own endpoint (GUI_TID). Call only when
@@ -364,6 +429,28 @@ static uint32_t gui_rw(const uint64_t *m, unsigned o)
     return (uint32_t)b[o] | ((uint32_t)b[o + 1] << 8) | ((uint32_t)b[o + 2] << 16) | ((uint32_t)b[o + 3] << 24);
 }
 
+/* VGA 16-color palette for PUTS indices. Authority: console.h
+ * vga_palette — keep in sync (mismatch paints wrong colors, not garble).
+ * PUTC carries raw RGB and never touches this table. */
+static const uint32_t gui_palette[16] = {
+    0xFF000000, /* 0: Black */
+    0xFFAA0000, /* 1: Red */
+    0xFF00AA00, /* 2: Green */
+    0xFFAAAA00, /* 3: Yellow */
+    0xFF0000AA, /* 4: Blue */
+    0xFFAA00AA, /* 5: Magenta */
+    0xFF00AAAA, /* 6: Cyan */
+    0xFFAAAAAA, /* 7: White */
+    0xFF555555, /* 8: Bright Black (Gray) */
+    0xFFFF5555, /* 9: Bright Red */
+    0xFF55FF55, /* 10: Bright Green */
+    0xFFFFFF55, /* 11: Bright Yellow */
+    0xFF5555FF, /* 12: Bright Blue */
+    0xFFFF55FF, /* 13: Bright Magenta */
+    0xFF55FFFF, /* 14: Bright Cyan */
+    0xFFFFFFFF, /* 15: Bright White */
+};
+
 /* Paint one console render RPC (MSG_CONSOLE_* tags, cell coords for
  * PUTC/CURSOR, pixels + raw RGB for FILL). Unknown tags drop. */
 static void gui_render_dispatch(const uint64_t *m)
@@ -372,29 +459,77 @@ static void gui_render_dispatch(const uint64_t *m)
     if (tag == 0x2000u) /* MSG_CONSOLE_PUTC */
     {
         uint32_t x = gui_rw(m, 8), y = gui_rw(m, 12);
-        if (x < (uint32_t)CON_COLS && y < (uint32_t)CON_ROWS)
-            fb_glyph((char)(gui_rw(m, 16) & 0xFFu), x, y, gui_rw(m, 20), gui_rw(m, 24));
+        if (glyph_cell_ok(x, y, (uint32_t)CON_COLS, (uint32_t)CON_ROWS))
+            fb_glyph_fast((char)(gui_rw(m, 16) & 0xFFu), x, y, gui_rw(m, 20), gui_rw(m, 24));
     }
     else if (tag == 0x2001u) /* MSG_CONSOLE_FILL */
     {
-        fb_fill(gui_rw(m, 8), gui_rw(m, 12), gui_rw(m, 16), gui_rw(m, 20), gui_rw(m, 24));
+        uint32_t fx = gui_rw(m, 8), fy = gui_rw(m, 12);
+        uint32_t fw = gui_rw(m, 16), fh = gui_rw(m, 20);
+        fb_fill(fx, fy, fw, fh, gui_rw(m, 24));
+        /* Full-screen FILL wipes the cursor pixels: drop tracking so the
+         * next CURSOR does not erase (BLUE-fill) over fresh text. */
+        if (fx == 0 && fy == 0 && fw == FB_WIDTH && fh == FB_HEIGHT)
+            last_cur_x = 0xFFFFFFFFu;
     }
     else if (tag == 0x2002u) /* MSG_CONSOLE_SCROLL: full-screen lines */
     {
         uint32_t n = gui_rw(m, 8);
+        uint32_t scrolled;
         if (n > (uint32_t)CON_ROWS)
             n = (uint32_t)CON_ROWS;
-        while (n-- > 0)
-            fb_scroll();
+        scrolled = n;
+        if (scrolled > 0u)
+            fb_scroll_n(scrolled);
+        /* Pixels (including the old cursor underline) moved up: follow
+         * the tracking so the next erase hits the scrolled position,
+         * not stale text. Scrolled-off cursors invalidate. */
+        if (last_cur_x != 0xFFFFFFFFu)
+        {
+            if (last_cur_y < scrolled)
+                last_cur_x = 0xFFFFFFFFu;
+            else
+                last_cur_y -= scrolled;
+        }
     }
     else if (tag == 0x2003u) /* MSG_CONSOLE_CURSOR */
     {
         if (gui_rw(m, 16))
             fb_cursor_at(gui_rw(m, 8), gui_rw(m, 12));
+        else
+        {
+            /* Hidden cursor: erase old underline, drop tracking. */
+            fb_cursor_erase();
+        }
     }
-    else if (tag == 0x2004u) /* MSG_CONSOLE_CLEAR */
+    else if (tag == 0x2005u) /* MSG_CONSOLE_PUTS: row run, xy=(x<<16)|y */
     {
-        fb_fill(0, 0, FB_WIDTH, FB_HEIGHT, 0x000000u);
+        uint32_t xy = gui_rw(m, 8), lenpal = gui_rw(m, 12);
+        uint32_t x = (xy >> 16) & 0xFFFFu, y = xy & 0xFFFFu;
+        uint32_t len = lenpal & 0xFFu, pal = (lenpal >> 8) & 0xFFFFu;
+        uint32_t fg = gui_palette[pal & 0xFu];
+        uint32_t bg = gui_palette[(pal >> 4) & 0xFu];
+        const uint8_t *b = (const uint8_t *)m + 16;
+        uint32_t i;
+        if (len > 16)
+            len = 16;
+        if (y >= (uint32_t)CON_ROWS)
+            return;
+        for (i = 0; i < len; i++)
+        {
+            if (x + i >= (uint32_t)CON_COLS)
+                break;
+            fb_glyph((char)b[i], x + i, y, fg, bg);
+        }
+        /* The run end is the cursor: drawing it here saves one CURSOR
+         * RPC per chunk on the hot path (explicit CURSOR still covers
+         * jumps, switches, and repaints). */
+        fb_cursor_at(x + len, y);
+    }
+    else if (tag == 0x2004u) /* MSG_CONSOLE_CLEAR: keep console bg (BLUE) */
+    {
+        fb_fill(0, 0, FB_WIDTH, FB_HEIGHT, GUI_BG_BLUE);
+        last_cur_x = 0xFFFFFFFFu;
     }
 }
 
@@ -665,10 +800,11 @@ void gui_main(void)
                 virtio_input_ack(mouse_mmio_ptr);
             }
         }
-        /* Render drain: console posts FILL/PUT/CURSOR/SCROLL here and
-         * never RECVs, so consume level-triggered (0x10 = queued).
-         * Only this thread RECVs ep 10, so one blocking RECV per
-         * wakeup is race-free; unknown tags drop silently. */
+        /* Render drain: console posts FILL/PUTC/PUTS/CURSOR/SCROLL here and
+         * never RECVs, so consume while queued (WAIT returns instantly
+         * while our endpoint has backlog: 0x10 = queued). Only this
+         * thread RECVs ep 10, so draining here is race-free; unknown
+         * tags drop silently. */
         if ((unsigned long)notify & 0x10UL)
         {
             uint64_t m[4] = {0, 0, 0, 0};
