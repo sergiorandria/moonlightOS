@@ -1,22 +1,21 @@
 /* virtio-vsock stub — userspace guest CID. Not spawned. */
-#include <stdbool.h>
 #include "stub_mmio.h"
+#include <stdbool.h>
 
 #define VSOCK_MIN_LEN 0x1000u
 #define VIRTIO_DEV_VSOCK 19u
 
-static stub_mmio_caps_t vsock_caps;
 static stub_mmio_stats_t vsock_st;
 static bool vsock_up;
 
 bool vsock_driver_init(stub_mmio_caps_t c)
 {
     vsock_up = false;
-    if (!stub_mmio_caps_ok(c, VSOCK_MIN_LEN)) {
+    if (!stub_mmio_caps_ok(c, VSOCK_MIN_LEN))
+    {
         vsock_st.rejects++;
         return false;
     }
-    vsock_caps = c;
     vsock_up = true;
     vsock_st.inits++;
     return true;
@@ -24,7 +23,8 @@ bool vsock_driver_init(stub_mmio_caps_t c)
 
 int vsock_driver_connect(void)
 {
-    if (!vsock_up) {
+    if (!vsock_up)
+    {
         vsock_st.rejects++;
         return -1;
     }

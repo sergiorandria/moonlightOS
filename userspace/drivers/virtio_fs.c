@@ -1,22 +1,21 @@
 /* virtio-fs stub — userspace virtiofs. Not spawned (no tid). */
-#include <stdbool.h>
 #include "stub_mmio.h"
+#include <stdbool.h>
 
 #define FS_MIN_LEN 0x1000u
 #define VIRTIO_DEV_FS 26u
 
-static stub_mmio_caps_t fs_caps;
 static stub_mmio_stats_t fs_st;
 static bool fs_up;
 
 bool virtio_fs_driver_init(stub_mmio_caps_t c)
 {
     fs_up = false;
-    if (!stub_mmio_caps_ok(c, FS_MIN_LEN)) {
+    if (!stub_mmio_caps_ok(c, FS_MIN_LEN))
+    {
         fs_st.rejects++;
         return false;
     }
-    fs_caps = c;
     fs_up = true;
     fs_st.inits++;
     return true;
@@ -24,7 +23,8 @@ bool virtio_fs_driver_init(stub_mmio_caps_t c)
 
 int virtio_fs_driver_lookup(void)
 {
-    if (!fs_up) {
+    if (!fs_up)
+    {
         fs_st.rejects++;
         return -1;
     }

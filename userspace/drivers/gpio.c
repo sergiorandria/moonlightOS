@@ -1,28 +1,28 @@
 /* GPIO stub — MMIO compartment. No kernel GPIO driver. */
-#include <stdbool.h>
 #include "stub_mmio.h"
+#include <stdbool.h>
 
 #define GPIO_MIN_LEN 0x1000u
 #define GPIO_BASE_EXPECT 0x10060000u
 
-static stub_mmio_caps_t gpio_caps;
 static stub_mmio_stats_t gpio_st;
 static bool gpio_up;
 
 bool gpio_driver_init(stub_mmio_caps_t c)
 {
     gpio_up = false;
-    if (!stub_mmio_caps_ok(c, GPIO_MIN_LEN)) {
+    if (!stub_mmio_caps_ok(c, GPIO_MIN_LEN))
+    {
         gpio_st.rejects++;
         return false;
     }
 #if !defined(__riscv)
-    if (c.mmio_base != GPIO_BASE_EXPECT) {
+    if (c.mmio_base != GPIO_BASE_EXPECT)
+    {
         gpio_st.rejects++;
         return false;
     }
 #endif
-    gpio_caps = c;
     gpio_up = true;
     gpio_st.inits++;
     return true;
@@ -32,7 +32,8 @@ int gpio_driver_set(unsigned pin, unsigned val)
 {
     (void)pin;
     (void)val;
-    if (!gpio_up) {
+    if (!gpio_up)
+    {
         gpio_st.rejects++;
         return -1;
     }
