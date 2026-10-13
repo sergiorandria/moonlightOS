@@ -6,9 +6,9 @@
 #include <stdint.h>
 
 #include "caps.h"
-#include "kinternal.h"
 #include "elf.h"
 #include "initrd.h"
+#include "kinternal.h"
 #include "qube.h"
 
 int syscall_qube_handles(uint64_t op)
@@ -138,11 +138,10 @@ long syscall_qube_invoke(uint64_t op, uint64_t a1, uint64_t a2, uint64_t a3)
          * in the qube, drop their queued IPC, revoke-drain their
          * caps + clear hardware PTEs, reclaim unshared frames.
          * Label 0 (base system) can never be destroyed. FAIL CLOSED.
-         * POLICY (deliberate, not an oversight):
-         * - No caller-authority check: V2 has no privilege levels.
-         *   QCREATE/QDESTROY/SPAWN are all unprivileged by design;
-         *   isolation comes from qube labels on the data plane,
-         *   management is cooperative. Revisit if threat model grows.
+         * POLICY: destroy requires membership or admin capability.
+         * The caller must run in the target qube, or hold any QX cap
+         * (same gate as cross-qube IPC in sys_send). Without this, any
+         * thread could park every thread of vault/cryptblk/gui qubes.
          * - Live BLOCKED survivors stay blocked: a live SENDer queued
          *   for a dead waiter (or RECV waiter for dead senders) keeps
          *   T_BLOCKED with its queue entry intact. Waking them with
@@ -157,6 +156,11 @@ long syscall_qube_invoke(uint64_t op, uint64_t a1, uint64_t a2, uint64_t a3)
             break;
         }
         if (label == 0 || label >= (unsigned long)V2_QUBES_MAX)
+        {
+            rc = V2_ERR_INVALID;
+            break;
+        }
+        if (qube_of[cur] != (uint8_t)label && !qube_has_qx((unsigned long)cur))
         {
             rc = V2_ERR_INVALID;
             break;
