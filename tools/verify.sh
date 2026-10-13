@@ -197,7 +197,10 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "GUI: framebuffer initialised" && echo "v2 smoke: fb init" || { echo "v2 smoke: FAIL (no fb init)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUI: keyboard ready" && echo "v2 smoke: kbd ready" || { echo "v2 smoke: FAIL (no kbd ready)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "GUI: mouse ready" && echo "v2 smoke: mouse ready" || { echo "v2 smoke: FAIL (no mouse ready)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "SHELL: thread 1 starting" && echo "v2 smoke: shell live" || { echo "v2 smoke: FAIL (no shell live)"; QEMU_FAIL=1; }
+    # Retired: "SHELL: thread 1 starting" was a phantom gate (721f9c7) - repo-wide
+    # history shows no C source ever printed it, so gating it failed forever.
+    # Shell liveness is covered by "[spawn] shell ELF ok" + the live-IPC gate
+    # below (tcb=1 proves thread 1 runs and sends within the window).
     # Liveness (not clean-park: the production system stays up serving
     # IPC — shell/tty traffic at the timeout proves the scheduler + IPC
     # plane are alive instead of wedged).
