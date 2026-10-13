@@ -21,7 +21,13 @@
 
 /* ---- PLIC, hart 0. Measured on the pinned QEMU: only the S-context set
  * delivers to S-mode; the M-context set is programmed identically as
- * defense in depth (firmware that delegates differently). ---- */
+ * defense in depth (firmware that delegates differently).
+ *
+ * Upstream refs: SiFive FU540-C000 PLIC (priority/enable array/threshold/
+ * claim-complete) as wired on QEMU `virt`; enable registers are an array
+ * of 32-bit words (word = irq/32, bit = irq%32); source 0 is reserved.
+ * S-mode MMIO aliases (ENABLE_S/THRESH_S/CLAIM_S) are reachable from
+ * S-mode on QEMU virt (plain MMIO, not a privileged CSR). ---- */
 #define PLIC_BASE 0x0c000000UL
 #define PLIC_ENABLE_M 0x0c002000UL
 #define PLIC_ENABLE_S 0x0c002080UL
@@ -29,6 +35,17 @@
 #define PLIC_THRESH_S 0x0c201000UL
 #define PLIC_CLAIM_M 0x0c200004UL
 #define PLIC_CLAIM_S 0x0c201004UL
+/* PLIC source-ID bound (matches userspace/drivers/plic.c PLIC_MAX_IRQ):
+ * valid sources are 1..PLIC_MAX_IRQ-1; 0 is reserved/spurious. */
+#define PLIC_MAX_IRQ 64u
+
+/* ---- RISC-V S-mode interrupt-enable bits (RISC-V Privileged Spec Ch.4,
+ * sie/sip: SSIE=bit1, STIE=bit5, SEIE=bit9). Single home for the fence
+ * masks used by sched/syscall/irq critical sections. ---- */
+#define SIE_MASK_SSIE (1UL << 1)
+#define SIE_MASK_STIE (1UL << 5)
+#define SIE_MASK_SEIE (1UL << 9)
+#define SIE_MASK_STIE_SEIE ((1UL << 5) | (1UL << 9))
 
 /* ---- Notify bits the IRQ router raises on the owning driver thread ---- */
 #define NET_IRQ_BIT 0x1UL   /* tid 6 */
@@ -45,12 +62,12 @@
 /* ---- bochs-display (GUI) ---- */
 #define GUI_WIDTH 800
 #define GUI_HEIGHT 600
-#define GUI_BPP 32 /* XRGB */
+#define GUI_BPP 32                                          /* XRGB */
 #define GUI_FB_MIN (GUI_WIDTH * GUI_HEIGHT * (GUI_BPP / 8)) /* smallest usable LFB */
-#define GUI_ECAM_PHYS 0x30000000UL /* virt-machine ECAM base (fixed) */
-#define GUI_LFB_PHYS 0x40000000UL  /* kernel-assigned BAR0 (64M-aligned PCI low window) */
-#define GUI_ECAM_PAGES 16          /* bus-0 config range: 64KB */
-#define GUI_LFB_PAGES 512          /* one l0 table: 2MB window >= 469-page frame */
+#define GUI_ECAM_PHYS 0x30000000UL                          /* virt-machine ECAM base (fixed) */
+#define GUI_LFB_PHYS 0x40000000UL                           /* kernel-assigned BAR0 (64M-aligned PCI low window) */
+#define GUI_ECAM_PAGES 16                                   /* bus-0 config range: 64KB */
+#define GUI_LFB_PAGES 512                                   /* one l0 table: 2MB window >= 469-page frame */
 #define GUI_PCI_VEN 0x1234u
 #define GUI_PCI_DEV 0x1111u
 #define GUI_LFB_MAX 0x4000000u /* largest BAR the kernel assigns (64M) */

@@ -14,15 +14,19 @@
  * On success: PTEs synced, stack reset, sepc=entry, thread runnable.
  * On failure: prints the caller-supplied fail suffix, thread keeps its
  * stub entry. Returns 1 on success, 0 on failure. */
-int elf_loader_spawn(const char *name, unsigned index, unsigned tid,
-                     const char *fail)
+int elf_loader_spawn(const char *name, unsigned index, unsigned tid, const char *fail)
 {
+    /* Footgun guard: callers must name a real slot (all current callers
+     * pass literals, and INVOKE SPAWN/FORK allocate internally, but a
+     * future caller with a dynamic tid would OOB-write threads[]/u_sp[]
+     * silently). Fail closed like every other validation here. */
+    if (tid >= (unsigned)NTHREADS)
+        return 0;
     const uint8_t *elf_data;
     uint32_t elf_size;
     uint64_t entry = 0, brk = 0;
     if (initrd_lookup(index, &elf_data, &elf_size) == 0 &&
-        v2_elf_load(elf_data, (size_t)elf_size, &caps, tid, &entry,
-                    &brk) == V2_OK && entry != 0)
+        v2_elf_load(elf_data, (size_t)elf_size, &caps, tid, &entry, &brk) == V2_OK && entry != 0)
     {
         v2_pte_sync(tid);
         threads[tid].regs[2] = u_sp[tid];

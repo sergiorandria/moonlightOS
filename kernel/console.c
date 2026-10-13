@@ -39,7 +39,7 @@ void kputdec(unsigned long v);
 
 void kputs(const char *s)
 {
-    while (*s)
+    while (*s) /* bound: strlen(s); s advances to NUL, SBI putc has no return */
     {
         sbi_putchar(*s);
         s++;

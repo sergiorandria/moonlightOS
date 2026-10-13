@@ -19,6 +19,9 @@
 #define V2_AUDIT_MAX 64
 
 #define V2_RIGHT_QX 0x8UL
+/* INVOKE sub-ops 14/15 in the kinternal.h V2_INV_* namespace (1-13, 16).
+ * Kept here with the raw-gate policy; do not reuse these numbers in
+ * kinternal.h. */
 #define V2_INV_QCREATE 14
 #define V2_INV_QDESTROY 15
 

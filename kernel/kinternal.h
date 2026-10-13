@@ -36,6 +36,12 @@ typedef struct
     int wait_kind;            /* V2_WK_* : what this thread is blocked in */
     uint64_t vspace_root_ppn; /* satp value (mode 8 | root PPN); see v2_satp_of */
 } uctx_t;
+/* trap.S hardcodes sepc at offset 256 (regs[0..31] at i*8, x0 slot unused).
+ * Asserted here (not just kernel.h) because this is the live struct every
+ * kernel TU includes; editing uctx_t must update trap.S. */
+_Static_assert(offsetof(uctx_t, sepc) == 256, "trap.S assumes sepc at offset 256");
+_Static_assert(NTHREADS <= V2_CAP_THREADS, "NTHREADS must fit the caps model + page tables");
+_Static_assert(V2_NEP <= NTHREADS, "every endpoint needs an owning thread slot");
 
 #define T_RUNNABLE 0
 #define T_PARKED 1
@@ -92,6 +98,9 @@ typedef struct
 #define V2_INV_EXEC 11
 #define V2_INV_WRITE 12
 #define V2_INV_READ 13
+/* V2_INV 14/15 (QCREATE/QDESTROY) live in qube.h (V2_INV_QCREATE/
+ * V2_INV_QDESTROY); kept there with the raw-gate policy they enforce.
+ * Do not reuse 14/15 here. */
 #define V2_INV_FRAME_PA 16 /* (vpn,0,0,0): PA of the frame mapped at vpn; reserved!=0 -> INVALID */
 
 /* Pool window: 32x4K, inside the l0_frames identity map (512 pages). */
@@ -144,6 +153,10 @@ extern uint8_t qube_of[NTHREADS];
 extern unsigned long qube_next;
 extern int cur;
 extern unsigned long tick;
+extern unsigned long sched_ticks[NTHREADS];     /* per-thread run ticks */
+extern unsigned long sched_switches_total;      /* total context switches */
+extern unsigned long sched_switches_voluntary;  /* Yield-induced switches */
+extern unsigned long sched_switches_preemptive; /* Timer-induced switches */
 extern v2_ep_t eps[V2_NEP];
 extern v2_caps_t caps;
 extern uctx_t *cur_ctx;          /* read by trap.S */

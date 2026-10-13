@@ -8,18 +8,19 @@
 #include "caps.h"
 #include "kernel_monitor.h"
 #include "kinternal.h"
+#include "platform.h"
+
+/* SIE fence mask SIE_MASK_STIE_SEIE comes from platform.h via kinternal.h
+ * (RISC-V Privileged Spec Ch.4). Included directly for clarity. */
 
 #include "ipc.h"
 #include "ipc_deadlock.h"
 #include "ipc_monitor.h"
 #include "qube.h"
 
-/* Note: kinternal.h provides SIE_MASK_STIE_SEIE for interrupt fencing */
-
 void sys_yield(void)
 {
 #if KERNEL_MONITOR_ENABLED
-    extern unsigned long sched_switches_voluntary;
     sched_switches_voluntary++;
 #endif
     threads[cur].sepc += 4;
@@ -115,6 +116,16 @@ void sys_send(void)
     }
     if (v2_q_take_waiter(e, &r) == V2_OK && r < (unsigned long)NTHREADS)
     {
+        /* Cross-qube gate (same as ASEND): validate the dequeued waiter
+         * before handoff. The peek above covers the common case; this
+         * closes the peek->take race (IRQs on) fail-closed. */
+        if (r >= (unsigned long)NTHREADS ||
+            !qube_raw_ok(qube_of, (unsigned long)NTHREADS, (unsigned long)cur, r, qube_has_qx((unsigned long)cur)))
+        {
+            threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
+            kputs("QUB: xread denied\n");
+            return;
+        }
         /* Direct delivery: receiver is waiting, copy message and wake.
          * Disable interrupts during state transition to prevent race. */
         unsigned long cap = (unsigned long)threads[r].ipc_cap;
@@ -268,8 +279,8 @@ void sys_recv(void)
      * entry no handoff ever consumes (stale recvq entries accumulate and
      * later takes misdeliver to threads that are not waiting). The masked
      * re-check closes it: no preemption on UP while STIE+SEIE are masked
-     * (SIE_MASK_STIE_SEIE in kinternal.h). */
-    for (;;)
+     * (SIE_MASK_STIE_SEIE in platform.h via kinternal.h). */
+    for (;;) /* bound: exits on take-success or park; wakes re-enter via scheduler */
     {
         if (v2_q_take_send(e, &slot) == V2_OK)
         {
@@ -425,7 +436,7 @@ void sys_wait(void)
      * between the check and the park must not strand us asleep). */
     threads[cur].sepc += 4;
     ipc_monitor_syscall(IPC_SYSCALL_WAIT);
-    for (;;)
+    for (;;) /* bound: exits on bits-ready or park; wakes re-enter via scheduler */
     {
         if (threads[cur].notify != 0 || (cur < V2_NEP && eps[cur].send_len > 0))
         {

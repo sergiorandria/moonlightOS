@@ -8,13 +8,15 @@
 #include "caps.h"
 #include "kernel_monitor.h"
 #include "kinternal.h"
+#include "platform.h"
+
+/* SIE fence mask SIE_MASK_STIE_SEIE comes from platform.h via kinternal.h
+ * (RISC-V Privileged Spec Ch.4). Included directly for clarity. */
 
 #include "ipc.h"
 #include "ipc_deadlock.h"
 #include "ipc_monitor.h"
 #include "qube.h"
-
-/* Note: kinternal.h provides SIE_MASK_STIE_SEIE for interrupt fencing */
 
 void sys_asend(void)
 {

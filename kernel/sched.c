@@ -10,8 +10,11 @@
 #include "ipc_flow_control.h"
 #include "kernel_monitor.h"
 #include "kinternal.h"
+#include "platform.h"
 
-/* Note: kinternal.h provides SIE_MASK_STIE and SIE_MASK_STIE_SEIE for interrupt control */
+/* SIE fence masks (SIE_MASK_STIE / SIE_MASK_STIE_SEIE) come from platform.h
+ * via kinternal.h (RISC-V Privileged Spec Ch.4: SSIE=bit1, STIE=bit5,
+ * SEIE=bit9). Included directly for clarity. */
 
 uctx_t threads[NTHREADS];
 uint8_t qube_of[NTHREADS];   /* qube label per thread (qube.h) */
@@ -26,8 +29,7 @@ unsigned long sched_switches_voluntary = 0;  /* Yield-induced switches */
 unsigned long sched_switches_preemptive = 0; /* Timer-induced switches */
 
 v2_ep_t eps[V2_NEP];
-_Static_assert(V2_NEP <= V2_CAP_THREADS,
-               "endpoint count rides the thread cap (EP i owned by tid i)");
+_Static_assert(V2_NEP <= V2_CAP_THREADS, "endpoint count rides the thread cap (EP i owned by tid i)");
 v2_caps_t caps;
 
 uctx_t *cur_ctx; /* read by trap.S */
@@ -123,7 +125,8 @@ __attribute__((noreturn)) void halt_no_runnable(void)
         sbi_putchar(' ');
         sbi_putchar('t');
         sbi_putchar('=');
-        sbi_putchar('0' + t);
+        sbi_putchar("0123456789abcdef"[(t >> 4) & 0xF]);
+        sbi_putchar("0123456789abcdef"[t & 0xF]);
         sbi_putchar(' ');
         sbi_putchar('s');
         sbi_putchar('=');
@@ -168,8 +171,7 @@ __attribute__((noreturn)) void halt_no_runnable(void)
      *   - SIE_MASK_STIE_SEIE: full disable for atomic sections (IPC, IRQ wake)
      *   - SIE_MASK_STIE only: timer-only disable (halt context, keep external IRQs) */
     sbi_set_timer(~0UL);
-    asm volatile("csrc sie, %0" ::"r"(SIE_MASK_STIE)
-                 : "memory"); /* clear STIE only, keep SEIE for IRQ wake */
+    asm volatile("csrc sie, %0" ::"r"(SIE_MASK_STIE) : "memory"); /* clear STIE only, keep SEIE for IRQ wake */
     /* S4c live input (Task 4): traps clear sstatus.SIE on entry, so a halt
      * reached from any trap context parks with SIE=0 — post-park IRQs
      * (input) would pend forever with no trap and no wake. Re-enable SIE

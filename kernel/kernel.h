@@ -4,6 +4,13 @@
  * elf.h / frames.h are pure C and host-tested; this header is the glue that
  * binds them to hardware).
  *
+ * STATUS (SOLID Sprint 1): ASPIRATIONAL / NOT YET WIRED — no kernel TU
+ * includes this header (only tests/test_abi_sync.c does). The live shared
+ * header is kernel/kinternal.h; edit that, not this file, until Sprint 2
+ * resolves the duality (see review). Kept for the ABI-KAT + module-map
+ * reference; the satp/vspace_root_ppn and kstacks/kstack divergences below
+ * are known drift vs kinternal.h.
+ *
  * Module map (each file owns one concern; nothing here is a service):
  *   console.c  SBI console + timer, kpanic
  *   vm.c       Sv39 tables, frame pool, user copy windows, PTE <-> model sync
