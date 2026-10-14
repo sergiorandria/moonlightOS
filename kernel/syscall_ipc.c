@@ -106,8 +106,7 @@ void sys_send(void)
     {
         unsigned long peek = e->recvq[e->recv_head];
         if (peek >= (unsigned long)NTHREADS ||
-            !qube_raw_ok(qube_of, (unsigned long)NTHREADS, (unsigned long)cur, peek,
-                         qube_has_qx((unsigned long)cur)))
+            !qube_raw_ok(qube_of, (unsigned long)NTHREADS, (unsigned long)cur, peek, qube_has_qx((unsigned long)cur)))
         {
             threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
             kputs("QUB: xread denied\n");
@@ -140,7 +139,7 @@ void sys_send(void)
         asm volatile("csrc sie, %0" ::"r"(SIE_MASK_STIE_SEIE) : "memory"); /* Disable STIE+SEIE */
         threads[r].state = T_RUNNABLE;
         threads[r].wait_kind = V2_WK_NONE;
-        ipc_deadlock_wait_end(r); /* Clear wait-for relationship */
+        ipc_deadlock_wait_end(r);                                          /* Clear wait-for relationship */
         asm volatile("csrs sie, %0" ::"r"(SIE_MASK_STIE_SEIE) : "memory"); /* Re-enable STIE+SEIE */
         threads[cur].regs[10] = (uint64_t)V2_OK;
         ipc_monitor_direct_delivery();
@@ -265,8 +264,8 @@ void sys_recv(void)
     if (e->send_len > 0)
     {
         unsigned long psrc = e->sendq[e->send_head].sender;
-        if (psrc >= (unsigned long)NTHREADS || !qube_raw_ok(qube_of, (unsigned long)NTHREADS, psrc,
-                                                            (unsigned long)cur, qube_has_qx(psrc)))
+        if (psrc >= (unsigned long)NTHREADS ||
+            !qube_raw_ok(qube_of, (unsigned long)NTHREADS, psrc, (unsigned long)cur, qube_has_qx(psrc)))
         {
             threads[cur].regs[10] = (uint64_t)(long)V2_ERR_INVALID;
             kputs("QUB: xread denied\n");
@@ -286,8 +285,7 @@ void sys_recv(void)
         {
             unsigned long nw = slot.len < cap ? slot.len : cap;
             unsigned long ovf = slot.len > cap ? 1 : 0;
-            unsigned long sq =
-                (slot.sender < (unsigned long)NTHREADS) ? (unsigned long)qube_of[slot.sender] : 0;
+            unsigned long sq = (slot.sender < (unsigned long)NTHREADS) ? (unsigned long)qube_of[slot.sender] : 0;
             u_copy_out(up, slot.words, nw);
             threads[cur].regs[10] = (uint64_t)nw;
             threads[cur].regs[11] = (uint64_t)slot.sender;
@@ -300,8 +298,7 @@ void sys_recv(void)
             }
 
             /* Flow control: notify sender if queue drops below threshold */
-            if (e->send_len == V2_FLOW_CONTROL_THRESHOLD - 1 &&
-                slot.sender < (unsigned long)NTHREADS)
+            if (e->send_len == V2_FLOW_CONTROL_THRESHOLD - 1 && slot.sender < (unsigned long)NTHREADS)
             {
                 threads[slot.sender].notify |= (1UL << 0); /* Use bit 0 for flow control */
                 ipc_monitor_flow_control_clear(ep);
@@ -317,18 +314,15 @@ void sys_recv(void)
                  * RECV-parked on a later exchange; the woken thread then
                  * re-parks, stranding a phantom waiter that later takes
                  * misdeliver into (message loss + regs clobber). */
-                asm volatile("csrc sie, %0" ::"r"(SIE_MASK_STIE_SEIE)
-                             : "memory"); /* Disable STIE+SEIE */
-                if (threads[slot.sender].state == T_BLOCKED &&
-                    threads[slot.sender].wait_kind == V2_WK_SEND)
+                asm volatile("csrc sie, %0" ::"r"(SIE_MASK_STIE_SEIE) : "memory"); /* Disable STIE+SEIE */
+                if (threads[slot.sender].state == T_BLOCKED && threads[slot.sender].wait_kind == V2_WK_SEND)
                 {
                     threads[slot.sender].state = T_RUNNABLE;
                     threads[slot.sender].wait_kind = V2_WK_NONE;
                     ipc_deadlock_wait_end(slot.sender); /* Clear wait-for relationship */
                     threads[slot.sender].regs[10] = (uint64_t)V2_OK;
                 }
-                asm volatile("csrs sie, %0" ::"r"(SIE_MASK_STIE_SEIE)
-                             : "memory"); /* Re-enable STIE+SEIE */
+                asm volatile("csrs sie, %0" ::"r"(SIE_MASK_STIE_SEIE) : "memory"); /* Re-enable STIE+SEIE */
             }
             klog("[ipc] recv tcb=");
             klog_char('0' + cur);
@@ -368,8 +362,7 @@ void sys_recv(void)
         }
         break;
     }
-    asm volatile("csrs sie, %0" ::"r"(SIE_MASK_STIE_SEIE)
-                 : "memory"); /* re-enable before schedule */
+    asm volatile("csrs sie, %0" ::"r"(SIE_MASK_STIE_SEIE) : "memory"); /* re-enable before schedule */
     ipc_monitor_waiter_queued(ep);
     klog("[ipc] recv tcb=");
     klog_char('0' + cur);
@@ -453,8 +446,7 @@ void sys_wait(void)
             klog_char('\n');
             return;
         }
-        asm volatile("csrc sie, %0" ::"r"(SIE_MASK_STIE_SEIE)
-                     : "memory"); /* mask STIE+SEIE: no preemption on UP */
+        asm volatile("csrc sie, %0" ::"r"(SIE_MASK_STIE_SEIE) : "memory"); /* mask STIE+SEIE: no preemption on UP */
         if (threads[cur].notify != 0 || (cur < V2_NEP && eps[cur].send_len > 0))
         {
             /* Signalled between our check and now: loop back and deliver. */
@@ -465,8 +457,7 @@ void sys_wait(void)
         threads[cur].wait_kind = V2_WK_WAIT;
         break;
     }
-    asm volatile("csrs sie, %0" ::"r"(SIE_MASK_STIE_SEIE)
-                 : "memory"); /* re-enable before schedule */
+    asm volatile("csrs sie, %0" ::"r"(SIE_MASK_STIE_SEIE) : "memory"); /* re-enable before schedule */
     klog("[ipc] wait tcb=");
     klog_char('0' + cur);
     klog(" blocked\n");

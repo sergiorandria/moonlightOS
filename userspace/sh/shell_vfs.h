@@ -321,8 +321,7 @@ static inline int vfs_read_proc(const char *name, char *buf, int max_len)
 
     if (vfs_strcmp(name, "version") == 0)
     {
-        const char *v =
-            "MoonlightOS version 0.3.0 (rv64imac-Sv39, microkernel) #1 Mon Oct 5 2026\n";
+        const char *v = "MoonlightOS version 0.3.0 (rv64imac-Sv39, microkernel) #1 Mon Oct 5 2026\n";
         vfs_strcpy(buf, v, max_len);
         len = vfs_strlen(buf);
     }
@@ -531,15 +530,14 @@ static inline void vfs_init(void)
     fd = vfs_create_node("/readme.txt", 0);
     if (fd >= 0)
     {
-        const char *readme =
-            "MoonlightOS Production Shell (moonsh)\n"
-            "-------------------------------------\n"
-            "Features:\n"
-            "  - In-memory VFS with dynamic /proc filesystem\n"
-            "  - Command chaining (';'), pipes ('|'), and output redirection ('>', '>>')\n"
-            "  - Variable expansion ($?, $$, $USER, $HOSTNAME, $PWD)\n"
-            "  - Built-in arithmetic evaluator ('calc' / 'expr')\n"
-            "  - Over 50 BusyBox-compatible commands\n";
+        const char *readme = "MoonlightOS Production Shell (moonsh)\n"
+                             "-------------------------------------\n"
+                             "Features:\n"
+                             "  - In-memory VFS with dynamic /proc filesystem\n"
+                             "  - Command chaining (';'), pipes ('|'), and output redirection ('>', '>>')\n"
+                             "  - Variable expansion ($?, $$, $USER, $HOSTNAME, $PWD)\n"
+                             "  - Built-in arithmetic evaluator ('calc' / 'expr')\n"
+                             "  - Over 50 BusyBox-compatible commands\n";
         vfs_write_file(fd, readme, vfs_strlen(readme), 0);
     }
 

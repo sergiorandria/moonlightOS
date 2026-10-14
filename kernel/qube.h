@@ -29,16 +29,18 @@
 #define V2_QDEC_ASK 1
 #define V2_QDEC_DENY 2
 
-typedef struct {
+typedef struct
+{
     unsigned long src; /* wildcard = V2_QWILD */
     unsigned long dst;
     unsigned long rpc;
-    int decision;      /* V2_QDEC_* */
+    int decision; /* V2_QDEC_* */
 } v2_qrule_t;
 
 #define V2_QWILD 0xFFFFFFFFUL
 
-typedef struct {
+typedef struct
+{
     unsigned long src;
     unsigned long dst;
     unsigned long rpc;
@@ -47,14 +49,16 @@ typedef struct {
     unsigned long arg1; /* payload arg 1 (S3: len) — carried, never interpreted */
 } v2_qask_t;
 
-typedef struct {
+typedef struct
+{
     unsigned long src;
     unsigned long dst;
     unsigned long rpc;
     int allowed;
 } v2_qaudit_t;
 
-typedef struct {
+typedef struct
+{
     v2_qrule_t rules[V2_POLICY_MAX];
     unsigned long nrules;
     v2_qask_t pending[V2_PENDING_MAX];
@@ -70,8 +74,7 @@ static inline void qube_init(uint8_t *qube_of, unsigned long nthreads)
         qube_of[i] = 0;
 }
 
-static inline int qube_label_of(const uint8_t *qube_of, unsigned long nthreads,
-                                unsigned long tid, unsigned long *out)
+static inline int qube_label_of(const uint8_t *qube_of, unsigned long nthreads, unsigned long tid, unsigned long *out)
 {
     if (!qube_of || !out || tid >= nthreads)
         return -1; /* V2_ERR_INVALID */
@@ -80,8 +83,8 @@ static inline int qube_label_of(const uint8_t *qube_of, unsigned long nthreads,
 }
 
 /* Raw rendezvous gate: same qube always ok; cross-qube needs QX grant. */
-static inline int qube_raw_ok(const uint8_t *qube_of, unsigned long nthreads,
-                              unsigned long src_tid, unsigned long dst_tid, int has_qx)
+static inline int qube_raw_ok(const uint8_t *qube_of, unsigned long nthreads, unsigned long src_tid,
+                              unsigned long dst_tid, int has_qx)
 {
     unsigned long s, d;
     if (!qube_of || src_tid >= nthreads || dst_tid >= nthreads)
@@ -94,12 +97,12 @@ static inline int qube_raw_ok(const uint8_t *qube_of, unsigned long nthreads,
 }
 
 /* Policy: first match wins, no match ==> Deny. Wildcards via V2_QWILD. */
-static inline int qube_decide(const v2_qpolicy_t *p, unsigned long s, unsigned long d,
-                              unsigned long r)
+static inline int qube_decide(const v2_qpolicy_t *p, unsigned long s, unsigned long d, unsigned long r)
 {
     if (!p)
         return V2_QDEC_DENY;
-    for (unsigned long i = 0; i < p->nrules; i++) { /* bound: V2_POLICY_MAX */
+    for (unsigned long i = 0; i < p->nrules; i++)
+    { /* bound: V2_POLICY_MAX */
         if (i >= V2_POLICY_MAX)
             break;
         const v2_qrule_t *rl = &p->rules[i];
@@ -116,7 +119,8 @@ static inline uint64_t qube_fnv1a(const uint8_t *b, unsigned long n)
     uint64_t h = 1469598103934665603UL;
     if (!b)
         return 0;
-    for (unsigned long i = 0; i < n; i++) { /* bound: caller len, checked <= 512 */
+    for (unsigned long i = 0; i < n; i++)
+    { /* bound: caller len, checked <= 512 */
         h ^= (uint64_t)b[i];
         h *= 1099511628211UL;
     }
@@ -125,8 +129,7 @@ static inline uint64_t qube_fnv1a(const uint8_t *b, unsigned long n)
 
 /* Audit: append-only. When full the new entry is dropped and
  * V2_ERR_OVERFLOW returned; old entries are kept (fail closed). */
-static inline int qube_audit(v2_qpolicy_t *q, unsigned long s, unsigned long d,
-                             unsigned long r, int allowed)
+static inline int qube_audit(v2_qpolicy_t *q, unsigned long s, unsigned long d, unsigned long r, int allowed)
 {
     if (!q)
         return -1; /* V2_ERR_INVALID */
@@ -151,8 +154,7 @@ static inline int qube_audit_room(const v2_qpolicy_t *q)
 /* Check-and-append for allow arms: OVERFLOW with zero state change
  * when full (the caller must NOT actuate), else the allow record.
  * Split from room-check because qube_decide_idx appends itself. */
-static inline int qube_audit_allow(v2_qpolicy_t *q, unsigned long s,
-                                   unsigned long d, unsigned long r)
+static inline int qube_audit_allow(v2_qpolicy_t *q, unsigned long s, unsigned long d, unsigned long r)
 {
     if (!qube_audit_room(q))
         return -2; /* V2_ERR_OVERFLOW */
@@ -164,7 +166,8 @@ static inline int qube_ask_enqueue(v2_qpolicy_t *q, const v2_qask_t *ask)
 {
     if (!q || !ask)
         return -1; /* V2_ERR_INVALID */
-    if (q->npending >= V2_PENDING_MAX) {
+    if (q->npending >= V2_PENDING_MAX)
+    {
         qube_audit(q, ask->src, ask->dst, ask->rpc, 0);
         return -2; /* V2_ERR_OVERFLOW */
     }
@@ -184,7 +187,8 @@ static inline int qube_decide_idx(v2_qpolicy_t *q, unsigned long idx, int approv
     if (idx >= q->npending || idx >= V2_PENDING_MAX)
         return -1; /* V2_ERR_INVALID */
     a = q->pending[idx];
-    for (i = idx; i + 1 < q->npending; i++) { /* bound: V2_PENDING_MAX */
+    for (i = idx; i + 1 < q->npending; i++)
+    { /* bound: V2_PENDING_MAX */
         if (i + 1 >= V2_PENDING_MAX)
             break;
         q->pending[i] = q->pending[i + 1];
@@ -201,14 +205,17 @@ static inline int qube_destroy_drop(v2_qpolicy_t *q, unsigned long label)
     int rc = 0;
     if (!q)
         return -1; /* V2_ERR_INVALID */
-    for (r = 0; r < q->npending; r++) { /* bound: V2_PENDING_MAX */
+    for (r = 0; r < q->npending; r++)
+    { /* bound: V2_PENDING_MAX */
         if (r >= V2_PENDING_MAX)
             break;
-        if (q->pending[r].src == label || q->pending[r].dst == label) {
-            if (qube_audit(q, q->pending[r].src, q->pending[r].dst,
-                           q->pending[r].rpc, 0) != 0)
+        if (q->pending[r].src == label || q->pending[r].dst == label)
+        {
+            if (qube_audit(q, q->pending[r].src, q->pending[r].dst, q->pending[r].rpc, 0) != 0)
                 rc = -2; /* V2_ERR_OVERFLOW */
-        } else {
+        }
+        else
+        {
             if (w < V2_PENDING_MAX)
                 q->pending[w] = q->pending[r];
             w++;
