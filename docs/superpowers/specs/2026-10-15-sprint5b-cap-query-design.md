@@ -25,8 +25,9 @@ codes, capacity changes, any change to MINT/GRANT/revoke behavior.
 New `V2_INV_*` numbers (above current max, avoiding 14/15) threaded through
 `syscall_cap.c`'s `handles()` + dispatch. `V2_INV_QUERY` answers only own
 slots — foreign slots return `V2_ERR_INVALID`, never contents.
-`V2_INV_CHAIN` walks parent links to the root, capped at `V2_CAP_SLOTS`
-steps with explicit truncation signaling.
+`V2_INV_CHAIN` reports single-level lineage (the MDB stores no parent
+pointers — only the `root` bit — so depth is 0 for roots, 1 for derived,
+`-1` for invalid slots; capped by construction, never walked).
 
 ## 3. Components
 
@@ -39,7 +40,7 @@ steps with explicit truncation signaling.
 ## 4. Data flow
 
 Build: two op numbers + arms, no ABI break for existing ops. Runtime: query
-returns `(rights, obj, valid)` for own slots; chain counts depth to root.
+returns `(rights, obj, valid)` for own slots; chain reports 0/1/-1 as above.
 Both reject foreign slots before touching them.
 
 ## 5. Error handling (fail-closed)
