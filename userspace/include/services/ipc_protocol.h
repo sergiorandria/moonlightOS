@@ -72,7 +72,12 @@
 /* Generic liveness probe (production boot self-test): a client sends
  * MSG_PING and every IPC-serving service answers MSG_PONG, proving the
  * service is running and serving IPC (not merely loaded). MSG_PONG is the
- * reply word/msg_type; the request msg_id (header, bytes 4-7) is echoed. */
+ * reply word/msg_type; the request msg_id (header, bytes 4-7) is echoed.
+ *
+ * Dual framing: these values are deliberately reused as BOTH a struct
+ * msg_type and a raw-word request word. Struct services (console, tty)
+ * match header.msg_type; raw-word services (mem_server, vault, cryptblk)
+ * match word[0]. Do not assume identical parsing on both sides. */
 #define MSG_PING                0xF002  /* Liveness probe request */
 #define MSG_PONG                0xF003  /* Liveness probe reply */
 
