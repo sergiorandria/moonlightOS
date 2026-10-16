@@ -18,3 +18,18 @@ config.log
 .gdbinit
 
 .worktrees/
+
+# Development and AI assistant artifacts
+.ua/
+.claude/
+.kiro/
+.roomodes
+.cursorrules
+.clinerules
+.windsurfrules
+.github/copilot-instructions.md
+CLAUDE.md
+CONVENTIONS.md
+
+# Compiled test binaries in tests/
+tests/test_v2ipc
