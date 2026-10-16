@@ -89,6 +89,12 @@ run_test test_rng bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_rng tests/test
 run_test test_shell_vfs bash -c "gcc -Wall -Wextra -no-pie -o /tmp/test_shell_vfs tests/test_shell_vfs.c userspace/vfs_server/server.c 2>&1 && /tmp/test_shell_vfs"
 run_test test_abi_sync bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_abi_sync tests/test_abi_sync.c 2>&1 && /tmp/test_abi_sync"
 run_test test_shell_programs bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_shell_programs tests/test_shell_programs.c 2>&1 && /tmp/test_shell_programs"
+# Delete the kernel artifact before building so a failed `make -C kernel` cannot
+# be masked by a stale ELF from an earlier successful run: with no ELF, §1g's
+# linker/rodata gates SKIP and §4 (QEMU) refuses to boot a binary this run never
+# produced. (§3 rebuilds from `make clean` afterwards, so this also fixes the
+# §1g window between the two builds.)
+rm -f kernel/build/moonlight.elf
 run_optional kernel-build bash -c 'set -o pipefail; make -C kernel 2>&1 | tail -n 1'
 # SOLID module budget (production-ready): every S-mode kernel TU <= 500
 # lines, kboot (orchestration only) <= 200. seL4-style file-per-concern.
@@ -272,8 +278,19 @@ if [ -f kernel/build/moonlight.elf ]; then
     QEMU_STATUS="SKIP"
   fi
 else
-  echo "SKIP: kernel/build/moonlight.elf not found"
-  QEMU_STATUS="SKIP"
+  # REACHED with no ELF after both build stages ran. clang is present for the
+  # §1f build and §3 rebuilds from clean, so absence means the kernel build was
+  # attempted and failed — the QEMU smoke could not run and must be a hard
+  # failure, NOT a benign "SKIP" (a silent SKIP is what let an earlier
+  # stale-ELF boot slip through). Only a genuinely clang-less host (build
+  # skipped, PARTIAL) may SKIP here.
+  if command -v clang &>/dev/null; then
+    echo "FAIL: kernel/build/moonlight.elf not found after build (QEMU smoke could not run)"
+    QEMU_STATUS="FAIL"
+  else
+    echo "SKIP: kernel/build/moonlight.elf not found (clang absent; kernel build skipped)"
+    QEMU_STATUS="SKIP"
+  fi
 fi
 if [ "$FAILED" -ne 0 ]; then
   echo "FAILED=$FAILED"
