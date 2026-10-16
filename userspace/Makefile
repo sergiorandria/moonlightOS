@@ -55,7 +55,7 @@ CFLAGS_V2 = --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 \
             -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast
 LDFLAGS_V2 = --target=riscv64-unknown-elf -fuse-ld=lld -nostdlib -T v2_user.ld
 
-all: build/hello.elf build/moonsh.elf build/linux_demo.elf build/ls.elf build/cat.elf build/echo.elf build/mem_server.elf build/console.elf build/tty.elf build/gui.elf drivers libc
+all: build/hello.elf build/moonsh.elf build/linux_demo.elf build/ls.elf build/cat.elf build/echo.elf build/mem_server.elf build/console.elf build/tty.elf build/vault.elf build/cryptblk.elf build/gui.elf drivers libc
 
 build/mem_server.elf: mem_server/v2_main.c lib/v2_start.S v2_user.ld
 	@mkdir -p build

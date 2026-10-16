@@ -27,7 +27,9 @@ ELF_DIR="userspace/build"
 #   Index 2  → unused (was adminvm)
 #   Index 3  → tid 3 (console service - text rendering)
 #   Index 4  → tid 4 (tty service - line discipline)
-#   Index 5-9: unused (deferred services)
+#   Index 5-7: unused (deferred services)
+#   Index 8  → tid 8 (vault service - FDE key management)
+#   Index 9  → tid 9 (cryptblk driver - FDE block storage)
 #   Index 10 → tid 10 (gui service - hardware driver)
 ELFS=(
     "mem_server.elf"      # 0 → tid 2
@@ -38,8 +40,8 @@ ELFS=(
     "UNUSED"              # 5 (placeholder)
     "UNUSED"              # 6 (placeholder)
     "UNUSED"              # 7 (placeholder)
-    "UNUSED"              # 8 (placeholder)
-    "UNUSED"              # 9 (placeholder)
+    "vault.elf"           # 8 → tid 8 (vault service)
+    "cryptblk.elf"        # 9 → tid 9 (cryptblk driver)
     "gui.elf"             # 10 → tid 10 (gui hardware driver)
 )
 REQUIRED="mem_server.elf"
