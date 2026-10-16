@@ -67,6 +67,50 @@ run_optional userspace-ELFs bash -c 'set -o pipefail; make -C userspace 2>&1 | t
 run_optional userspace-drivers bash -c 'set -o pipefail; make -C userspace drivers 2>&1 | tail -n 3'
 run_optional userspace-stubs bash -c 'set -o pipefail; make -C userspace stubs 2>&1 | tail -n 3'
 run_optional vault-cryptblk-ELFs bash -c 'set -o pipefail; make -C userspace build/vault.elf build/cryptblk.elf 2>&1 | tail -n 3'
+# §1e2 — initrd blob freshness (R0.6). tools/mkinitrd.sh is byte-deterministic
+# (no timestamps, host paths or randomness), so on an up-to-date tree it rewrites
+# kernel/initrd_data.c + kernel/initrd.h with identical bytes and the committed
+# blob must be clean in git. A blob that no longer matches the ELFs §1e built is
+# exactly the silent drift this stage catches.
+#
+# Two phases, because regeneration REPAIRS the file in place:
+#   (a) BEFORE: a working copy that is already dirty is only visible here — the
+#       rewrite below would silently heal it and leave the post-diff empty, so a
+#       lone post-regeneration diff can never fail on a hand-edited blob.
+#   (b) AFTER:  a blob committed stale only shows up once the rewrite replaces
+#       it and the new bytes diverge from the index.
+# The pre-check therefore (correctly, if conservatively) also flags a blob that
+# was regenerated but never `git add`ed: that blob would not be committed.
+echo "[1e2] initrd freshness (regenerate from userspace ELFs; committed blob must match)"
+INITRD_FILES=(kernel/initrd_data.c kernel/initrd.h)
+if [ ! -f userspace/build/mem_server.elf ]; then
+  # Same environment-optional carve-out as §1e: with no ELFs there is nothing to
+  # regenerate from, and kernel/Makefile deliberately falls back to the committed
+  # blob so a standalone `make -C kernel` still builds (PARTIAL, not red).
+  echo "SKIP: initrd freshness (userspace/build/mem_server.elf absent; nothing to regenerate from)"
+else
+  initrd_stale=0
+  if ! git diff --quiet -- "${INITRD_FILES[@]}"; then
+    echo "FAIL: initrd blob dirty before regeneration (hand-edited, or regenerated but not staged)"
+    git diff --stat -- "${INITRD_FILES[@]}"
+    initrd_stale=1
+  fi
+  if ! tools/mkinitrd.sh > /tmp/mkinitrd_gate.log 2>&1; then
+    echo "FAIL: tools/mkinitrd.sh failed"
+    sed 's/^/  /' /tmp/mkinitrd_gate.log
+    initrd_stale=1
+  fi
+  if ! git diff --quiet -- "${INITRD_FILES[@]}"; then
+    echo "FAIL: initrd blob stale: regeneration from userspace/build/*.elf differs from the committed blob"
+    git diff --stat -- "${INITRD_FILES[@]}"
+    initrd_stale=1
+  fi
+  if [ "$initrd_stale" -eq 0 ]; then
+    echo "PASS: initrd blob matches userspace/build/*.elf"
+  else
+    FAILED=$((FAILED + 1))
+  fi
+fi
 echo "[1f] v2 kernel build + Stage-2/3 host tests"
 run_test test_v2ipc bash -c "clang -Wall -Wextra -Werror -o /tmp/test_v2ipc tests/test_v2ipc.c 2>&1 && /tmp/test_v2ipc"
 run_test test_v2caps bash -c "clang -Wall -Wextra -Werror -o /tmp/test_v2caps tests/test_v2caps.c 2>&1 && /tmp/test_v2caps"

@@ -33,6 +33,25 @@ build/moonlight.elf: $(SRC_C) $(SRC_S) linker.ld *.h
 	$(CC) $(CFLAGS_K) $(LDFLAGS_K) -o $@ $(SRC_C) $(SRC_S) -Wl,--no-undefined
 	ls -lh $@
 
+# initrd_data.c is generated (tools/mkinitrd.sh) from userspace/build/*.elf;
+# the committed blob can silently drift from the ELFs the build produces, so
+# regenerate it whenever the generator or an ELF is newer.
+#
+# Guarded, NOT a hard prerequisite: a standalone `make -C kernel` (before
+# userspace has ever been built) finds no required ELF, so the recipe degrades
+# to a no-op and the committed blob compiles as-is — the kernel still builds.
+# mkinitrd.sh resolves its paths from the repo root, hence the `cd ..`; its
+# output is byte-deterministic, so on an up-to-date tree this rewrite is
+# content-identical and leaves git clean. It is the gate (§1e2 of
+# tools/verify.sh) that fails when the committed blob is stale.
+INITRD_ELFS := $(wildcard ../userspace/build/*.elf)
+initrd_data.c: ../tools/mkinitrd.sh $(INITRD_ELFS)
+	@if [ -f ../userspace/build/mem_server.elf ]; then \
+	  cd .. && tools/mkinitrd.sh; \
+	else \
+	  echo "initrd_data.c: userspace/build/mem_server.elf absent; using committed blob"; \
+	fi
+
 clean:
 	rm -rf build
 
