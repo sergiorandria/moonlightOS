@@ -100,7 +100,7 @@ if [ -n "$over" ]; then echo "FAIL: kernel module budget (>500): $over"; FAILED=
 if [ "$kboot_n" -gt 200 ]; then echo "FAIL: kboot budget ($kboot_n > 200)"; FAILED=$((FAILED + 1)); else echo "PASS: kboot budget ($kboot_n <= 200)"; fi
 echo "[1g] v2 production gates (linker layout + user rodata ban)"
 if [ -f kernel/build/moonlight.elf ]; then
-  python3 <<'PYEOF' || echo "FAIL: kernel linker gate"
+  if python3 <<'PYEOF'
 import re, subprocess, sys
 secs = subprocess.run(['llvm-readelf', '-S', 'kernel/build/moonlight.elf'],
                       capture_output=True, text=True).stdout
@@ -126,11 +126,18 @@ if bad:
     sys.exit(1)
 print('linker gate: no PROGBITS in BSS-clear range (_bss=%x _bss_end=%x)' % (bss, bend))
 PYEOF
+  then
+    : # gate passed (prints its own success line)
+  else
+    echo "FAIL: kernel linker gate"
+    FAILED=$((FAILED + 1))
+  fi
   clang --target=riscv64-unknown-elf -march=rv64imac -mabi=lp64 -O2 -ffreestanding \
     -nostdlib -fno-builtin -mcmodel=medany -mno-relax -Wall \
     -I$(clang --print-resource-dir)/include -c kernel/user.c -o /tmp/user_check.o 2>/dev/null
   if llvm-readelf -S /tmp/user_check.o | grep -q "rodata"; then
     echo "FAIL: user.c emits .rodata (U-mode would fault reading U=0 literals)"
+    FAILED=$((FAILED + 1))
   else
     echo "kernel gate: user.c has no .rodata (immediates-only holds)"
   fi
@@ -270,7 +277,14 @@ else
 fi
 if [ "$FAILED" -ne 0 ]; then
   echo "FAILED=$FAILED"
-  echo "=== verify done: FAIL ($FAILED host test failure(s)) ==="
+  echo "=== verify done: FAIL ($FAILED failing check(s)) ==="
+  exit 1
+fi
+# A failed proof session or kernel build is a failure, not a partial run.
+# Missing toolchains leave the *_STATUS as "SKIP"/"PASS (STOCK)" (PARTIAL,
+# exit 0); only an actual "FAIL" turns the gate red.
+if [ "$ISABELLE_STATUS" = "FAIL" ] || [ "$CHERI_STATUS" = "FAIL" ]; then
+  echo "=== verify done: FAIL (Isabelle proofs or kernel build failed) ==="
   exit 1
 fi
 echo "=== verify summary ==="
