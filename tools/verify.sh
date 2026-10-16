@@ -4,6 +4,14 @@ echo "=== Moonlight verification (v2 single codebase) ==="
 echo "[1/4] Host unit tests"
 ABI="-I userspace/abi"
 LIBCINC="-I userspace/libc/include -I userspace/abi"
+# Shared include set for the seven shipping kernel/userspace suites added to
+# §1f (test_elf, test_frames, test_tcp, test_ipc_integration,
+# test_qube_destroy_auth, test_blk_hal, test_console_gui_layout). The two shell
+# suites keep their own per-suite flags: test_shell_readline takes
+# -I userspace/include because its included userspace/sh/shell_tty.c pulls in
+# services/ipc_helpers.h (without it the TU does not compile), and
+# test_moonsh_busybox takes no -I dirs.
+SHIPINC="-I userspace/include -I kernel -I userspace/abi -I userspace/libc/include -I userspace/net"
 
 # --- Fail aggregation for host tests ----------------------------------------
 # A bare `cmd || echo "FAIL: cmd"` exits 0 under `set -e`, so a broken test
@@ -46,10 +54,9 @@ echo "[1a] ABI regression: uintptr_t must be 8 bytes (PLAN 3)"
 run_test abi-uintptr bash -c "gcc $ABI -o /tmp/test_abi tests/test_abi.c && /tmp/test_abi"
 run_test abi-static-assert bash -c 'echo "#include <stdint.h>
 _Static_assert(sizeof(uintptr_t)==8, \"uintptr_t is not 8 bytes\");" | clang --target=riscv64-unknown-elf -mabi=lp64 -I$(clang --print-resource-dir)/include -ffreestanding -fsyntax-only -xc - && echo "PASS: cross static_assert 8 bytes (freestanding, no -I/usr/include)"'
-echo "[1b] userspace servers + shell (host sim)"
+echo "[1b] userspace servers (host sim)"
 run_test test_sched_server bash -c "gcc $ABI -o /tmp/test_sched_server tests/test_sched_server.c userspace/sched_server/server.c && /tmp/test_sched_server"
 run_test test_vfs bash -c "gcc $ABI -o /tmp/test_vfs tests/test_vfs.c userspace/vfs_server/server.c 2>&1 && /tmp/test_vfs"
-run_test test_shell bash -c "gcc -Wall -Wextra -o /tmp/test_shell tests/test_shell.c userspace/sh/shell.c userspace/lib/moonlight.c && /tmp/test_shell"
 echo "[1c] userspace drivers host-sim (frozen v1 ABI headers in userspace/abi)"
 run_test test_uart bash -c "gcc -Wall -Wextra -Werror $ABI -o /tmp/test_uart tests/test_uart.c && /tmp/test_uart"
 run_test test_plic bash -c "gcc -Wall -Wextra -Werror $ABI -o /tmp/test_plic tests/test_plic.c && /tmp/test_plic"
@@ -130,9 +137,24 @@ run_test test_input bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_input tests/
 run_test test_virtio_input bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_virtio_input tests/test_virtio_input.c 2>&1 && /tmp/test_virtio_input"
 run_test test_driver_bounds bash -c "gcc -Wall -Wextra -Werror -I userspace/abi -o /tmp/test_driver_bounds tests/test_driver_bounds.c 2>&1 && /tmp/test_driver_bounds"
 run_test test_rng bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_rng tests/test_rng.c 2>&1 && /tmp/test_rng"
-run_test test_shell_vfs bash -c "gcc -Wall -Wextra -no-pie -o /tmp/test_shell_vfs tests/test_shell_vfs.c userspace/vfs_server/server.c 2>&1 && /tmp/test_shell_vfs"
 run_test test_abi_sync bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_abi_sync tests/test_abi_sync.c 2>&1 && /tmp/test_abi_sync"
 run_test test_shell_programs bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_shell_programs tests/test_shell_programs.c 2>&1 && /tmp/test_shell_programs"
+# --- Shipping-suite coverage (Task 0.4) -------------------------------------
+# Nine real suites that were never gated. The two shell suites cover the
+# shipping engine: test_moonsh_busybox #includes userspace/sh/shell_core.h and
+# test_shell_readline #includes userspace/sh/shell_tty.c (which pulls
+# shell_core.h -> shell_vfs.h), replacing the retired dead-engine tests
+# test_shell/test_shell_vfs. The other seven cover kernel/user memory, ELF
+# loading, TCP, IPC and device paths.
+run_test test_shell_readline bash -c "gcc -O2 -I userspace/include -o /tmp/test_shell_readline tests/test_shell_readline.c 2>&1 && /tmp/test_shell_readline"
+run_test test_moonsh_busybox bash -c "gcc -O2 -no-pie -o /tmp/test_moonsh tests/test_moonsh_busybox.c 2>&1 && /tmp/test_moonsh"
+run_test test_elf bash -c "gcc -O2 $SHIPINC -o /tmp/test_elf tests/test_elf.c 2>&1 && /tmp/test_elf"
+run_test test_frames bash -c "gcc -O2 $SHIPINC -o /tmp/test_frames tests/test_frames.c 2>&1 && /tmp/test_frames"
+run_test test_tcp bash -c "gcc -O2 $SHIPINC -o /tmp/test_tcp tests/test_tcp.c 2>&1 && /tmp/test_tcp"
+run_test test_ipc_integration bash -c "gcc -O2 $SHIPINC -o /tmp/test_ipc_integration tests/test_ipc_integration.c 2>&1 && /tmp/test_ipc_integration"
+run_test test_qube_destroy_auth bash -c "gcc -O2 $SHIPINC -o /tmp/test_qube_destroy_auth tests/test_qube_destroy_auth.c 2>&1 && /tmp/test_qube_destroy_auth"
+run_test test_blk_hal bash -c "gcc -O2 $SHIPINC -o /tmp/test_blk_hal tests/test_blk_hal.c 2>&1 && /tmp/test_blk_hal"
+run_test test_console_gui_layout bash -c "gcc -O2 $SHIPINC -o /tmp/test_console_gui_layout tests/test_console_gui_layout.c 2>&1 && /tmp/test_console_gui_layout"
 # Delete the kernel artifact before building so a failed `make -C kernel` cannot
 # be masked by a stale ELF from an earlier successful run: with no ELF, §1g's
 # linker/rodata gates SKIP and §4 (QEMU) refuses to boot a binary this run never
