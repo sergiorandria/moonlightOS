@@ -1,73 +1,103 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 echo "=== Moonlight verification (v2 single codebase) ==="
 echo "[1/4] Host unit tests"
 ABI="-I userspace/abi"
 LIBCINC="-I userspace/libc/include -I userspace/abi"
+
+# --- Fail aggregation for host tests ----------------------------------------
+# A bare `cmd || echo "FAIL: cmd"` exits 0 under `set -e`, so a broken test
+# still produced a green gate. run_test records every failure in FAILED and the
+# script exits non-zero before the summary if any occurred.
+# run_test always returns 0: one failure must not abort the run (otherwise the
+# rest of the gate would never execute and stay hidden); the FAILED check below
+# is the single kill switch.
+FAILED=0
+run_test() {
+  local label="$1"; shift
+  if "$@"; then
+    return 0
+  fi
+  echo "FAIL: $label"
+  FAILED=$((FAILED + 1))
+  return 0
+}
+
+# run_optional <label> <cmd...>
+# Environment-optional stage. The only such stages are the clang-gated
+# userspace/kernel builds: with no clang they cannot run at all, so they print
+# SKIP and do not fail the gate. If clang IS present a genuine build failure is
+# fatal and is aggregated like any other.
+run_optional() {
+  local label="$1"; shift
+  if "$@"; then
+    return 0
+  fi
+  if command -v clang &>/dev/null; then
+    echo "FAIL: $label"
+    FAILED=$((FAILED + 1))
+  else
+    echo "SKIP: $label (clang not found)"
+  fi
+  return 0
+}
+
 echo "[1a] ABI regression: uintptr_t must be 8 bytes (PLAN 3)"
-gcc $ABI -o /tmp/test_abi tests/test_abi.c && /tmp/test_abi
-echo '#include <stdint.h>
-_Static_assert(sizeof(uintptr_t)==8, "uintptr_t is not 8 bytes");' | clang --target=riscv64-unknown-elf -mabi=lp64 -I$(clang --print-resource-dir)/include -ffreestanding -fsyntax-only -xc - && echo "PASS: cross static_assert 8 bytes (freestanding, no -I/usr/include)"
+run_test abi-uintptr bash -c "gcc $ABI -o /tmp/test_abi tests/test_abi.c && /tmp/test_abi"
+run_test abi-static-assert bash -c 'echo "#include <stdint.h>
+_Static_assert(sizeof(uintptr_t)==8, \"uintptr_t is not 8 bytes\");" | clang --target=riscv64-unknown-elf -mabi=lp64 -I$(clang --print-resource-dir)/include -ffreestanding -fsyntax-only -xc - && echo "PASS: cross static_assert 8 bytes (freestanding, no -I/usr/include)"'
 echo "[1b] userspace servers + shell (host sim)"
-gcc $ABI -o /tmp/test_sched_server tests/test_sched_server.c userspace/sched_server/server.c && /tmp/test_sched_server || echo "FAIL: test_sched_server"
-if gcc $ABI -o /tmp/test_vfs tests/test_vfs.c userspace/vfs_server/server.c 2>&1; then /tmp/test_vfs || echo "FAIL: test_vfs run failed"; else echo "FAIL: test_vfs compile failed"; fi
-gcc -Wall -Wextra -o /tmp/test_shell tests/test_shell.c userspace/sh/shell.c userspace/lib/moonlight.c && /tmp/test_shell || echo "FAIL: test_shell"
+run_test test_sched_server bash -c "gcc $ABI -o /tmp/test_sched_server tests/test_sched_server.c userspace/sched_server/server.c && /tmp/test_sched_server"
+run_test test_vfs bash -c "gcc $ABI -o /tmp/test_vfs tests/test_vfs.c userspace/vfs_server/server.c 2>&1 && /tmp/test_vfs"
+run_test test_shell bash -c "gcc -Wall -Wextra -o /tmp/test_shell tests/test_shell.c userspace/sh/shell.c userspace/lib/moonlight.c && /tmp/test_shell"
 echo "[1c] userspace drivers host-sim (frozen v1 ABI headers in userspace/abi)"
-gcc -Wall -Wextra -Werror $ABI -o /tmp/test_uart tests/test_uart.c && /tmp/test_uart || echo "FAIL: test_uart"
-gcc -Wall -Wextra -Werror $ABI -o /tmp/test_plic tests/test_plic.c && /tmp/test_plic || echo "FAIL: test_plic"
-gcc -Wall -Wextra -Werror $ABI -o /tmp/test_timer tests/test_timer.c && /tmp/test_timer || echo "FAIL: test_timer"
-gcc -Wall -Wextra -Werror $ABI -o /tmp/test_rtc tests/test_rtc.c && /tmp/test_rtc || echo "FAIL: test_rtc"
-gcc -Wall -Wextra -Werror $ABI -o /tmp/test_power tests/test_power.c && /tmp/test_power || echo "FAIL: test_power"
+run_test test_uart bash -c "gcc -Wall -Wextra -Werror $ABI -o /tmp/test_uart tests/test_uart.c && /tmp/test_uart"
+run_test test_plic bash -c "gcc -Wall -Wextra -Werror $ABI -o /tmp/test_plic tests/test_plic.c && /tmp/test_plic"
+run_test test_timer bash -c "gcc -Wall -Wextra -Werror $ABI -o /tmp/test_timer tests/test_timer.c && /tmp/test_timer"
+run_test test_rtc bash -c "gcc -Wall -Wextra -Werror $ABI -o /tmp/test_rtc tests/test_rtc.c && /tmp/test_rtc"
+run_test test_power bash -c "gcc -Wall -Wextra -Werror $ABI -o /tmp/test_power tests/test_power.c && /tmp/test_power"
 echo "[1d] freestanding libc host-sim"
-gcc $LIBCINC -o /tmp/test_libc tests/test_libc.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/ctype.c userspace/libc/src/time.c userspace/libc/src/errno.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/signal.c userspace/libc/src/fenv.c userspace/libc/src/locale.c userspace/libc/src/scanf.c userspace/libc/src/getopt.c userspace/libc/src/env.c userspace/libc/src/strings.c userspace/libc/src/spawn.c userspace/libc/src/proc.c 2>&1 && /tmp/test_libc || echo "FAIL: test_libc"
-gcc $LIBCINC -o /tmp/test_newlibc tests/test_newlibc.c userspace/libc/src/complex.c userspace/libc/src/monetary.c userspace/libc/src/langinfo.c userspace/libc/src/iconv.c userspace/libc/src/locale.c userspace/libc/src/math.c userspace/libc/src/nltypes.c userspace/libc/src/threads.c userspace/libc/src/stdlib.c userspace/libc/src/string.c userspace/libc/src/errno.c -lm 2>&1 && /tmp/test_newlibc || echo "FAIL: test_newlibc"
-gcc $LIBCINC -o /tmp/test_batch4 tests/test_batch4.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/errno.c userspace/libc/src/time.c userspace/libc/src/file.c userspace/libc/src/unistd.c userspace/libc/src/proc.c userspace/libc/src/fcntl.c userspace/libc/src/signal.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/locale.c -lm 2>&1 && /tmp/test_batch4 || echo "FAIL: test_batch4"
-gcc $LIBCINC -o /tmp/test_batch5 tests/test_batch5.c userspace/libc/src/syscall.c userspace/libc/src/crypt.c userspace/libc/src/ether.c userspace/libc/src/execinfo.c userspace/libc/src/fmtmsg.c userspace/libc/src/libgen.c userspace/libc/src/ndbm.c userspace/libc/src/search.c userspace/libc/src/sendfile.c userspace/libc/src/shadow.c userspace/libc/src/sysevent.c userspace/libc/src/sysvipc.c userspace/libc/src/utmpx.c userspace/libc/src/ptimer.c userspace/libc/src/aio.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/errno.c userspace/libc/src/time.c userspace/libc/src/file.c userspace/libc/src/dir.c userspace/libc/src/unistd.c userspace/libc/src/fcntl.c userspace/libc/src/signal.c userspace/libc/src/pthread.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/locale.c -lm -lpthread 2>&1 && timeout 60 /tmp/test_batch5 || echo "FAIL: test_batch5"
-gcc $LIBCINC -o /tmp/test_batch6 tests/test_batch6.c userspace/libc/src/sysstat.c userspace/libc/src/netif.c userspace/libc/src/stropts.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/errno.c userspace/libc/src/time.c userspace/libc/src/file.c userspace/libc/src/statvfs.c userspace/libc/src/dir.c userspace/libc/src/unistd.c userspace/libc/src/fcntl.c userspace/libc/src/signal.c userspace/libc/src/math.c -lm 2>&1 && /tmp/test_batch6 || echo "FAIL: test_batch6"
+run_test test_libc bash -c "gcc $LIBCINC -o /tmp/test_libc tests/test_libc.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/ctype.c userspace/libc/src/time.c userspace/libc/src/errno.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/signal.c userspace/libc/src/fenv.c userspace/libc/src/locale.c userspace/libc/src/scanf.c userspace/libc/src/getopt.c userspace/libc/src/env.c userspace/libc/src/strings.c userspace/libc/src/spawn.c userspace/libc/src/proc.c 2>&1 && /tmp/test_libc"
+run_test test_newlibc bash -c "gcc $LIBCINC -o /tmp/test_newlibc tests/test_newlibc.c userspace/libc/src/complex.c userspace/libc/src/monetary.c userspace/libc/src/langinfo.c userspace/libc/src/iconv.c userspace/libc/src/locale.c userspace/libc/src/math.c userspace/libc/src/nltypes.c userspace/libc/src/threads.c userspace/libc/src/stdlib.c userspace/libc/src/string.c userspace/libc/src/errno.c -lm 2>&1 && /tmp/test_newlibc"
+run_test test_batch4 bash -c "gcc $LIBCINC -o /tmp/test_batch4 tests/test_batch4.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/errno.c userspace/libc/src/time.c userspace/libc/src/file.c userspace/libc/src/unistd.c userspace/libc/src/proc.c userspace/libc/src/fcntl.c userspace/libc/src/signal.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/locale.c -lm 2>&1 && /tmp/test_batch4"
+run_test test_batch5 bash -c "gcc $LIBCINC -o /tmp/test_batch5 tests/test_batch5.c userspace/libc/src/syscall.c userspace/libc/src/crypt.c userspace/libc/src/ether.c userspace/libc/src/execinfo.c userspace/libc/src/fmtmsg.c userspace/libc/src/libgen.c userspace/libc/src/ndbm.c userspace/libc/src/search.c userspace/libc/src/sendfile.c userspace/libc/src/shadow.c userspace/libc/src/sysevent.c userspace/libc/src/sysvipc.c userspace/libc/src/utmpx.c userspace/libc/src/ptimer.c userspace/libc/src/aio.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/errno.c userspace/libc/src/time.c userspace/libc/src/file.c userspace/libc/src/dir.c userspace/libc/src/unistd.c userspace/libc/src/fcntl.c userspace/libc/src/signal.c userspace/libc/src/pthread.c userspace/libc/src/math.c userspace/libc/src/wchar.c userspace/libc/src/wctype.c userspace/libc/src/locale.c -lm -lpthread 2>&1 && timeout 60 /tmp/test_batch5"
+run_test test_batch6 bash -c "gcc $LIBCINC -o /tmp/test_batch6 tests/test_batch6.c userspace/libc/src/sysstat.c userspace/libc/src/netif.c userspace/libc/src/stropts.c userspace/libc/src/string.c userspace/libc/src/stdlib.c userspace/libc/src/stdio.c userspace/libc/src/errno.c userspace/libc/src/time.c userspace/libc/src/file.c userspace/libc/src/statvfs.c userspace/libc/src/dir.c userspace/libc/src/unistd.c userspace/libc/src/fcntl.c userspace/libc/src/signal.c userspace/libc/src/math.c -lm 2>&1 && /tmp/test_batch6"
 echo "[1e] userspace ELFs + driver compile gates (freestanding rv64 -Werror)"
-if command -v clang &>/dev/null; then
-  make -C userspace 2>&1 | tail -n 2 || echo "FAIL: userspace ELFs"
-  make -C userspace drivers 2>&1 | tail -n 3 || echo "FAIL: userspace drivers"
-  make -C userspace stubs 2>&1 | tail -n 3 || echo "FAIL: userspace stubs"
-  make -C userspace build/vault.elf build/cryptblk.elf 2>&1 | tail -n 3 || echo "FAIL: vault/cryptblk ELFs (outside all:, explicitly gated)"
-else
-  echo "SKIP: userspace ELFs (clang not found)"
-fi
+run_optional userspace-ELFs bash -c 'set -o pipefail; make -C userspace 2>&1 | tail -n 2'
+run_optional userspace-drivers bash -c 'set -o pipefail; make -C userspace drivers 2>&1 | tail -n 3'
+run_optional userspace-stubs bash -c 'set -o pipefail; make -C userspace stubs 2>&1 | tail -n 3'
+run_optional vault-cryptblk-ELFs bash -c 'set -o pipefail; make -C userspace build/vault.elf build/cryptblk.elf 2>&1 | tail -n 3'
 echo "[1f] v2 kernel build + Stage-2/3 host tests"
-clang -Wall -Wextra -Werror -o /tmp/test_v2ipc tests/test_v2ipc.c 2>&1 && /tmp/test_v2ipc || echo "FAIL: test_v2ipc"
-clang -Wall -Wextra -Werror -o /tmp/test_v2caps tests/test_v2caps.c 2>&1 && /tmp/test_v2caps || echo "FAIL: test_v2caps"
-clang -Wall -Wextra -Werror -o /tmp/test_qlabels tests/test_qlabels.c 2>&1 && /tmp/test_qlabels || echo "FAIL: test_qlabels"
-clang -Wall -Wextra -Werror -o /tmp/test_qube_policy tests/test_qube_policy.c 2>&1 && /tmp/test_qube_policy || echo "FAIL: test_qube_policy"
-clang -Wall -Wextra -Werror -o /tmp/test_qargs tests/test_qargs.c 2>&1 && /tmp/test_qargs || echo "FAIL: test_qargs"
-gcc -Wall -Wextra -Werror -o /tmp/test_netfw tests/test_netfw.c 2>&1 && /tmp/test_netfw || echo "FAIL: test_netfw"
-gcc -Wall -Wextra -Werror -o /tmp/test_aead tests/test_aead.c 2>&1 && /tmp/test_aead || echo "FAIL: test_aead"
-gcc -Wall -Wextra -Werror -o /tmp/test_crypt tests/test_crypt.c 2>&1 && /tmp/test_crypt || echo "FAIL: test_crypt"
-gcc -Wall -Wextra -Werror -o /tmp/test_argon2id tests/test_argon2id.c 2>&1 && /tmp/test_argon2id || echo "FAIL: test_argon2id"
-gcc -Wall -Wextra -Werror -o /tmp/test_gui tests/test_gui.c 2>&1 && /tmp/test_gui || echo "FAIL: test_gui"
-gcc -Wall -Wextra -Werror -o /tmp/test_irq tests/test_irq.c 2>&1 && /tmp/test_irq || echo "FAIL: test_irq"
-gcc -Wall -Wextra -Werror -o /tmp/test_dev_leaves tests/test_dev_leaves.c 2>&1 && /tmp/test_dev_leaves || echo "FAIL: test_dev_leaves"
-gcc -Wall -Wextra -Werror -o /tmp/test_net_stack tests/test_net_stack.c 2>&1 && /tmp/test_net_stack || echo "FAIL: test_net_stack"
-gcc -Wall -Wextra -Werror -o /tmp/test_stub_drivers tests/test_stub_drivers.c 2>&1 && /tmp/test_stub_drivers || echo "FAIL: test_stub_drivers"
-gcc -Wall -Wextra -Werror -o /tmp/test_input tests/test_input.c 2>&1 && /tmp/test_input || echo "FAIL: test_input"
-gcc -Wall -Wextra -Werror -o /tmp/test_virtio_input tests/test_virtio_input.c 2>&1 && /tmp/test_virtio_input || echo "FAIL: test_virtio_input"
-gcc -Wall -Wextra -Werror -I userspace/abi -o /tmp/test_driver_bounds tests/test_driver_bounds.c 2>&1 && /tmp/test_driver_bounds || echo "FAIL: test_driver_bounds"
-gcc -Wall -Wextra -Werror -o /tmp/test_rng tests/test_rng.c 2>&1 && /tmp/test_rng || echo "FAIL: test_rng"
-gcc -Wall -Wextra -no-pie -o /tmp/test_shell_vfs tests/test_shell_vfs.c userspace/vfs_server/server.c 2>&1 && /tmp/test_shell_vfs || echo "FAIL: test_shell_vfs"
-gcc -Wall -Wextra -Werror -o /tmp/test_abi_sync tests/test_abi_sync.c 2>&1 && /tmp/test_abi_sync || echo "FAIL: test_abi_sync"
-gcc -Wall -Wextra -Werror -o /tmp/test_shell_programs tests/test_shell_programs.c 2>&1 && /tmp/test_shell_programs || echo "FAIL: test_shell_programs"
-if command -v clang &>/dev/null; then
-  make -C kernel 2>&1 | tail -n 1 || echo "FAIL: kernel build"
-  # SOLID module budget (production-ready): every S-mode kernel TU <= 500
-  # lines, kboot (orchestration only) <= 200. seL4-style file-per-concern.
-  # Scope is the kernel proper: initrd_data.c is a generated blob and
-  # user.c is the U-mode payload, neither is a kernel module.
-  over=$(wc -l kernel/kboot.c kernel/console.c kernel/vm.c kernel/device.c kernel/sched.c kernel/irq.c kernel/elf.c kernel/initrd.c kernel/elf_loader.c kernel/syscall.c kernel/syscall_ipc.c kernel/syscall_cap.c kernel/syscall_mem.c kernel/syscall_proc.c kernel/syscall_qube.c | awk '$2 != "total" && $1 > 500 {print}') || true
-  kboot_n=$(wc -l < kernel/kboot.c)
-  if [ -n "$over" ]; then echo "FAIL: kernel module budget (>500): $over"; else echo "PASS: kernel module budget (all <= 500)"; fi
-  if [ "$kboot_n" -gt 200 ]; then echo "FAIL: kboot budget ($kboot_n > 200)"; else echo "PASS: kboot budget ($kboot_n <= 200)"; fi
-else
-  echo "SKIP: kernel (clang not found)"
-fi
+run_test test_v2ipc bash -c "clang -Wall -Wextra -Werror -o /tmp/test_v2ipc tests/test_v2ipc.c 2>&1 && /tmp/test_v2ipc"
+run_test test_v2caps bash -c "clang -Wall -Wextra -Werror -o /tmp/test_v2caps tests/test_v2caps.c 2>&1 && /tmp/test_v2caps"
+run_test test_qlabels bash -c "clang -Wall -Wextra -Werror -o /tmp/test_qlabels tests/test_qlabels.c 2>&1 && /tmp/test_qlabels"
+run_test test_qube_policy bash -c "clang -Wall -Wextra -Werror -o /tmp/test_qube_policy tests/test_qube_policy.c 2>&1 && /tmp/test_qube_policy"
+run_test test_qargs bash -c "clang -Wall -Wextra -Werror -o /tmp/test_qargs tests/test_qargs.c 2>&1 && /tmp/test_qargs"
+run_test test_netfw bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_netfw tests/test_netfw.c 2>&1 && /tmp/test_netfw"
+run_test test_aead bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_aead tests/test_aead.c 2>&1 && /tmp/test_aead"
+run_test test_crypt bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_crypt tests/test_crypt.c 2>&1 && /tmp/test_crypt"
+run_test test_argon2id bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_argon2id tests/test_argon2id.c 2>&1 && /tmp/test_argon2id"
+run_test test_gui bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_gui tests/test_gui.c 2>&1 && /tmp/test_gui"
+run_test test_irq bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_irq tests/test_irq.c 2>&1 && /tmp/test_irq"
+run_test test_dev_leaves bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_dev_leaves tests/test_dev_leaves.c 2>&1 && /tmp/test_dev_leaves"
+run_test test_net_stack bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_net_stack tests/test_net_stack.c 2>&1 && /tmp/test_net_stack"
+run_test test_stub_drivers bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_stub_drivers tests/test_stub_drivers.c 2>&1 && /tmp/test_stub_drivers"
+run_test test_input bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_input tests/test_input.c 2>&1 && /tmp/test_input"
+run_test test_virtio_input bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_virtio_input tests/test_virtio_input.c 2>&1 && /tmp/test_virtio_input"
+run_test test_driver_bounds bash -c "gcc -Wall -Wextra -Werror -I userspace/abi -o /tmp/test_driver_bounds tests/test_driver_bounds.c 2>&1 && /tmp/test_driver_bounds"
+run_test test_rng bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_rng tests/test_rng.c 2>&1 && /tmp/test_rng"
+run_test test_shell_vfs bash -c "gcc -Wall -Wextra -no-pie -o /tmp/test_shell_vfs tests/test_shell_vfs.c userspace/vfs_server/server.c 2>&1 && /tmp/test_shell_vfs"
+run_test test_abi_sync bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_abi_sync tests/test_abi_sync.c 2>&1 && /tmp/test_abi_sync"
+run_test test_shell_programs bash -c "gcc -Wall -Wextra -Werror -o /tmp/test_shell_programs tests/test_shell_programs.c 2>&1 && /tmp/test_shell_programs"
+run_optional kernel-build bash -c 'set -o pipefail; make -C kernel 2>&1 | tail -n 1'
+# SOLID module budget (production-ready): every S-mode kernel TU <= 500
+# lines, kboot (orchestration only) <= 200. seL4-style file-per-concern.
+# Scope is the kernel proper: initrd_data.c is a generated blob and
+# user.c is the U-mode payload, neither is a kernel module.
+over=$(wc -l kernel/kboot.c kernel/console.c kernel/vm.c kernel/device.c kernel/sched.c kernel/irq.c kernel/elf.c kernel/initrd.c kernel/elf_loader.c kernel/syscall.c kernel/syscall_ipc.c kernel/syscall_cap.c kernel/syscall_mem.c kernel/syscall_proc.c kernel/syscall_qube.c | awk '$2 != "total" && $1 > 500 {print}') || true
+kboot_n=$(wc -l < kernel/kboot.c)
+if [ -n "$over" ]; then echo "FAIL: kernel module budget (>500): $over"; FAILED=$((FAILED + 1)); else echo "PASS: kernel module budget (all <= 500)"; fi
+if [ "$kboot_n" -gt 200 ]; then echo "FAIL: kboot budget ($kboot_n > 200)"; FAILED=$((FAILED + 1)); else echo "PASS: kboot budget ($kboot_n <= 200)"; fi
 echo "[1g] v2 production gates (linker layout + user rodata ban)"
 if [ -f kernel/build/moonlight.elf ]; then
   python3 <<'PYEOF' || echo "FAIL: kernel linker gate"
@@ -237,6 +267,11 @@ if [ -f kernel/build/moonlight.elf ]; then
 else
   echo "SKIP: kernel/build/moonlight.elf not found"
   QEMU_STATUS="SKIP"
+fi
+if [ "$FAILED" -ne 0 ]; then
+  echo "FAILED=$FAILED"
+  echo "=== verify done: FAIL ($FAILED host test failure(s)) ==="
+  exit 1
 fi
 echo "=== verify summary ==="
 echo "Isabelle proofs: $ISABELLE_STATUS"
