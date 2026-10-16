@@ -122,23 +122,33 @@ static void shell_live_marker(uint32_t tid)
  * proves the service RUNS and SERVES IPC, which the load-time
  * "[spawn] X ELF ok" marker cannot.
  *
- * Covered: mem_server (2), console (3), tty (4), vault (8). Excluded:
- *   - cryptblk (9): parks in its boot-time vault-seed handoff before ever
- *     reaching its service loop, so it cannot answer a ping. Root cause and
- *     evidence: .superpowers/sdd/2026-10-16-production-hardening/
- *     task-0.6-report.md (pre-existing defect, not introduced here). Its
- *     load is still asserted via "[spawn] cryptblk ELF ok".
+ * Pinged targets: mem_server (2), console (3), tty (4), vault (8), and
+ * cryptblk (9). Expected to answer: the first four. cryptblk parks in its
+ * boot-time vault-seed handoff before ever reaching its service loop, so it
+ * is currently expected to stay silent (root cause + evidence:
+ * .superpowers/sdd/2026-10-16-production-hardening/task-0.6-report.md §5.1,
+ * pre-existing defect, not introduced here). Its load is still asserted via
+ * "[spawn] cryptblk ELF ok".
+ *   - cryptblk (9) is pinged anyway, but is NOT part of the drain's
+ *     completion set: a silent tid 9 must never block this prober or
+ *     deadlock boot. If it ever answers, its PONG is still printed (and
+ *     tools/verify.sh pins "LIVE: tid=9 ok" ABSENT so any change to
+ *     cryptblk liveness trips the gate).
  *   - gui (10): not an IPC server (no receive loop); covered by its three
  *     readiness markers.
  *
  * All pings are sent before the first wait so a service that never answers
- * leaves only its OWN marker missing. The wait is bounded by the number of
- * expected replies (four); a wedged service is bounded by the gate's QEMU
- * timeout, since V2 has no timer-armed receive. */
+ * leaves only its OWN marker missing. The wait is bounded by the four
+ * expected replies; a wedged service is bounded by the gate's QEMU timeout,
+ * since V2 has no timer-armed receive. */
 static void shell_probe_services(void)
 {
-    static const uint32_t targets[] = {SERVICE_MEM, SERVICE_CONSOLE, SERVICE_TTY, SERVICE_VAULT};
+    static const uint32_t targets[] = {SERVICE_MEM, SERVICE_CONSOLE, SERVICE_TTY, SERVICE_VAULT, SERVICE_CRYPTBLK};
+    /* targets[0 .. n_expected-1] are the ones we drain for. SERVICE_CRYPTBLK
+     * (last) is deliberately outside the completion set. */
     const uint32_t n = (uint32_t)(sizeof(targets) / sizeof(targets[0]));
+    const uint32_t n_expected = 4;
+    const uint32_t want = (1u << n_expected) - 1u;
     ipc_msg_header_t ping = {.msg_type = MSG_PING, .msg_id = 0};
     uint32_t seen = 0;
     uint32_t i;
@@ -146,7 +156,7 @@ static void shell_probe_services(void)
     for (i = 0; i < n; i++)
         (void)ipc_send_async(targets[i], &ping, sizeof(ping));
 
-    while (seen != ((1u << n) - 1u))
+    while ((seen & want) != want)
     {
         ipc_message_t resp;
         uint32_t sender = 0;
@@ -155,7 +165,9 @@ static void shell_probe_services(void)
         if (len < 0)
             break; /* receive error: report what already answered */
         if (resp.msg_type != MSG_PONG)
-            continue; /* unrelated message: ignore */
+            continue; /* unrelated message: ignore. Assumes nothing sends to
+                       * the shell before the MSG_APP_OPEN sync send below;
+                       * an early-boot message would be dropped here. */
 
         for (i = 0; i < n; i++)
         {

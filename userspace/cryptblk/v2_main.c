@@ -1560,8 +1560,12 @@ void cryptblk_main(void)
         tag = (unsigned long)buf[0];
 
         if (tag == (unsigned long)MSG_PING) {
-            /* Liveness probe: one-word pong so the boot prober can prove
-             * this service runs and serves IPC. No crypt state is touched. */
+            /* Liveness responder, retained for when cryptblk's boot-time
+             * vault-seed handoff is fixed. It is currently UNREACHABLE/DEAD:
+             * cryptblk parks in crypt_get_seed() before reaching this loop,
+             * and the boot prober's completion set excludes tid 9 anyway.
+             * So it does NOT (today) let the prober prove this service runs.
+             * No crypt state is touched. */
             u_reply(snd, (long)MSG_PONG);
             continue;
         }
