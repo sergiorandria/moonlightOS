@@ -164,12 +164,45 @@ rm -f kernel/build/moonlight.elf
 run_optional kernel-build bash -c 'set -o pipefail; make -C kernel 2>&1 | tail -n 1'
 # SOLID module budget (production-ready): every S-mode kernel TU <= 500
 # lines, kboot (orchestration only) <= 200. seL4-style file-per-concern.
-# Scope is the kernel proper: initrd_data.c is a generated blob and
-# user.c is the U-mode payload, neither is a kernel module.
-over=$(wc -l kernel/kboot.c kernel/console.c kernel/vm.c kernel/device.c kernel/sched.c kernel/irq.c kernel/elf.c kernel/initrd.c kernel/elf_loader.c kernel/syscall.c kernel/syscall_ipc.c kernel/syscall_cap.c kernel/syscall_mem.c kernel/syscall_proc.c kernel/syscall_qube.c | awk '$2 != "total" && $1 > 500 {print}') || true
-kboot_n=$(wc -l < kernel/kboot.c)
-if [ -n "$over" ]; then echo "FAIL: kernel module budget (>500): $over"; FAILED=$((FAILED + 1)); else echo "PASS: kernel module budget (all <= 500)"; fi
-if [ "$kboot_n" -gt 200 ]; then echo "FAIL: kboot budget ($kboot_n > 200)"; FAILED=$((FAILED + 1)); else echo "PASS: kboot budget ($kboot_n <= 200)"; fi
+#
+# The TU list is DERIVED, not hand-maintained (Task 0.7). It used to be a
+# hard-coded list, so a TU added to kernel/Makefile's SRC_C was silently
+# unchecked. `make -p -n` prints make's variable database WITHOUT running
+# recipes and joins `\`-continued assignments onto one line; a sed filter
+# then pulls the SRC_C / SRC_S values. Fail closed: an empty extraction is a
+# failure, not a silent pass (an empty list would disable the cap entirely).
+#
+# Scope stays the kernel proper: the two SRC_C entries that are not kernel
+# modules are excluded by name -- initrd_data.c (generated blob,
+# tools/mkinitrd.sh) and user.c (U-mode payload). Every other name in
+# SRC_C/SRC_S is checked, so a newly added TU is covered automatically.
+kernel_line_budget() {
+  local srcs tus over kboot_n bad=0
+  srcs=$(make -C kernel --no-print-directory -p -n 2>/dev/null \
+    | sed -n 's/^SRC_C[[:space:]]*[:?+]*=[[:space:]]*//p; s/^SRC_S[[:space:]]*[:?+]*=[[:space:]]*//p' \
+    | tr ' ' '\n' | sed '/^$/d; s|^|kernel/|') || srcs=""
+  tus=$(printf '%s\n' "$srcs" | grep -vx -e 'kernel/initrd_data.c' -e 'kernel/user.c') || true
+  if [ -z "$tus" ]; then
+    echo "FAIL: kernel module budget: no TUs derived from kernel/Makefile SRC_C/SRC_S (fail closed)"
+    return 1
+  fi
+  over=$(printf '%s\n' "$tus" | xargs wc -l | awk '$2 != "total" && $1 > 500 {print}')
+  if [ -n "$over" ]; then
+    echo "FAIL: kernel module budget (>500): $over"
+    bad=1
+  else
+    echo "PASS: kernel module budget ($(printf '%s\n' "$tus" | wc -l) kernel TUs derived from SRC_C/SRC_S, all <= 500)"
+  fi
+  kboot_n=$(wc -l < kernel/kboot.c)
+  if [ "$kboot_n" -gt 200 ]; then
+    echo "FAIL: kboot budget ($kboot_n > 200)"
+    bad=1
+  else
+    echo "PASS: kboot budget ($kboot_n <= 200)"
+  fi
+  return "$bad"
+}
+run_test kernel-module-budget kernel_line_budget
 echo "[1g] v2 production gates (linker layout + user rodata ban)"
 if [ -f kernel/build/moonlight.elf ]; then
   if python3 <<'PYEOF'
