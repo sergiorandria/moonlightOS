@@ -513,7 +513,10 @@ __attribute__((section(".utext"), noinline)) void test_cap_thread(void)
     uputc('\n');
 
     /* ---- Negative tests: prove fail-closed behavior (Task 8) ----
-     * Each test expects rc<0. A 'P' is printed on each success. */
+     * Each test expects rc<0; a 'P' is printed on each success. After all
+     * four pass, a lone `NP` line is emitted. The gate asserts that marker
+     * whole-line, so start it on a fresh line (otherwise it is a suffix of
+     * the "PPPP" run and only a substring match). */
 
     /* 1. MAP bad slot: slot V2_CAP_SLOTS (out of bounds) must be rejected. */
     rc = u_invoke(V2_INV_MAP, 0, 0, 0x200);
@@ -575,6 +578,7 @@ __attribute__((section(".utext"), noinline)) void test_cap_thread(void)
     }
     uputc('P');
 
+    uputc('\n'); /* close the per-test P run: NP must be its own line */
     uputc('N');
     uputc('P');
     uputc('\n'); /* negative-passed */

@@ -99,15 +99,17 @@ void kboot(void)
     threads[7].regs[2] = u_sp[7];
     threads[7].sepc = (uint64_t)test_cap_thread;
     threads[7].state = T_RUNNABLE;
-    elf_loader_spawn("mem_server", 0, 2, "FAIL; stub");
-    elf_loader_spawn("shell", 1, 1, "FAIL; parked");
-    elf_loader_spawn("console", 3, 3, "FAIL; parked");
-    elf_loader_spawn("tty", 4, 4, "FAIL; parked");
-    elf_loader_spawn("vault", 8, 8, "FAIL or missing; parked");
-    elf_loader_spawn("cryptblk", 9, 9, "FAIL or missing; parked");
-    elf_loader_spawn("gui", 10, 10, "FAIL; parked");
-
-    /* Production microkernel boot complete: all services loaded */
+    /* Capture every spawn result: the services-up marker below is printed
+     * ONLY if all seven succeed. The return values used to be discarded, so
+     * "Services: ... up" claimed success even when a spawn had failed. */
+    int sp_mem = elf_loader_spawn("mem_server", 0, 2, "FAIL; stub");
+    int sp_shell = elf_loader_spawn("shell", 1, 1, "FAIL; parked");
+    int sp_console = elf_loader_spawn("console", 3, 3, "FAIL; parked");
+    int sp_tty = elf_loader_spawn("tty", 4, 4, "FAIL; parked");
+    int sp_vault = elf_loader_spawn("vault", 8, 8, "FAIL or missing; parked");
+    int sp_cryptblk = elf_loader_spawn("cryptblk", 9, 9, "FAIL or missing; parked");
+    int sp_gui = elf_loader_spawn("gui", 10, 10, "FAIL; parked");
+    int services_up = sp_mem && sp_shell && sp_console && sp_tty && sp_vault && sp_cryptblk && sp_gui;
 
     /* Qube assignments (production microkernel - all services in qube 0):
      * For the production microkernel, all services run in qube 0 (system qube)
@@ -130,7 +132,13 @@ void kboot(void)
     qube_of[10] = 0; /* gui */
     qube_next = 1;   /* Next available qube for future isolation */
 
-    kputs("Services: mem+console+tty+vault+cryptblk+gui up\n");
+    /* Honest boot marker: the gate asserts this exact whole line. If any
+     * spawn above failed, print a clearly-not-passing alternative so the
+     * assertion fails instead of matching an unconditional success claim. */
+    if (services_up)
+        kputs("Services: mem+console+tty+vault+cryptblk+gui up\n");
+    else
+        kputs("Services: INCOMPLETE\n");
 
     /* Disable verbose runtime logging now that boot is complete */
     boot_log_enabled = 0;

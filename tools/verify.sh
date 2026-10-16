@@ -288,13 +288,17 @@ if [ -f kernel/build/moonlight.elf ]; then
     # state, so the common path stays fast while a loaded host gets real
     # headroom instead of flaking on an arbitrary 4s line.
     for _ in $(seq 1 40); do
-      if grep -q "\[ipc\] send tcb=1 -> 4" /tmp/v2_qemu.log 2>/dev/null; then break; fi
+      if grep -qF "[ipc] send tcb=1 -> 4" /tmp/v2_qemu.log 2>/dev/null; then break; fi
       if ! kill -0 $QPID 2>/dev/null; then break; fi
       sleep 0.5
     done
     kill -9 $QPID 2>/dev/null || true
     wait $QPID 2>/dev/null || true
-    V2LOG=$(cat /tmp/v2_qemu.log 2>/dev/null | tr -d '\0')
+    # Strip NULs and CR: the SBI/QEMU serial path emits CRLF, so an exact
+    # whole-line (-x) assertion would otherwise fail on the trailing \r
+    # rather than on the kernel's real line content. Normalising here keeps
+    # -x honest: it matches the line as the kernel printed it.
+    V2LOG=$(cat /tmp/v2_qemu.log 2>/dev/null | tr -d '\0\r')
     # Fail closed: every missing marker flips the gate to FAIL (a smoke
     # that only prints FAIL lines but reports PASS proves nothing).
     QEMU_FAIL=0
@@ -302,29 +306,39 @@ if [ -f kernel/build/moonlight.elf ]; then
     # qube-demo set — B00pn/A10pg, QREXEC/FW/NET/VAULT/CRYPT, MMIO-leaf
     # asserts, FILL/COMPOSE — no longer exists, so gating it would fail
     # on phantom markers).
-    echo "$V2LOG" | grep -q "satp Sv39 on" && echo "v2 smoke: satp on" || { echo "v2 smoke: FAIL (no satp)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "entering U-mode" && echo "v2 smoke: U-mode entry" || { echo "v2 smoke: FAIL (no U entry)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "INPUT: kbd found" && echo "v2 smoke: input kbd" || { echo "v2 smoke: FAIL (no input kbd)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "INPUT: mouse found" && echo "v2 smoke: input mouse" || { echo "v2 smoke: FAIL (no input mouse)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "GUI: bochs 800x600x32" && echo "v2 smoke: bochs mode" || { echo "v2 smoke: FAIL (no bochs mode)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "\[spawn\] mem_server ELF ok" && echo "v2 smoke: mem spawn" || { echo "v2 smoke: FAIL (no mem spawn)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "\[spawn\] shell ELF ok" && echo "v2 smoke: shell spawn" || { echo "v2 smoke: FAIL (no shell spawn)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "\[spawn\] console ELF ok" && echo "v2 smoke: console spawn" || { echo "v2 smoke: FAIL (no console spawn)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "\[spawn\] tty ELF ok" && echo "v2 smoke: tty spawn" || { echo "v2 smoke: FAIL (no tty spawn)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "\[spawn\] vault ELF ok" && echo "v2 smoke: vault spawn" || { echo "v2 smoke: FAIL (no vault spawn)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "\[spawn\] cryptblk ELF ok" && echo "v2 smoke: cryptblk spawn" || { echo "v2 smoke: FAIL (no cryptblk spawn)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "\[spawn\] gui ELF ok" && echo "v2 smoke: gui spawn" || { echo "v2 smoke: FAIL (no gui spawn)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "Services: mem+console+tty+vault+cryptblk+gui up" && echo "v2 smoke: services up" || { echo "v2 smoke: FAIL (no services up)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "MEM-SRV" && echo "v2 smoke: MEM-SRV userspace" || { echo "v2 smoke: FAIL (no MEM-SRV)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "DU: vpn0 mirrored" && echo "v2 smoke: DU real-frame proof" || { echo "v2 smoke: FAIL (no DU)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "NP" && echo "v2 smoke: NP negative-passed" || { echo "v2 smoke: FAIL (no NP)"; QEMU_FAIL=1; }
+    # Anchored markers: -F is a fixed-string match (no regex-metacharacter or
+    # substring surprise). -x is added ONLY where the marker is verified to be
+    # a COMPLETE line as emitted. Four markers are legitimately a fragment of
+    # a longer line and stay substring-anchored on purpose:
+    #   "satp Sv39 on"         <- "v2: satp Sv39 on, U-bit split ..."
+    #   "entering U-mode"      <- "v2: entering U-mode"
+    #   "DU: vpn0 mirrored"    <- "DU: vpn0 mirrored 2/2"
+    #   "GUI: Bochs VGA found" <- "GUI: Bochs VGA found (dev=...)"
+    # Every other marker below is a whole line (verified against the kernel
+    # kputs/u_puts emitters), so -x is exact and cannot match a substring.
+    echo "$V2LOG" | grep -qF "satp Sv39 on" && echo "v2 smoke: satp on" || { echo "v2 smoke: FAIL (no satp)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qF "entering U-mode" && echo "v2 smoke: U-mode entry" || { echo "v2 smoke: FAIL (no U entry)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "INPUT: kbd found" && echo "v2 smoke: input kbd" || { echo "v2 smoke: FAIL (no input kbd)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "INPUT: mouse found" && echo "v2 smoke: input mouse" || { echo "v2 smoke: FAIL (no input mouse)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "GUI: bochs 800x600x32" && echo "v2 smoke: bochs mode" || { echo "v2 smoke: FAIL (no bochs mode)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "[spawn] mem_server ELF ok" && echo "v2 smoke: mem spawn" || { echo "v2 smoke: FAIL (no mem spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "[spawn] shell ELF ok" && echo "v2 smoke: shell spawn" || { echo "v2 smoke: FAIL (no shell spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "[spawn] console ELF ok" && echo "v2 smoke: console spawn" || { echo "v2 smoke: FAIL (no console spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "[spawn] tty ELF ok" && echo "v2 smoke: tty spawn" || { echo "v2 smoke: FAIL (no tty spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "[spawn] vault ELF ok" && echo "v2 smoke: vault spawn" || { echo "v2 smoke: FAIL (no vault spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "[spawn] cryptblk ELF ok" && echo "v2 smoke: cryptblk spawn" || { echo "v2 smoke: FAIL (no cryptblk spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "[spawn] gui ELF ok" && echo "v2 smoke: gui spawn" || { echo "v2 smoke: FAIL (no gui spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "Services: mem+console+tty+vault+cryptblk+gui up" && echo "v2 smoke: services up" || { echo "v2 smoke: FAIL (no services up)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "MEM-SRV" && echo "v2 smoke: MEM-SRV userspace" || { echo "v2 smoke: FAIL (no MEM-SRV)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qF "DU: vpn0 mirrored" && echo "v2 smoke: DU real-frame proof" || { echo "v2 smoke: FAIL (no DU)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "NP" && echo "v2 smoke: NP negative-passed" || { echo "v2 smoke: FAIL (no NP)"; QEMU_FAIL=1; }
     # Retired: "[sched] exited 7" can no longer print (klog is silenced at
     # boot-complete and no production path exits thread 7). Gating it
     # would fail forever; the liveness gate below covers scheduler health.
-    echo "$V2LOG" | grep -q "GUI: Bochs VGA found" && echo "v2 smoke: vga bind" || { echo "v2 smoke: FAIL (no vga bind)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "GUI: framebuffer initialised" && echo "v2 smoke: fb init" || { echo "v2 smoke: FAIL (no fb init)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "GUI: keyboard ready" && echo "v2 smoke: kbd ready" || { echo "v2 smoke: FAIL (no kbd ready)"; QEMU_FAIL=1; }
-    echo "$V2LOG" | grep -q "GUI: mouse ready" && echo "v2 smoke: mouse ready" || { echo "v2 smoke: FAIL (no mouse ready)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qF "GUI: Bochs VGA found" && echo "v2 smoke: vga bind" || { echo "v2 smoke: FAIL (no vga bind)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "GUI: framebuffer initialised" && echo "v2 smoke: fb init" || { echo "v2 smoke: FAIL (no fb init)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "GUI: keyboard ready" && echo "v2 smoke: kbd ready" || { echo "v2 smoke: FAIL (no kbd ready)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "GUI: mouse ready" && echo "v2 smoke: mouse ready" || { echo "v2 smoke: FAIL (no mouse ready)"; QEMU_FAIL=1; }
     # Retired: "SHELL: thread 1 starting" was a phantom gate (721f9c7) - repo-wide
     # history shows no C source ever printed it, so gating it failed forever.
     # Shell liveness is covered by "[spawn] shell ELF ok" + the live-IPC gate
@@ -332,7 +346,7 @@ if [ -f kernel/build/moonlight.elf ]; then
     # Liveness (not clean-park: the production system stays up serving
     # IPC — shell/tty traffic at the timeout proves the scheduler + IPC
     # plane are alive instead of wedged).
-    echo "$V2LOG" | grep -q "\[ipc\] send tcb=1 -> 4" && echo "v2 smoke: shell->tty live IPC" || { echo "v2 smoke: FAIL (no live IPC)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "[ipc] send tcb=1 -> 4" && echo "v2 smoke: shell->tty live IPC" || { echo "v2 smoke: FAIL (no live IPC)"; QEMU_FAIL=1; }
     if [ "$QEMU_FAIL" = "0" ]; then
       QEMU_STATUS="PASS"
     else
