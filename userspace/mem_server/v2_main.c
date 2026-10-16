@@ -17,6 +17,8 @@
  */
 #include <stdint.h>
 
+#include "services/ipc_protocol.h"
+
 #define V2_PUTC 1
 #define V2_PARK 2
 #define V2_SEND 3
@@ -124,7 +126,12 @@ void mem_server_main(void)
         }
 
         req = (long)buf[0];
-        if (req == REQ_ALLOC) {
+        if (req == (long)MSG_PING) {
+            /* Liveness probe (MSG_PING, services/ipc_protocol.h): reply one
+             * pong word so the boot prober can prove this service runs and
+             * serves IPC. Not a REQ_* frame op; no state is touched. */
+            rc = (long)MSG_PONG;
+        } else if (req == REQ_ALLOC) {
             rc = u_invoke(V2_INV_PT_ALLOC, 0, 0, 0);
         } else if (req == REQ_MAP) {
             if (n >= 3)

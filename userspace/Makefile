@@ -59,7 +59,7 @@ all: build/hello.elf build/moonsh.elf build/linux_demo.elf build/ls.elf build/ca
 
 build/mem_server.elf: mem_server/v2_main.c lib/v2_start.S v2_user.ld
 	@mkdir -p build
-	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ mem_server/v2_main.c lib/v2_start.S
+	$(CC) $(CFLAGS_V2) -I include $(LDFLAGS_V2) -Wl,--no-undefined -o $@ mem_server/v2_main.c lib/v2_start.S
 	ls -lh $@
 
 build/qrexec.elf: qrexec_server/v2_main.c qrexec_server/qrexec_start.S v2_user.ld
@@ -84,12 +84,12 @@ build/net.elf: net/v2_main.c net/net_start.S v2_user.ld
 
 build/vault.elf: vault/v2_main.c vault/vault_start.S v2_user.ld vault/rng_mix.h vault/rng_scan.h crypt/kdf_production.h crypt/aead.h crypt/sha256.h crypt/crypt_util.h cryptblk/slot.h cryptblk/layout.h
 	@mkdir -p build
-	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ vault/v2_main.c vault/vault_start.S
+	$(CC) $(CFLAGS_V2) -I include $(LDFLAGS_V2) -Wl,--no-undefined -o $@ vault/v2_main.c vault/vault_start.S
 	ls -lh $@
 
 build/cryptblk.elf: cryptblk/v2_main.c cryptblk/cryptblk_start.S v2_user.ld cryptblk/layout.h cryptblk/slot.h crypt/aead.h crypt/kdf_production.h crypt/sha256.h crypt/crypt_util.h
 	@mkdir -p build
-	$(CC) $(CFLAGS_V2) $(LDFLAGS_V2) -Wl,--no-undefined -o $@ cryptblk/v2_main.c cryptblk/cryptblk_start.S
+	$(CC) $(CFLAGS_V2) -I include $(LDFLAGS_V2) -Wl,--no-undefined -o $@ cryptblk/v2_main.c cryptblk/cryptblk_start.S
 	ls -lh $@
 
 build/moonsh.elf: sh/shell_tty.c lib/ipc_helpers.c $(LIB) lib/v2_start.S v2_user.ld

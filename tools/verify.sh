@@ -346,6 +346,23 @@ if [ -f kernel/build/moonlight.elf ]; then
     # Liveness (not clean-park: the production system stays up serving
     # IPC — shell/tty traffic at the timeout proves the scheduler + IPC
     # plane are alive instead of wedged).
+    # Per-service IPC liveness (R0.5): each IPC-serving service answered a
+    # boot MSG_PING with MSG_PONG (the shell prober prints one whole line
+    # per answer). This proves the service RUNS and SERVES IPC; the
+    # "[spawn] ... ELF ok" markers above only prove it LOADED.
+    #   Covered: mem_server (2), console (3), tty (4), vault (8).
+    #   Excluded: cryptblk (9) parks in its boot-time vault-seed handoff
+    #   before reaching its service loop, so it cannot answer a ping
+    #   (pre-existing defect; evidence in .superpowers/sdd/
+    #   2026-10-16-production-hardening/task-0.6-report.md). Its LOAD is
+    #   still asserted via "[spawn] cryptblk ELF ok" above; adding a
+    #   LIVE: tid=9 assertion here would make this gate red until that
+    #   defect is fixed. gui (tid 10) has no receive loop and stays covered
+    #   by its GUI: readiness markers.
+    echo "$V2LOG" | grep -qxF "LIVE: tid=2 ok" && echo "v2 smoke: live mem_server" || { echo "v2 smoke: FAIL (mem_server not live)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "LIVE: tid=3 ok" && echo "v2 smoke: live console" || { echo "v2 smoke: FAIL (console not live)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "LIVE: tid=4 ok" && echo "v2 smoke: live tty" || { echo "v2 smoke: FAIL (tty not live)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -qxF "LIVE: tid=8 ok" && echo "v2 smoke: live vault" || { echo "v2 smoke: FAIL (vault not live)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -qxF "[ipc] send tcb=1 -> 4" && echo "v2 smoke: shell->tty live IPC" || { echo "v2 smoke: FAIL (no live IPC)"; QEMU_FAIL=1; }
     if [ "$QEMU_FAIL" = "0" ]; then
       QEMU_STATUS="PASS"

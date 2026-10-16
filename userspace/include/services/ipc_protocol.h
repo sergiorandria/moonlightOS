@@ -28,6 +28,8 @@
 #define SERVICE_MEM        2   /* Memory server */
 #define SERVICE_CONSOLE    3   /* Console text rendering service (was qrexec) */
 #define SERVICE_TTY        4   /* TTY line discipline service (was adminvm) */
+#define SERVICE_VAULT      8   /* Key/secret service (endpoint 8) */
+#define SERVICE_CRYPTBLK   9   /* Encrypted block-device service (endpoint 9) */
 #define SERVICE_GUI        10  /* GUI/Display hardware driver */
 
 /* ============================================================================
@@ -66,6 +68,13 @@
 /* Generic responses */
 #define MSG_ACK                 0xF000  /* Operation acknowledged */
 #define MSG_ERROR               0xF001  /* Operation failed */
+
+/* Generic liveness probe (production boot self-test): a client sends
+ * MSG_PING and every IPC-serving service answers MSG_PONG, proving the
+ * service is running and serving IPC (not merely loaded). MSG_PONG is the
+ * reply word/msg_type; the request msg_id (header, bytes 4-7) is echoed. */
+#define MSG_PING                0xF002  /* Liveness probe request */
+#define MSG_PONG                0xF003  /* Liveness probe reply */
 
 /* ============================================================================
  * Common Message Header
@@ -270,6 +279,7 @@ typedef struct {
 
 typedef union {
     uint32_t                msg_type;
+    ipc_msg_header_t        header;   /* common {msg_type,msg_id} view */
     msg_key_event_t         key_event;
     msg_mouse_event_t       mouse_event;
     msg_console_putc_t      console_putc;

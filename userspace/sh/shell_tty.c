@@ -92,12 +92,92 @@ static int shell_read_line(char *buf, int max_len)
     return total;
 }
 
+/* Print one liveness marker as an exact whole line: "LIVE: tid=N ok\n".
+ * Emitted straight to the UART (moonlight_putc), not through TTY/console,
+ * so a probe marker survives a dead TTY/console service. tools/verify.sh
+ * asserts each with grep -qxF. */
+static void shell_live_marker(uint32_t tid)
+{
+    moonlight_putc('L');
+    moonlight_putc('I');
+    moonlight_putc('V');
+    moonlight_putc('E');
+    moonlight_putc(':');
+    moonlight_putc(' ');
+    moonlight_putc('t');
+    moonlight_putc('i');
+    moonlight_putc('d');
+    moonlight_putc('=');
+    if (tid >= 10)
+        moonlight_putc((char)('0' + (tid / 10) % 10));
+    moonlight_putc((char)('0' + (tid % 10)));
+    moonlight_putc(' ');
+    moonlight_putc('o');
+    moonlight_putc('k');
+    moonlight_putc('\n');
+}
+
+/* Boot liveness round-trips (R0.5). Ping every IPC-serving service and wait
+ * for its pong; print one whole-line marker per answered service. This
+ * proves the service RUNS and SERVES IPC, which the load-time
+ * "[spawn] X ELF ok" marker cannot.
+ *
+ * Covered: mem_server (2), console (3), tty (4), vault (8). Excluded:
+ *   - cryptblk (9): parks in its boot-time vault-seed handoff before ever
+ *     reaching its service loop, so it cannot answer a ping. Root cause and
+ *     evidence: .superpowers/sdd/2026-10-16-production-hardening/
+ *     task-0.6-report.md (pre-existing defect, not introduced here). Its
+ *     load is still asserted via "[spawn] cryptblk ELF ok".
+ *   - gui (10): not an IPC server (no receive loop); covered by its three
+ *     readiness markers.
+ *
+ * All pings are sent before the first wait so a service that never answers
+ * leaves only its OWN marker missing. The wait is bounded by the number of
+ * expected replies (four); a wedged service is bounded by the gate's QEMU
+ * timeout, since V2 has no timer-armed receive. */
+static void shell_probe_services(void)
+{
+    static const uint32_t targets[] = {SERVICE_MEM, SERVICE_CONSOLE, SERVICE_TTY, SERVICE_VAULT};
+    const uint32_t n = (uint32_t)(sizeof(targets) / sizeof(targets[0]));
+    ipc_msg_header_t ping = {.msg_type = MSG_PING, .msg_id = 0};
+    uint32_t seen = 0;
+    uint32_t i;
+
+    for (i = 0; i < n; i++)
+        (void)ipc_send_async(targets[i], &ping, sizeof(ping));
+
+    while (seen != ((1u << n) - 1u))
+    {
+        ipc_message_t resp;
+        uint32_t sender = 0;
+        int len = ipc_recv(SHELL_TID, &resp, sizeof(resp), &sender);
+
+        if (len < 0)
+            break; /* receive error: report what already answered */
+        if (resp.msg_type != MSG_PONG)
+            continue; /* unrelated message: ignore */
+
+        for (i = 0; i < n; i++)
+        {
+            if (targets[i] == sender && !(seen & (1u << i)))
+            {
+                seen |= (1u << i);
+                shell_live_marker(targets[i]);
+            }
+        }
+    }
+}
+
 /*
  * Shell main entry point
  */
 void shell_main(void)
 {
     char line_buf[TTY_LINE_MAX];
+
+    /* Prove each IPC service is live before anything else runs at the
+     * prompt (and before the shell->TTY open send the gate polls for). */
+    shell_probe_services();
 
     /* Open TTY 0 */
     msg_app_open_t open_msg = {.msg_type = MSG_APP_OPEN, .tty_id = SHELL_TTY_ID, .flags = 0};

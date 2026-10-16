@@ -65,6 +65,7 @@
 #define CRYPT_DRBG_DEFINE
 #include <stdint.h>
 
+#include "services/ipc_protocol.h"
 #include "../../kernel/qube.h"
 #include "../crypt/kdf_production.h"
 #include "../cryptblk/slot.h"
@@ -678,6 +679,15 @@ void vault_main(void)
             continue;
         }
         tag = (unsigned long)buf[0];
+
+        if (tag == (unsigned long)MSG_PING)
+        {
+            /* Liveness probe: one-word pong so the boot prober can prove
+             * this service runs and serves IPC. Not a T_CALL (those are
+             * DENY-direct) and no vault state is touched. */
+            u_reply(snd, (long)MSG_PONG);
+            continue;
+        }
 
         if (tag == (unsigned long)T_CALL)
         {

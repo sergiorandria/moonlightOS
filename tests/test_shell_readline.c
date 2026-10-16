@@ -63,6 +63,18 @@ int ipc_send_async(uint32_t target_tid, const void *msg, uint32_t msg_size)
     return 0;
 }
 
+/* Stub for the shell's boot liveness prober (shell_probe_services), which is
+ * compiled in from shell_tty.c but never called by this test (only
+ * shell_read_line is exercised). */
+int ipc_recv(uint32_t my_tid, void *msg, uint32_t msg_size, uint32_t *sender)
+{
+    (void)my_tid;
+    (void)msg;
+    (void)msg_size;
+    (void)sender;
+    return 0;
+}
+
 int moonlight_yield(void)
 {
     return 0;

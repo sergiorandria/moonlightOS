@@ -117,6 +117,15 @@ void tty_main(void)
             handle_app_ioctl(&msg.tty_ioctl, sender);
             break;
 
+        case MSG_PING: {
+            /* Liveness probe: acknowledge with a pong so the boot prober
+             * can prove this service is running and serving IPC (not just
+             * loaded from the initrd). No state is touched. */
+            msg_response_t pong = {.msg_type = MSG_PONG, .msg_id = msg.header.msg_id, .status = 0};
+            ipc_reply(sender, &pong, sizeof(pong));
+            break;
+        }
+
         default:
             break;
         }
