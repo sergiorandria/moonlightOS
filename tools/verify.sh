@@ -168,7 +168,24 @@ if [ -f kernel/build/moonlight.elf ]; then
     # headless (-nographic feeds them no keys, but the dev-18 transports
     # enumerate so kernel discovery + the userspace probe run; live
     # typing instead needs a windowed/VNC display, see run_qemu.sh).
-    V2LOG=$(timeout 10 $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf -device virtio-net-device,netdev=n0 -netdev user,id=n0 -device virtio-rng-device -global virtio-mmio.force-legacy=off -drive file=$DISK,format=raw,if=none,id=hd0 -device virtio-blk-device,drive=hd0 -device bochs-display -device virtio-keyboard-device -device virtio-mouse-device 2>&1 | tr -d '\0')
+    $QEMU -M virt -m 256M -nographic -bios default -kernel kernel/build/moonlight.elf \
+      -device virtio-net-device,netdev=n0 -netdev user,id=n0 -device virtio-rng-device \
+      -global virtio-mmio.force-legacy=off -drive file=$DISK,format=raw,if=none,id=hd0 \
+      -device virtio-blk-device,drive=hd0 -device bochs-display -device virtio-keyboard-device \
+      -device virtio-mouse-device > /tmp/v2_qemu.log 2>&1 &
+    QPID=$!
+    # Wait for the terminal liveness marker or a bounded ceiling. Polling
+    # (rather than a fixed sleep) exits as soon as boot reaches steady
+    # state, so the common path stays fast while a loaded host gets real
+    # headroom instead of flaking on an arbitrary 4s line.
+    for _ in $(seq 1 40); do
+      if grep -q "\[ipc\] send tcb=1 -> 4" /tmp/v2_qemu.log 2>/dev/null; then break; fi
+      if ! kill -0 $QPID 2>/dev/null; then break; fi
+      sleep 0.5
+    done
+    kill -9 $QPID 2>/dev/null || true
+    wait $QPID 2>/dev/null || true
+    V2LOG=$(cat /tmp/v2_qemu.log 2>/dev/null | tr -d '\0')
     # Fail closed: every missing marker flips the gate to FAIL (a smoke
     # that only prints FAIL lines but reports PASS proves nothing).
     QEMU_FAIL=0
@@ -185,6 +202,8 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -q "\[spawn\] shell ELF ok" && echo "v2 smoke: shell spawn" || { echo "v2 smoke: FAIL (no shell spawn)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "\[spawn\] console ELF ok" && echo "v2 smoke: console spawn" || { echo "v2 smoke: FAIL (no console spawn)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "\[spawn\] tty ELF ok" && echo "v2 smoke: tty spawn" || { echo "v2 smoke: FAIL (no tty spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "\[spawn\] vault ELF ok" && echo "v2 smoke: vault spawn" || { echo "v2 smoke: FAIL (no vault spawn)"; QEMU_FAIL=1; }
+    echo "$V2LOG" | grep -q "\[spawn\] cryptblk ELF ok" && echo "v2 smoke: cryptblk spawn" || { echo "v2 smoke: FAIL (no cryptblk spawn)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "\[spawn\] gui ELF ok" && echo "v2 smoke: gui spawn" || { echo "v2 smoke: FAIL (no gui spawn)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "Services: mem+console+tty+vault+cryptblk+gui up" && echo "v2 smoke: services up" || { echo "v2 smoke: FAIL (no services up)"; QEMU_FAIL=1; }
     echo "$V2LOG" | grep -q "MEM-SRV" && echo "v2 smoke: MEM-SRV userspace" || { echo "v2 smoke: FAIL (no MEM-SRV)"; QEMU_FAIL=1; }
