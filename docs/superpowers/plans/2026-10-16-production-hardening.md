@@ -55,7 +55,7 @@ phase header map to the spec.
 - Produces: shell helpers `run_test <label> <cmd...>` and `run_optional <label> <cmd...>`; a `FAILED` counter; the script exits non-zero if `FAILED > 0`.
 
 - [ ] **Step 1: Reproduce the bug.** Run `bash -c 'set -e; false || echo "FAIL"; echo reached'` → prints `FAIL` then `reached`. Confirm `tools/verify.sh` uses this pattern (`verify.sh:12-57`).
-- [ ] **Step 2: Harden the shell.** Change line 2 to `set -euo pipefail`. Replace every `gcc … && /tmp/x || echo "FAIL: x"` with `run_test x gcc -o /tmp/x … && /tmp/x` (function records failure + `FAILED=$((FAILED+1))`, never masks). Use `run_optional` only for genuinely optional stages (currently `test_vfs`) which print `SKIP`.
+- [ ] **Step 2: Harden the shell.** Change line 2 to `set -euo pipefail`. Replace every `gcc … && /tmp/x || echo "FAIL: x"` with `run_test x gcc -o /tmp/x … && /tmp/x` (function records failure + `FAILED=$((FAILED+1))`, never masks). **All host tests are fatal** — including `test_vfs` (verified: every currently-masked test passes today). `run_optional` is for environment-optional stages only (the `command -v clang`-guarded `make` steps), which print `SKIP`.
 - [ ] **Step 3: Aggregate.** Before the summary block, `if [ "$FAILED" -ne 0 ]; then echo "FAILED=$FAILED"; exit 1; fi`.
 - [ ] **Step 4: Prove it fails.** Inject a fault: add the line `run_test _probe false` under §1b, run `tools/verify.sh`, assert it exits non-zero and prints `FAILED=1`. Revert.
 - [ ] **Step 5: Prove it passes.** Run `tools/verify.sh` on the clean tree, assert exit 0.
@@ -66,7 +66,7 @@ phase header map to the spec.
 **Files:** Modify `tools/verify.sh` (build stage, §1f/§3).
 
 - [ ] **Step 1: Delete artifacts first.** Before `make -C kernel`, `rm -f kernel/build/moonlight.elf`; if the build fails, the §4 QEMU block must see no ELF and report `FAIL` (not `SKIP`).
-- [ ] **Step 2: Make build failure fatal.** Remove the `| tail` masking and the `|| echo "FAIL: kernel build"`; a failed `make` sets `FAILED` and the script exits non-zero.
+- [ ] **Step 2: Make build failure fatal.** Already delivered by Task 0.1's fix round (`make -C kernel` under `run_optional` + `pipefail`; an `ISABELLE_STATUS`/`CHERI_STATUS` of `FAIL` is fatal). Verify it is in place; do not re-implement.
 - [ ] **Step 3: Prove it.** Break a kernel source line, run the gate, assert non-zero and that §4 reports `FAIL` (not a boot from a stale ELF). Revert.
 - [ ] **Step 4: Commit** `test(gate): rebuild kernel from clean; fail on build error`.
 
