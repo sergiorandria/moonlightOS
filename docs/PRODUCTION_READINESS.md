@@ -148,7 +148,7 @@ Order-of-magnitude assessment: **Early prototype with production-grade documenta
 - **R0.2** `verify.sh` MUST exit non-zero if the kernel build or Isabelle build fails.
 - **R0.3** `verify.sh` MUST gate the shipping shell engine (`shell_core.h`) and the 11 ungated real tests; it MUST NOT rely on the dead `shell.c`.
 - **R0.4** QEMU markers MUST be exact-line anchored, and "Services … up" MUST print only if every spawn succeeded.
-- **R0.5** The gate MUST prove at least one live IPC round-trip per spawned service.
+- **R0.5** The gate MUST prove at least one live IPC round-trip per IPC-serving service. Delivered: mem_server (2), console (3), tty (4) and vault (8) answer a boot MSG_PING with MSG_PONG. gui (10) is excluded by design — it is a driver with no receive loop, covered by its `GUI:` readiness markers. cryptblk (9) is pinged but pinned ABSENT by a fail-closed inverse assertion because it parks before its service loop (S10); that pin is the gate's record of the gap and MUST become a positive assertion once R1.9 is fixed.
 - **R0.6** `initrd_data.c` MUST be regenerated from the current ELFs before the kernel build, and the gate MUST fail if it is stale.
 - **R0.7** The gate MUST delete kernel build artifacts before building (no stale-ELF pass).
 
