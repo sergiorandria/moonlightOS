@@ -74,11 +74,16 @@ run_optional userspace-ELFs bash -c 'set -o pipefail; make -C userspace 2>&1 | t
 run_optional userspace-drivers bash -c 'set -o pipefail; make -C userspace drivers 2>&1 | tail -n 3'
 run_optional userspace-stubs bash -c 'set -o pipefail; make -C userspace stubs 2>&1 | tail -n 3'
 run_optional vault-cryptblk-ELFs bash -c 'set -o pipefail; make -C userspace build/vault.elf build/cryptblk.elf 2>&1 | tail -n 3'
-# §1e2 — initrd blob freshness (R0.6). tools/mkinitrd.sh is byte-deterministic
-# (no timestamps, host paths or randomness), so on an up-to-date tree it rewrites
-# kernel/initrd_data.c + kernel/initrd.h with identical bytes and the committed
-# blob must be clean in git. A blob that no longer matches the ELFs §1e built is
-# exactly the silent drift this stage catches.
+# §1e2 — initrd blob freshness (R0.6). The check regenerates the blob from
+# userspace/build/*.elf and requires the committed kernel/initrd_data.c +
+# kernel/initrd.h to be byte-identical. mkinitrd.sh contributes determinism (no
+# timestamps, host paths or randomness), but byte-identity ALSO requires the
+# ELF-producing toolchain (clang + lld) to be reproducible on this host: an ELF
+# whose bytes differ for the same source (e.g. a different toolchain build)
+# makes this check fail on an otherwise up-to-date tree. Cross-host ELF
+# bit-reproducibility is tracked as R5.4 (plan Phase 5); this stage assumes a
+# deterministic local toolchain. A blob that no longer matches the ELFs §1e
+# built is exactly the silent drift this stage catches.
 #
 # Two phases, because regeneration REPAIRS the file in place:
 #   (a) BEFORE: a working copy that is already dirty is only visible here — the

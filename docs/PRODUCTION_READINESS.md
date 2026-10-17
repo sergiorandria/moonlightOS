@@ -192,6 +192,7 @@ Order-of-magnitude assessment: **Early prototype with production-grade documenta
 - **R5.1** Isabelle model constants MUST be bridged to the C headers in CI, or the "refined C implementation" claim retracted. (V5)
 - **R5.2** CI MUST run sanitizers/static analysis on host tests and the kernel.
 - **R5.3** A `CONTRIBUTING`-style quality bar MUST codify the global constraints.
+- **R5.4** CI MUST build the shipped userspace ELFs on a reproducible (pinned) toolchain so §1e2's initrd-staleness check is meaningful across hosts; it currently assumes byte-identical ELFs from a deterministic local clang+lld.
 
 ---
 

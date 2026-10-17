@@ -203,11 +203,12 @@ artifact can satisfy the smoke from a previous run.
 
 ## Phase 5 — Process hardening
 
-**Implements:** R5.1–R5.3 (V5). **Own plan required.**
+**Implements:** R5.1–R5.4 (V5). **Own plan required.**
 
 - **5.1 Proof/model linkage (R5.1, V5).** Add a CI check that each Isabelle `max_*` constant equals its C macro (generated `_Static_assert` bridge or a parse-check); fix the four drifts. Otherwise retract the "refined C implementation" claim in `docs/ARCHITECTURE.md:8-10`.
 - **5.2 Sanitizers/static analysis (R5.2).** Run host tests under `-fsanitize=address,undefined` (the banners in `test_frames.c:3`, `test_ipc_production.c:17`, `test_elf.c:6` already claim this — make it true) and `clang --analyze` on the kernel in CI.
 - **5.3 Quality bar (R5.3).** Add `CONTRIBUTING.md` codifying the Global Constraints and the "gate must fail on a deliberate fault" rule.
+- **5.4 Reproducible ELF toolchain (R5.4).** Pin or verify the clang+lld used to build the shipped userspace ELFs so §1e2's initrd-staleness `git diff` is meaningful across hosts (it currently assumes byte-identical ELFs from a deterministic local toolchain). Test: CI builds the ELFs on the pinned toolchain and §1e2 passes on a clean tree.
 
 **Exit criteria:** CI fails on a model/constant drift and on a sanitizer hit; the claims in test banners are true; the constraints are written down and enforced.
 
@@ -215,7 +216,7 @@ artifact can satisfy the smoke from a previous run.
 
 ## Self-review (plan vs spec)
 
-- **Spec coverage:** R0.1–R0.7 → Phase 0 tasks 0.1–0.7; R1.1–R1.9 → Phase 1 §1.1–1.9 (+ D3); R2.1–R2.6 → Phase 2 §2.1–2.6; R3.1–R3.8 → Phase 3 §3.1–3.8; R4.1–R4.5 → Phase 4 §4.1–4.5; R5.1–R5.3 → Phase 5. No requirement is unmapped. Finding V4 is owned by Task 0.7 (added in the pre-flight scan).
+- **Spec coverage:** R0.1–R0.7 → Phase 0 tasks 0.1–0.7; R1.1–R1.9 → Phase 1 §1.1–1.9 (+ D3); R2.1–R2.6 → Phase 2 §2.1–2.6; R3.1–R3.8 → Phase 3 §3.1–3.8; R4.1–R4.5 → Phase 4 §4.1–4.5; R5.1–R5.4 → Phase 5. No requirement is unmapped. Finding V4 is owned by Task 0.7 (added in the pre-flight scan).
 - **Review Focus:** items 1–5 map to Tasks 0.1, 1.1, 3.6, 3.8, 3.2 respectively — each has an explicit test vector.
 - **Type/name consistency:** `run_test`/`run_optional`/`FAILED` are introduced in Task 0.1 and used by 0.2–0.7; `V2_INV_ELF_CHECK`/`sepc`/`irq_unbind` names match the reviewed source.
 - **Proportion:** Phase 0 is fully specified because it is executed first and is self-contained; Phases 1–5 are scoped as independent plans by design, not transcribed here.
