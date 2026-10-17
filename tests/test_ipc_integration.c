@@ -1,6 +1,8 @@
-/* test_ipc_integration.c - End-to-end IPC integration tests
+/* test_ipc_integration.c - Host tests for the kernel IPC endpoint queues.
  *
- * Tests realistic service communication patterns:
+ * Exercises the pure endpoint-queue primitives in kernel/ipc.h (v2_q_send /
+ * v2_q_take_send / v2_q_wait / v2_q_take_waiter / v2_deliver / v2_ep_ok) in
+ * realistic service-communication shapes:
  * - Request-response patterns (synchronous)
  * - Fire-and-forget patterns (asynchronous)
  * - Multi-hop message routing
@@ -8,9 +10,10 @@
  * - Error handling and recovery
  * - Concurrent access patterns
  *
- * This complements the unit tests in test_v2ipc.c which test
- * individual queue operations. These tests validate the full
- * IPC subsystem in realistic scenarios.
+ * Scope: these are queue-level tests of the kernel/ipc.h inline helpers. They
+ * do NOT exercise the kernel syscall, notify/wake or scheduler paths - those
+ * are covered by the QEMU liveness smoke in tools/verify.sh. test_v2ipc.c
+ * covers the individual queue edge cases; this file composes them into flows.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -32,23 +35,6 @@
 
 #define TEST_PASS(msg) \
     printf("PASS: %s\n", msg)
-
-/* Mock moonlight syscalls for host testing */
-static uint64_t mock_time = 0;
-static int moonlight_send_count = 0;
-static int moonlight_recv_count = 0;
-
-/* Simulated thread table */
-static struct {
-    uint64_t regs[32];
-    int state;
-    int wait_kind;
-    uint64_t notify;
-    uint64_t ipc_ptr;
-    uint64_t ipc_cap;
-} mock_threads[11];
-
-static int mock_cur = 0;
 
 /* Mock endpoint queues */
 static v2_ep_t mock_eps[V2_NEP];
@@ -362,38 +348,6 @@ int test_concurrent_multiple_senders(void) {
 }
 
 /* ============================================================================
- * Test 8: Notification Signal Accumulation
- * Tests that NOTIFY bits are OR-accumulated and only wake WAIT waiters.
- * ============================================================================ */
-int test_notification_accumulation(void) {
-    printf("\n=== Test 8: Notification Signal Accumulation ===\n");
-
-    v2_ep_init(&mock_eps[0]);
-
-    /* Send multiple notifications with different bits */
-    uint64_t bits1 = 0x01;  /* Bit 0 */
-    uint64_t bits2 = 0x02;  /* Bit 1 */
-    uint64_t bits3 = 0x04;  /* Bit 2 */
-
-    /* Simulate NOTIFY calls */
-    mock_threads[1].notify |= bits1;
-    mock_threads[1].notify |= bits2;
-    mock_threads[1].notify |= bits3;
-
-    TEST_ASSERT(mock_threads[1].notify == 0x07, "Bits should be OR-accumulated");
-
-    /* Simulate WAIT taking bits */
-    uint64_t taken = mock_threads[1].notify;
-    mock_threads[1].notify = 0;
-
-    TEST_ASSERT(taken == 0x07, "Should take all accumulated bits");
-    TEST_ASSERT(mock_threads[1].notify == 0, "Notify should be cleared");
-
-    TEST_PASS("Notification signal accumulation");
-    return 1;
-}
-
-/* ============================================================================
  * Test 9: Zero-Length Messages
  * Tests that zero-length messages are valid (used for pings, heartbeats).
  * ============================================================================ */
@@ -467,7 +421,7 @@ int main(void) {
     printf("===================================================\n");
 
     int passed = 0;
-    int total = 10;
+    int total = 9;
 
     if (test_sync_request_response()) passed++;
     if (test_async_fire_and_forget()) passed++;
@@ -476,7 +430,6 @@ int main(void) {
     if (test_error_invalid_endpoint()) passed++;
     if (test_error_message_truncation()) passed++;
     if (test_concurrent_multiple_senders()) passed++;
-    if (test_notification_accumulation()) passed++;
     if (test_zero_length_messages()) passed++;
     if (test_direct_delivery()) passed++;
 
