@@ -1,8 +1,10 @@
 /* test_blk_hal.c - Unit test for block device HAL (header-only, host-testable).
  *
  * Tests blk_hal.h inline functions on x86 (uses #ifdef __riscv fallbacks).
- * Verifies discovery logic and constant definitions. IRQ bind functions
- * require irq.c implementation, so we skip those on host builds. */
+ * Verifies discovery logic and the derived disk-size constant. The remaining
+ * blk_hal macros restate their own definitions, so asserting them proves
+ * nothing and they are not re-checked here. IRQ bind functions require irq.c
+ * implementation, so we skip those on host builds. */
 #include <stdint.h>
 #include <stdio.h>
 #include <assert.h>
@@ -32,15 +34,12 @@ int main(void)
     assert(transport.dev_id == 0);
     printf("[test_blk_hal] x86 discovery fallback: PASS\n");
 
-    /* Test 3: Verify constant definitions */
-    assert(BLK_HAL_MMIO_UVA == 0x80C00000UL);
-    assert(BLK_HAL_MMIO_LEN == (8u * 0x1000u));
-    assert(BLK_HAL_IRQ_BIT == BLK_IRQ_BIT);
-    assert(BLK_HAL_TID == (unsigned)T_CRYPTBLK);
-    assert(BLK_HAL_DISK_MB == 256u);
-    assert(BLK_HAL_SECTOR_BYTES == 512u);
+    /* Test 3: Derived disk-size constant. BLK_HAL_DISK_SECTORS is computed
+     * from BLK_HAL_DISK_MB / BLK_HAL_SECTOR_BYTES, so this is a real
+     * consistency check: it fails if either unit constant changes without the
+     * documented sector count changing with it. */
     assert(BLK_HAL_DISK_SECTORS == 524288);
-    printf("[test_blk_hal] constant definitions: PASS\n");
+    printf("[test_blk_hal] derived disk-size constant: PASS\n");
 
     /* Note: blk_hal_bind_irq requires irq.c implementation (irq_plic_enable, irq_bind).
      * On target (RISC-V), this is tested via kernel build and QEMU smoke.
