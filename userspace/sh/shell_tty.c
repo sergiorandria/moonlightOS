@@ -125,15 +125,17 @@ static void shell_live_marker(uint32_t tid)
  * Pinged targets: mem_server (2), console (3), tty (4), vault (8), and
  * cryptblk (9). Expected to answer: the first four. cryptblk parks in its
  * boot-time vault-seed handoff before ever reaching its service loop, so it
- * is currently expected to stay silent (root cause + evidence:
- * .superpowers/sdd/2026-10-16-production-hardening/task-0.6-report.md §5.1,
- * pre-existing defect, not introduced here). Its load is still asserted via
- * "[spawn] cryptblk ELF ok".
+ * is currently expected to stay silent (root cause + evidence: tracked
+ * finding S10 in docs/PRODUCTION_READINESS.md; pre-existing defect, not
+ * introduced here). Its load is still asserted via "[spawn] cryptblk ELF ok".
  *   - cryptblk (9) is pinged anyway, but is NOT part of the drain's
  *     completion set: a silent tid 9 must never block this prober or
- *     deadlock boot. If it ever answers, its PONG is still printed (and
- *     tools/verify.sh pins "LIVE: tid=9 ok" ABSENT so any change to
- *     cryptblk liveness trips the gate).
+ *     deadlock boot. If it answers within the drain window, its PONG is
+ *     printed and tools/verify.sh fails the gate (that pin asserts
+ *     "LIVE: tid=9 ok" ABSENT). V2 has no timer-armed receive, so a PONG
+ *     that arrives after the four expected replies is not observed this
+ *     boot; in that case the pin lags by one boot rather than failing
+ *     immediately.
  *   - gui (10): not an IPC server (no receive loop); covered by its three
  *     readiness markers.
  *
