@@ -110,6 +110,7 @@ Order-of-magnitude assessment: **Early prototype with production-grade documenta
 | S7 | **Med** | `vault key_release` can block forever holding the VMK frame + grant (blocking `u_recv` despite a "tick-bounded" claim). | `vault/v2_main.c:598-619` |
 | S8 | **Med** | `ipc_helpers` reply matching ignores `msg_id` and permanently discards non-matching traffic; `ipc_check_flow_control` is `return 0`. | `lib/ipc_helpers.c:63-64,95-101,197-200` |
 | S9 | **Med** | `vfs_server`/`sched_server`/`qrexec`/`firewall`/`adminvm` are not built/spawned; AdminVM auto-approves. | `userspace/Makefile:56`, `mkinitrd.sh:34-46` |
+| S10 | **High** | cryptblk (tid 9) never reaches its service loop in the shipped boot, so it is a **dead service behind a green gate**: `crypt_get_seed` accepts only a seed reply stamped from qube 6, and vault's RANDOM arm accepts only a request stamped from qube 7, but the shipped boot places every service in qube 0, so vault replies `R_DENY` and cryptblk parks before it can receive. The gate pings it but pins it ABSENT (fail-closed inverse assertion), which is the durable record of this gap. | `userspace/cryptblk/v2_main.c:383`, `userspace/vault/v2_main.c:713`, `kernel/kboot.c:126-132`; pin `tools/verify.sh:444-455` |
 
 ### D. Network stack + libc
 
@@ -160,6 +161,7 @@ Order-of-magnitude assessment: **Early prototype with production-grade documenta
 - **R1.6** `SPAWN` slot reuse MUST reclaim cap-referenced frames. (K7)
 - **R1.7** `FORK` MUST map the child stack and resume at the correct `sepc`. (K5)
 - **R1.8** `V2_INV_ELF_CHECK` MUST validate the user pointer before dereference. (K4)
+- **R1.9** The shipped boot MUST place each service in the qube its boot handoff requires (or the handoffs MUST use the shipped qube assignment), so cryptblk reaches its service loop; once it does, the gate's `LIVE: tid=9 ok` inverse pin MUST be promoted to a positive assertion. (S10)
 
 ### Phase 2 — Security model
 - **R2.1** A QX capability MUST be mintable so cross-qube IPC is possible.

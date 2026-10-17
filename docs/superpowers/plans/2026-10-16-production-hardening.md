@@ -134,7 +134,7 @@ artifact can satisfy the smoke from a previous run.
 
 ## Phase 1 — Isolation & memory safety
 
-**Implements:** R1.1–R1.8 (findings K1–K7, D1, D3). **Own plan required.**
+**Implements:** R1.1–R1.9 (findings K1–K7, D1, D3, S10). **Own plan required.**
 
 **Files:** `kernel/vm.c`, `kernel/elf_loader.c`, `kernel/syscall_proc.c`, `kernel/syscall_qube.c`, `kernel/irq.c`, `kernel/kboot.c`, `kernel/linker.ld`; tests `tests/test_v2ipc.c`, `tests/test_frames.c`, `tests/test_elf.c`, new isolation vectors.
 
@@ -146,6 +146,7 @@ artifact can satisfy the smoke from a previous run.
 - **1.6 SPAWN reuse leak (R1.6, K7).** Snapshot cap-referenced frames on reuse. Test: spawn/free loop leaves the frame bitmap unchanged.
 - **1.7 FORK (R1.7, K5).** Map the child stack; `sepc = parent` (no `+4`). Test: `test_v2ipc` FORK vector.
 - **1.8 ELF_CHECK pointer (R1.8, K4).** Range/alignment-check `a2` or copy the header in. Test: `test_elf` adversarial-pointer vector.
+- **1.9 cryptblk reachable (R1.9, S10).** Reconcile the vault↔cryptblk seed handoff qubes with the shipped boot (`kboot.c:126-132` places every service in qube 0, while `crypt_get_seed` requires the reply from qube 6 and vault requires the request from qube 7), so the seed arrives and cryptblk leaves its park into its service loop. Test: promote the gate's `LIVE: tid=9 ok` inverse pin (`tools/verify.sh`) to a positive assertion.
 - **Also:** delete `kernel/arch/` + `kernel/core/` (D3) or make them the single source, so there is one page-table builder.
 
 **Exit criteria:** no two threads share writable memory (proved by an aliasing test); each driver maps one device; a destroyed thread leaves no authority; the frame pool is balanced across fault/spawn/fork cycles; the shared-`.udata` and "exclusivity asserted" comments are gone.
@@ -214,7 +215,7 @@ artifact can satisfy the smoke from a previous run.
 
 ## Self-review (plan vs spec)
 
-- **Spec coverage:** R0.1–R0.7 → Phase 0 tasks 0.1–0.7; R1.1–R1.8 → Phase 1 §1.1–1.8 (+ D3); R2.1–R2.6 → Phase 2 §2.1–2.6; R3.1–R3.8 → Phase 3 §3.1–3.8; R4.1–R4.5 → Phase 4 §4.1–4.5; R5.1–R5.3 → Phase 5. No requirement is unmapped. Finding V4 is owned by Task 0.7 (added in the pre-flight scan).
+- **Spec coverage:** R0.1–R0.7 → Phase 0 tasks 0.1–0.7; R1.1–R1.9 → Phase 1 §1.1–1.9 (+ D3); R2.1–R2.6 → Phase 2 §2.1–2.6; R3.1–R3.8 → Phase 3 §3.1–3.8; R4.1–R4.5 → Phase 4 §4.1–4.5; R5.1–R5.3 → Phase 5. No requirement is unmapped. Finding V4 is owned by Task 0.7 (added in the pre-flight scan).
 - **Review Focus:** items 1–5 map to Tasks 0.1, 1.1, 3.6, 3.8, 3.2 respectively — each has an explicit test vector.
 - **Type/name consistency:** `run_test`/`run_optional`/`FAILED` are introduced in Task 0.1 and used by 0.2–0.7; `V2_INV_ELF_CHECK`/`sepc`/`irq_unbind` names match the reviewed source.
 - **Proportion:** Phase 0 is fully specified because it is executed first and is self-contained; Phases 1–5 are scoped as independent plans by design, not transcribed here.
