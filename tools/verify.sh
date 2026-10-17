@@ -427,9 +427,9 @@ if [ -f kernel/build/moonlight.elf ]; then
     #   boot-time vault-seed handoff before reaching its service loop, so it
     #   cannot answer a ping (pre-existing defect; the handoff expects vault
     #   qube 6 / cryptblk qube 7 while the shipped boot puts every service in
-    #   qube 0; evidence in .superpowers/sdd/2026-10-16-production-hardening/
-    #   task-0.6-report.md §5.1). The pin exists so any change to cryptblk's
-    #   liveness trips this gate instead of silently passing. Its LOAD is
+    #   qube 0; tracked finding S10 in docs/PRODUCTION_READINESS.md). The pin
+    #   exists so a change to cryptblk's liveness fails this gate instead of
+    #   silently passing (bounded by the one-boot lag noted below). Its LOAD is
     #   still asserted via "[spawn] cryptblk ELF ok" above. gui (tid 10) has
     #   no receive loop and stays covered by its GUI: readiness markers.
     #
@@ -443,15 +443,19 @@ if [ -f kernel/build/moonlight.elf ]; then
     echo "$V2LOG" | grep -qxF "LIVE: tid=8 ok" && echo "v2 smoke: live vault" || { echo "v2 smoke: FAIL (vault not live)"; QEMU_FAIL=1; }
     # Fail-closed inverse pin: cryptblk (9) is known-dead at boot (parks in
     # crypt_get_seed; the vault->cryptblk seed handoff expects qube 6/7 but
-    # the shipped boot puts every service in qube 0). The prober pings 9 too
-    # and prints "LIVE: tid=9 ok" for any PONG it receives, so this pin trips
-    # the moment cryptblk's liveness changes — at which point the marker must
-    # be promoted to a positive assertion.
+    # the shipped boot puts every service in qube 0 — tracked finding S10 in
+    # docs/PRODUCTION_READINESS.md). The prober pings 9 too and prints
+    # "LIVE: tid=9 ok" for any PONG it receives, so this pin fails closed the
+    # moment cryptblk answers within the drain window. It is NOT instant: V2
+    # has no timer-armed receive, so a PONG that arrives after the drain
+    # completes is not observed and the pin lags by one boot (see the
+    # limitation note above). When cryptblk answers, promote this to a
+    # positive assertion (Phase 1 task 1.9).
     if echo "$V2LOG" | grep -qxF "LIVE: tid=9 ok"; then
       echo "v2 smoke: FAIL (cryptblk unexpectedly live — promote this to a positive LIVE assertion)"
       QEMU_FAIL=1
     else
-      echo "v2 smoke: cryptblk known-dead (pinned absent — see task-0.6 report §5.1)"
+      echo "v2 smoke: cryptblk known-dead (pinned absent — see docs/PRODUCTION_READINESS.md S10)"
     fi
     echo "$V2LOG" | grep -qxF "[ipc] send tcb=1 -> 4" && echo "v2 smoke: shell->tty live IPC" || { echo "v2 smoke: FAIL (no live IPC)"; QEMU_FAIL=1; }
     if [ "$QEMU_FAIL" = "0" ]; then
